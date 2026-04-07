@@ -1,0 +1,1781 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>IM Tools</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Top Navigation -->
+<nav class="topnav">
+  <div class="topnav-brand">
+    <span class="topnav-logo">IM</span>
+    <span class="topnav-title">IM Tools</span>
+  </div>
+  <div class="topnav-tabs">
+    <button class="topnav-tab active" data-page="home" onclick="switchPage('home')">
+      <span class="tab-icon">&#8962;</span> Home
+    </button>
+    <button class="topnav-tab" data-page="merge" onclick="switchPage('merge')">
+      <span class="tab-icon">&#8644;</span> Table Merge
+    </button>
+    <button class="topnav-tab" data-page="ocr" onclick="switchPage('ocr')">
+      <span class="tab-icon">&#128065;</span> Image to Text
+    </button>
+    <button class="topnav-tab" data-page="orgdata" onclick="switchPage('orgdata')">
+      <span class="tab-icon">&#128194;</span> Org Data
+    </button>
+  </div>
+  <div class="topnav-right">
+    <span class="topnav-team">IM Team</span>
+  </div>
+</nav>
+
+<!-- Page: Home -->
+<div class="page active" id="page-home">
+  <div class="home">
+
+    <!-- Compact header + stats row -->
+    <div class="home-top">
+      <h1 class="home-title">IM Tools</h1>
+      <div class="home-stats-row" id="homeStats"></div>
+    </div>
+
+    <!-- Tools grid -->
+    <div class="home-grid">
+
+      <div class="hcard hcard-active" onclick="switchPage('merge')">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-blue">&#8644;</div>
+          <span class="hcard-badge hcard-badge-active">Active</span>
+        </div>
+        <h3>Table Merge</h3>
+        <p>Upload, merge, and track spreadsheet data across orgs and ranches.</p>
+        <div class="hcard-meta" id="mergeToolMeta"></div>
+      </div>
+
+      <div class="hcard hcard-active" onclick="switchPage('ocr')">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-green">&#128065;</div>
+          <span class="hcard-badge hcard-badge-active">Active</span>
+        </div>
+        <h3>Image to Text</h3>
+        <p>Upload a screenshot or image and extract text using OCR.</p>
+      </div>
+
+      <div class="hcard hcard-active" onclick="switchPage('orgdata')">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-amber">&#128194;</div>
+          <span class="hcard-badge hcard-badge-active">Active</span>
+        </div>
+        <h3>Org Data</h3>
+        <p>View all saved data across tools, organized by org.</p>
+      </div>
+
+      <div class="hcard hcard-disabled">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-gray">&#9201;</div>
+          <span class="hcard-badge hcard-badge-soon">Soon</span>
+        </div>
+        <h3>Audit Log</h3>
+        <p>Track changes and data modification history.</p>
+      </div>
+
+      <div class="hcard hcard-disabled">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-gray">&#9881;</div>
+          <span class="hcard-badge hcard-badge-soon">Soon</span>
+        </div>
+        <h3>Bulk Editor</h3>
+        <p>Mass update fields across multiple records at once.</p>
+      </div>
+
+      <div class="hcard hcard-disabled">
+        <div class="hcard-top">
+          <div class="hcard-icon hcard-icon-gray">&#8681;</div>
+          <span class="hcard-badge hcard-badge-soon">Soon</span>
+        </div>
+        <h3>Export Center</h3>
+        <p>Export data in multiple formats for external use.</p>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+
+<!-- Page: Table Merge -->
+<div class="page" id="page-merge">
+  <div class="app-layout">
+
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-resize" id="sidebarResize"></div>
+      <div class="sidebar-header">Projects</div>
+      <div id="orgList"></div>
+      <div id="archiveSection"></div>
+      <div class="sidebar-bottom">
+        <div class="save-section">
+          <button class="save-btn" onclick="manualSave()">Save to File</button>
+          <label class="load-btn">Load<input type="file" id="loadFileInput" accept=".json" style="display:none;"></label>
+          <div class="save-status" id="saveStatus">Not linked to file</div>
+        </div>
+        <label>New Organization</label>
+        <div class="new-org-row">
+          <input type="text" id="newOrgName" placeholder="Organization name...">
+          <button onclick="createOrg()">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="toolbar">
+        <span class="breadcrumb" id="breadcrumb">Select a project</span>
+        <label class="upload-btn" id="uploadLabel" style="display:none;">&#8679; Upload<input type="file" id="fileInput" accept=".xlsx,.xls,.csv"></label>
+        <button class="btn-default" id="headerBtn" style="display:none;" onclick="toggleHeaderSetup()">&#9776; Headers</button>
+        <button class="btn-default" id="pasteBtn" style="display:none;" onclick="togglePasteBox()">&#9112; Paste</button>
+        <button class="btn-done" id="doneAllBtn" style="display:none;" onclick="markAllDone()">&#10003; All Done</button>
+        <button class="btn-reset" id="resetBtn" style="display:none;" onclick="resetProgress()">&#8634; Reset</button>
+        <button class="btn-clear" id="clearBtn" style="display:none;" onclick="clearRanchData()">&#10005; Clear</button>
+      </div>
+      <div class="info-bar" id="infoBar">
+        <div class="hint-text"><span class="hint-key">Click</span> to copy <span class="hint-sep">&middot;</span> <span class="hint-key">Double-click</span> to undo <span class="hint-sep">&middot;</span> <span class="hint-key">Right-click</span> to move <span class="hint-sep">&middot;</span> <span class="hint-key">Ctrl+V</span> to paste</div>
+        <div id="mappingStatus"></div>
+      </div>
+      <div id="headerSetupBox" style="display:none; padding: 0 20px;">
+        <div style="background:#f8f9fb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:8px;">
+          <label style="font-weight:600; font-size:13px; display:block; margin-bottom:8px; color:#1a1a1a;">Paste the header row from your spreadsheet</label>
+          <textarea id="headerArea" style="width:100%; height:50px; font-family:'Inter',monospace; font-size:12px; border:1px solid #e5e7eb; border-radius:8px; padding:10px; resize:vertical; background:#fff; color:#1a1a1a;" placeholder="Copy the header row from Excel/Sheets and paste here..."></textarea>
+          <div style="margin-top:10px; display:flex; gap:8px;">
+            <button onclick="processHeaderPaste()" class="confirm-btn" style="padding:8px 18px; border:none; border-radius:8px; cursor:pointer; font-size:13px;">Set Up Mapping</button>
+            <button onclick="toggleHeaderSetup()" class="cancel-btn" style="padding:8px 18px; border-radius:8px; cursor:pointer; font-size:13px;">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div id="columnMapper" style="display:none;"></div>
+      <div id="pasteBox" style="display:none; padding: 0 20px;">
+        <div style="background:#f8f9fb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:8px;">
+          <label style="font-weight:600; font-size:13px; display:block; margin-bottom:8px; color:#1a1a1a;">Paste data rows (no header row needed)</label>
+          <textarea id="pasteArea" style="width:100%; height:100px; font-family:'Inter',monospace; font-size:12px; border:1px solid #e5e7eb; border-radius:8px; padding:10px; resize:vertical; background:#fff; color:#1a1a1a;" placeholder="Copy the data rows from Excel/Sheets and paste here..."></textarea>
+          <div style="margin-top:10px; display:flex; gap:8px;">
+            <button class="confirm-btn" onclick="processPasteBox()" style="padding:8px 18px; border:none; border-radius:8px; cursor:pointer; font-size:13px;">Import Pasted Data</button>
+            <button class="cancel-btn" onclick="togglePasteBox()" style="padding:8px 18px; border-radius:8px; cursor:pointer; font-size:13px;">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="thead"></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="empty-msg" id="emptyMsg">Create an organization, then add ranches and upload Excel files.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Page: Image to Text (OCR) -->
+<div class="page" id="page-ocr">
+  <div class="ocr-page">
+    <div class="ocr-header">
+      <h1>Image to Text</h1>
+      <p>Upload or paste a screenshot to extract text. Works entirely in your browser.</p>
+    </div>
+
+    <div class="ocr-layout">
+      <div class="ocr-input-panel">
+        <div class="ocr-dropzone" id="ocrDropzone">
+          <div class="ocr-dropzone-content" id="ocrDropContent">
+            <div class="ocr-drop-icon">&#128247;</div>
+            <p><strong>Drop an image here</strong> or click to upload</p>
+            <p class="ocr-drop-hint">PNG, JPG, BMP &middot; or paste with Ctrl+V</p>
+          </div>
+          <div class="ocr-canvas-wrap" id="ocrCanvasWrap" style="display:none;">
+            <canvas id="ocrCanvas"></canvas>
+            <div class="ocr-crop-selection" id="ocrCropSel" style="display:none;"></div>
+            <div class="ocr-zoom-controls">
+              <button class="ocr-zoom-btn" onclick="ocrZoom(-0.25)" title="Zoom out">-</button>
+              <span class="ocr-zoom-level" id="ocrZoomLevel">100%</span>
+              <button class="ocr-zoom-btn" onclick="ocrZoom(0.25)" title="Zoom in">+</button>
+              <button class="ocr-zoom-btn" onclick="ocrZoomReset()" title="Fit to view">&#8634;</button>
+            </div>
+          </div>
+          <input type="file" id="ocrFileInput" accept="image/*" style="display:none;">
+        </div>
+        <div class="ocr-actions">
+          <button class="ocr-btn ocr-btn-primary" id="ocrExtractBtn" onclick="runOCR()" disabled>Extract Full</button>
+          <button class="ocr-btn ocr-btn-accent" id="ocrCropBtn" onclick="runCroppedOCR()" style="display:none;">Extract Selection</button>
+          <button class="ocr-btn ocr-btn-accent" id="ocrColumnBtn" onclick="runColumnOCR()" style="display:none;">Extract Column</button>
+          <button class="ocr-btn ocr-btn-secondary" id="ocrClearCropBtn" onclick="clearCrop()" style="display:none;">Clear Crop</button>
+          <button class="ocr-btn ocr-btn-secondary" id="ocrReplaceBtn" style="display:none;" onclick="document.getElementById('ocrFileInput').click()">Replace Image</button>
+          <button class="ocr-btn ocr-btn-secondary" onclick="clearOCR()">Clear</button>
+        </div>
+        <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom</div>
+        <div class="ocr-progress" id="ocrProgress" style="display:none;">
+          <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
+          <span class="ocr-progress-text" id="ocrProgressText">Initializing...</span>
+        </div>
+      </div>
+
+      <div class="ocr-output-panel">
+        <div class="ocr-output-header">
+          <div class="ocr-output-tabs">
+            <button class="ocr-tab active" onclick="switchOCRTab('table')">Table</button>
+            <button class="ocr-tab" onclick="switchOCRTab('raw')">Raw Text</button>
+          </div>
+          <div class="ocr-search">
+            <span class="search-icon">&#128269;</span>
+            <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
+          </div>
+          <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
+          <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
+        </div>
+        <div class="ocr-tab-content active" id="ocrTabTable">
+          <div class="ocr-table-wrap" id="ocrTableWrap">
+            <p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>
+          </div>
+        </div>
+        <div class="ocr-tab-content" id="ocrTabRaw">
+          <textarea class="ocr-textarea" id="ocrOutput" readonly placeholder="Extracted text will appear here..."></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page: Org Data -->
+<div class="page" id="page-orgdata">
+  <div class="app-layout">
+    <div class="orgdata-sidebar">
+      <div class="orgdata-sidebar-top">
+        <select id="orgDataSelect" onchange="renderOrgData()"></select>
+      </div>
+      <div class="orgdata-nav" id="orgDataNav"></div>
+    </div>
+    <div class="orgdata-main">
+      <div class="orgdata-toolbar" id="orgDataToolbar"></div>
+      <div class="orgdata-table-wrap" id="orgDataContent">
+        <p class="ocr-placeholder">Select an organization and section.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Save to Org modal -->
+<div class="modal-overlay" id="saveToOrgModal">
+  <div class="modal">
+    <h3>Save to Organization</h3>
+    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Organization</label>
+    <select id="saveToOrgSelect" style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);"></select>
+    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Name / Label</label>
+    <div id="saveToOrgExisting" style="margin-bottom:8px;"></div>
+    <input type="text" id="saveToOrgName" placeholder="e.g. Break Prep Jobs, Site List..." style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);">
+    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Source Tool</label>
+    <input type="text" id="saveToOrgSource" value="Image to Text" readonly style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-secondary);color:var(--text-tertiary);">
+    <div class="modal-actions">
+      <button class="cancel-btn" onclick="closeSaveToOrg()">Cancel</button>
+      <button class="confirm-btn" onclick="confirmSaveToOrg()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="stats-bar" id="statsBar"></div>
+
+<!-- Move row modal -->
+<div class="modal-overlay" id="moveModal">
+  <div class="modal">
+    <h3>Move row to another ranch</h3>
+    <select id="moveTarget"></select>
+    <div class="modal-actions">
+      <button class="cancel-btn" onclick="closeMoveModal()">Cancel</button>
+      <button class="confirm-btn" onclick="confirmMoveRow()">Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import destination modal -->
+<div class="modal-overlay" id="importDestModal">
+  <div class="modal" style="min-width:400px;max-width:500px;max-height:80vh;overflow-y:auto;">
+    <h3>Choose where to import each ranch</h3>
+    <div id="importDestList"></div>
+    <div class="modal-actions" style="margin-top:12px;">
+      <button class="cancel-btn" onclick="cancelImportDest()">Cancel</button>
+      <button class="confirm-btn" onclick="confirmImportDest()">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Context menu -->
+<div class="ctx-menu" id="ctxMenu" style="display:none;"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="app.js"></script>
+<script>
+function switchPage(pageName) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.topnav-tab').forEach(t => t.classList.remove('active'));
+  const page = document.getElementById('page-' + pageName);
+  const tab = document.querySelector('.topnav-tab[data-page="' + pageName + '"]');
+  if (page) page.classList.add('active');
+  if (tab) tab.classList.add('active');
+  if (pageName === 'home') { renderHomeStats(); hideStatsBar(); }
+  if (pageName === 'orgdata') { renderOrgDataSelect(); renderOrgData(); updateOrgDataStats(); }
+  if (pageName === 'ocr') { hideStatsBar(); }
+  if (pageName === 'merge') { /* renderStats called by renderMain */ }
+}
+
+function renderHomeStats() {
+  const data = getData();
+  const orgs = Object.keys(data.orgs || {});
+  let totalRanches = 0, totalRows = 0, totalDone = 0;
+
+  orgs.forEach(orgName => {
+    const org = data.orgs[orgName];
+    const ranches = Object.keys(org.ranches || {});
+    totalRanches += ranches.length;
+    ranches.forEach(ranchName => {
+      const ranch = org.ranches[ranchName];
+      if (!ranch.rows) return;
+      totalRows += ranch.rows.length;
+      ranch.rows.forEach((row, ri) => {
+        const required = row.reduce((cols, cell, ci) => {
+          if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci);
+          return cols;
+        }, []);
+        const done = new Set((ranch.progress || {})[ri] || []);
+        if (required.every(ci => done.has(ci))) totalDone++;
+      });
+    });
+  });
+
+  const pct = totalRows > 0 ? Math.round((totalDone / totalRows) * 100) : 0;
+
+  document.getElementById('homeStats').innerHTML =
+    '<div class="home-stat-pill"><strong>' + orgs.length + '</strong> orgs</div>' +
+    '<div class="home-stat-pill"><strong>' + totalRanches + '</strong> sites</div>' +
+    '<div class="home-stat-pill"><strong>' + totalDone.toLocaleString() + '</strong> / ' + totalRows.toLocaleString() + ' done</div>' +
+    '<div class="home-stat-pill"><strong>' + pct + '%</strong><span class="hstat-bar"><span class="hstat-bar-fill" style="width:' + pct + '%"></span></span></div>';
+
+  const metaEl = document.getElementById('mergeToolMeta');
+  if (metaEl) {
+    metaEl.innerHTML = '<span class="hcard-meta-item">' + totalRanches + ' sites</span><span class="hcard-meta-item">' + totalRows.toLocaleString() + ' records</span><span class="hcard-meta-item">' + pct + '% complete</span>';
+  }
+}
+
+renderHomeStats();
+hideStatsBar();
+
+function hideStatsBar() {
+  document.getElementById('statsBar').style.display = 'none';
+}
+
+function showStatsBar(total, done) {
+  const bar = document.getElementById('statsBar');
+  const remaining = total - done;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  bar.style.display = 'block';
+  bar.innerHTML =
+    '<span class="stat"><span class="stat-value">' + total + '</span> total</span>' +
+    '<span class="stat"><span class="stat-value stat-done">' + done + '</span> done</span>' +
+    '<span class="stat"><span class="stat-value stat-remaining">' + remaining + '</span> left</span>' +
+    '<span class="stat"><span class="stat-value stat-pct">' + pct + '%</span>' +
+    '<span class="stat-progress"><span class="stat-progress-fill" style="width:' + pct + '%;"></span></span></span>';
+}
+
+function updateOrgDataStats() {
+  const org = document.getElementById('orgDataSelect')?.value;
+  if (!org || !orgDataView) { hideStatsBar(); return; }
+
+  const mergeData = getData();
+  const ocrStore = getOrgDataStore();
+  const orgMerge = mergeData.orgs[org];
+  const orgOCR = ocrStore[org] || [];
+
+  if (orgDataView === 'sites-overview') {
+    if (!orgMerge) { hideStatsBar(); return; }
+    const ranches = Object.keys(orgMerge.ranches || {});
+    let total = ranches.length, done = 0;
+    ranches.forEach(rName => {
+      const ranch = orgMerge.ranches[rName];
+      const rTotal = ranch.rows.length;
+      let rDone = 0;
+      ranch.rows.forEach((row, ri) => {
+        const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
+        const d = new Set((ranch.progress || {})[ri] || []);
+        if (req.every(ci => d.has(ci))) rDone++;
+      });
+      if (rDone === rTotal && rTotal > 0) done++;
+    });
+    showStatsBar(total, done);
+  } else if (orgDataView.startsWith('ranch-')) {
+    const rName = orgDataView.substring(6);
+    const ranch = orgMerge?.ranches?.[rName];
+    if (!ranch) { hideStatsBar(); return; }
+    let total = ranch.rows.length, done = 0;
+    ranch.rows.forEach((row, ri) => {
+      const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
+      const d = new Set((ranch.progress || {})[ri] || []);
+      if (req.every(ci => d.has(ci))) done++;
+    });
+    showStatsBar(total, done);
+  } else if (orgDataView.startsWith('ocr-')) {
+    const idx = parseInt(orgDataView.substring(4));
+    const item = orgOCR[idx];
+    if (!item) { hideStatsBar(); return; }
+    let total = 0, done = 0;
+    item.rows.forEach((row, ri) => {
+      const rowArchived = (item.archived && item.archived[ri]) || [];
+      const rowDone = (item.doneCells && item.doneCells[ri]) || [];
+      // Count non-empty, non-archived cells
+      let nonEmpty = 0;
+      row.forEach((c, ci) => { if (c.trim() && !rowArchived.includes(ci)) nonEmpty++; });
+      if (nonEmpty === 0) return; // fully archived row, skip
+      total++;
+      // Check if all non-archived non-empty cells are done
+      let allDone = true;
+      row.forEach((c, ci) => {
+        if (c.trim() && !rowArchived.includes(ci) && !rowDone.includes(ci)) allDone = false;
+      });
+      if (allDone) done++;
+    });
+    showStatsBar(total, done);
+  } else {
+    hideStatsBar();
+  }
+}
+
+// ─── Undo system ───
+const undoStack = [];
+const MAX_UNDO = 50;
+
+function pushUndo(action) {
+  undoStack.push(action);
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+function performUndo() {
+  const action = undoStack.pop();
+  if (!action) return;
+
+  if (action.type === 'orgdata-done' || action.type === 'orgdata-undone') {
+    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
+    const table = td?.closest('table');
+    if (td && table) {
+      if (action.type === 'orgdata-done') {
+        td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
+        saveOrgDataCellState(table, td, 'undone');
+        const tr = td.closest('tr');
+        if (tr) tr.classList.remove('orgdata-row-done');
+      } else {
+        td.classList.add('orgdata-cell-done');
+        saveOrgDataCellState(table, td, 'done');
+        checkOrgDataRowDone(td.closest('tr'));
+      }
+    }
+  } else if (action.type === 'orgdata-bulk') {
+    // Undo bulk select
+    action.cells.forEach(c => {
+      const td = document.querySelector('table[id="' + c.tableId + '"] td[data-ri="' + c.ri + '"][data-ci="' + c.ci + '"]');
+      const table = td?.closest('table');
+      if (td && table) {
+        td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
+        saveOrgDataCellState(table, td, 'undone');
+        const tr = td.closest('tr');
+        if (tr) tr.classList.remove('orgdata-row-done');
+      }
+    });
+  } else if (action.type === 'orgdata-archive') {
+    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
+    const table = td?.closest('table');
+    if (td && table) {
+      td.classList.remove('orgdata-cell-archived');
+      saveOrgDataCellState(table, td, 'unarchive');
+    }
+  } else if (action.type === 'orgdata-unarchive') {
+    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
+    const table = td?.closest('table');
+    if (td && table) {
+      td.classList.add('orgdata-cell-archived');
+      td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
+      saveOrgDataCellState(table, td, 'archive');
+    }
+  } else if (action.type === 'merge-done' || action.type === 'merge-undone') {
+    // Table Merge cell undo
+    const tbody = document.getElementById('tbody');
+    if (tbody) {
+      const td = tbody.querySelector('td[data-ci="' + action.ci + '"]');
+      // Re-render is simplest for merge
+      if (typeof renderMain === 'function') renderMain();
+    }
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    performUndo();
+  }
+});
+
+// ─── Org Data Store ───
+const ORG_DATA_KEY = 'orgDataStore';
+
+function getOrgDataStore() {
+  try { return JSON.parse(localStorage.getItem(ORG_DATA_KEY)) || {}; } catch(e) { return {}; }
+}
+function saveOrgDataStore(store) { localStorage.setItem(ORG_DATA_KEY, JSON.stringify(store)); }
+
+function showSaveToOrg() {
+  const data = getData();
+  const select = document.getElementById('saveToOrgSelect');
+  select.innerHTML = '';
+  Object.keys(data.orgs || {}).sort().forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    select.appendChild(opt);
+  });
+  document.getElementById('saveToOrgName').value = '';
+  updateSaveToOrgExisting();
+  select.onchange = updateSaveToOrgExisting;
+  document.getElementById('saveToOrgModal').classList.add('show');
+}
+
+function updateSaveToOrgExisting() {
+  const org = document.getElementById('saveToOrgSelect').value;
+  const container = document.getElementById('saveToOrgExisting');
+  const store = getOrgDataStore();
+  const items = (store[org] || []);
+
+  if (items.length === 0) {
+    container.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary);">No existing saves for this org.</span>';
+    return;
+  }
+
+  let html = '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
+  items.forEach(item => {
+    html += '<button type="button" onclick="document.getElementById(\'saveToOrgName\').value=\'' + item.name.replace(/'/g, "\\'") + '\'" style="padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:11px;font-family:inherit;transition:all 0.15s;">' + escHtml(item.name) + ' <span style="color:var(--text-tertiary);">(' + item.rows.length + ')</span></button>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function closeSaveToOrg() {
+  document.getElementById('saveToOrgModal').classList.remove('show');
+}
+
+function confirmSaveToOrg() {
+  const org = document.getElementById('saveToOrgSelect').value;
+  const name = document.getElementById('saveToOrgName').value.trim();
+  const source = document.getElementById('saveToOrgSource').value;
+  if (!org || !name) { alert('Please select an org and enter a name.'); return; }
+
+  const wrap = document.getElementById('ocrTableWrap');
+  const headers = [];
+  wrap.querySelectorAll('th').forEach(th => headers.push(th.textContent));
+  const rows = [];
+  const archived = [];
+  const doneCells = [];
+  wrap.querySelectorAll('tbody tr').forEach((tr, ri) => {
+    const row = [];
+    const rowDone = [];
+    tr.querySelectorAll('td').forEach((td, ci) => {
+      row.push(td.textContent.replace(/\u2713 Done/g, '').trim());
+      if (td.classList.contains('ocr-cell-done')) rowDone.push(ci);
+    });
+    if (row.some(c => c)) {
+      rows.push(row);
+      doneCells.push(rowDone);
+      // Check if any cell in this row is archived
+      const archivedRow = [];
+      tr.querySelectorAll('td').forEach((td, ci) => {
+        if (td.classList.contains('ocr-cell-archived')) archivedRow.push(ci);
+      });
+      archived.push(archivedRow);
+    }
+  });
+
+  if (rows.length === 0) { alert('No data to save.'); return; }
+
+  const store = getOrgDataStore();
+  if (!store[org]) store[org] = [];
+
+  // Check if an extraction with this name already exists
+  const existingIdx = store[org].findIndex(item => item.name === name);
+
+  if (existingIdx >= 0) {
+    if (!confirm('An extraction named "' + name + '" already exists. Replace it and transfer done progress for matching rows?')) return;
+
+    const existing = store[org][existingIdx];
+
+    // Build lookup of old row text -> done/archived status
+    const oldStatus = {};
+    (existing.rows || []).forEach((oldRow, ri) => {
+      const key = oldRow.join('\t');
+      oldStatus[key] = {
+        doneCells: (existing.doneCells && existing.doneCells[ri]) || [],
+        archived: (existing.archived && existing.archived[ri]) || []
+      };
+    });
+
+    // Transfer status to new rows by matching exact text
+    const newDoneCells = [];
+    const newArchived = [];
+    rows.forEach((row, ri) => {
+      const key = row.join('\t');
+      if (oldStatus[key]) {
+        newDoneCells.push(oldStatus[key].doneCells);
+        newArchived.push(oldStatus[key].archived);
+      } else {
+        newDoneCells.push(doneCells[ri] || []);
+        newArchived.push(archived[ri] || []);
+      }
+    });
+
+    store[org][existingIdx] = {
+      name: name,
+      source: source,
+      headers: headers,
+      rows: rows,
+      doneCells: newDoneCells,
+      archived: newArchived,
+      savedAt: new Date().toISOString()
+    };
+
+    saveOrgDataStore(store);
+    closeSaveToOrg();
+    const transferred = rows.filter((row) => oldStatus[row.join('\t')]).length;
+    alert('Replaced "' + name + '" in ' + org + ' (' + rows.length + ' rows, ' + transferred + ' with transferred progress).');
+  } else {
+    store[org].push({
+      name: name,
+      source: source,
+      headers: headers,
+      rows: rows,
+      doneCells: doneCells,
+      archived: archived,
+      savedAt: new Date().toISOString()
+    });
+    saveOrgDataStore(store);
+    closeSaveToOrg();
+    alert('Saved "' + name + '" to ' + org + ' (' + rows.length + ' rows).');
+  }
+}
+
+let orgDataView = null; // current view key
+
+function renderOrgDataSelect() {
+  const data = getData();
+  const select = document.getElementById('orgDataSelect');
+  const current = select.value;
+  select.innerHTML = '<option value="">-- Select Org --</option>';
+  Object.keys(data.orgs || {}).sort().forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    if (name === current) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+function renderOrgData() {
+  const org = document.getElementById('orgDataSelect').value;
+  const nav = document.getElementById('orgDataNav');
+  const content = document.getElementById('orgDataContent');
+  const toolbar = document.getElementById('orgDataToolbar');
+
+  if (!org) {
+    nav.innerHTML = '';
+    toolbar.innerHTML = '';
+    content.innerHTML = '<p class="ocr-placeholder">Select an organization.</p>';
+    return;
+  }
+
+  const mergeData = getData();
+  const ocrStore = getOrgDataStore();
+  const orgMerge = mergeData.orgs[org];
+  const orgOCR = ocrStore[org] || [];
+  const ranches = orgMerge ? Object.keys(orgMerge.ranches || {}).sort() : [];
+
+  function isRowDone(ranch, ri, row) {
+    const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
+    const d = new Set((ranch.progress || {})[ri] || []);
+    return req.length > 0 && req.every(ci => d.has(ci));
+  }
+
+  // Build sidebar nav
+  let navHtml = '';
+
+  // Sites & Locations (collapsible)
+  const sitesOpen = localStorage.getItem('orgdataNav_sites') !== 'closed';
+  navHtml += '<div class="orgdata-nav-group">';
+  navHtml += '<div class="orgdata-nav-label orgdata-nav-collapsible" onclick="toggleOrgDataNav(\'sites\')">';
+  navHtml += '<span class="orgdata-nav-arrow' + (sitesOpen ? ' open' : '') + '" id="orgdataArrowSites">&#9654;</span>';
+  navHtml += 'Sites & Locations <span class="nav-count">' + ranches.length + '</span></div>';
+  navHtml += '<div class="orgdata-nav-list' + (sitesOpen ? ' open' : '') + '" id="orgdataListSites">';
+  navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'sites-overview' ? ' active' : '') + '" onclick="showOrgDataView(\'sites-overview\')"><span class="nav-label">All Sites</span><span class="nav-count">' + ranches.length + '</span></div>';
+  ranches.forEach(rName => {
+    const ranch = orgMerge.ranches[rName];
+    const total = ranch.rows.length;
+    let done = 0;
+    ranch.rows.forEach((row, ri) => { if (isRowDone(ranch, ri, row)) done++; });
+    const isDone = done === total && total > 0;
+    navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'ranch-' + rName ? ' active' : '') + (isDone ? ' nav-done' : '') + '" onclick="showOrgDataView(\'ranch-' + escHtml(rName).replace(/'/g, "\\'") + '\')" title="' + escHtml(rName) + '"><span class="nav-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(rName) + '</span><span class="nav-count">' + total + '</span></div>';
+  });
+  navHtml += '</div></div>';
+
+  // Jobs & Production (collapsible)
+  const jobsOpen = localStorage.getItem('orgdataNav_jobs') !== 'closed';
+  navHtml += '<div class="orgdata-nav-group">';
+  navHtml += '<div class="orgdata-nav-label orgdata-nav-collapsible" onclick="toggleOrgDataNav(\'jobs\')">';
+  navHtml += '<span class="orgdata-nav-arrow' + (jobsOpen ? ' open' : '') + '" id="orgdataArrowJobs">&#9654;</span>';
+  navHtml += 'Jobs & Production <span class="nav-count">' + orgOCR.length + '</span></div>';
+  navHtml += '<div class="orgdata-nav-list' + (jobsOpen ? ' open' : '') + '" id="orgdataListJobs">';
+  orgOCR.forEach((item, idx) => {
+    navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'ocr-' + idx ? ' active' : '') + '" onclick="showOrgDataView(\'ocr-' + idx + '\')" title="' + escHtml(item.name) + '"><span class="nav-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(item.name) + '</span><span class="nav-count">' + item.rows.length + '</span></div>';
+  });
+  if (orgOCR.length === 0) navHtml += '<div class="orgdata-nav-item" style="opacity:0.4;cursor:default;"><span class="nav-label">No job data yet</span></div>';
+  navHtml += '</div></div>';
+
+  nav.innerHTML = navHtml;
+
+  // Auto-select first view if none
+  if (!orgDataView) orgDataView = 'sites-overview';
+  showOrgDataView(orgDataView);
+}
+
+function showOrgDataView(view) {
+  orgDataView = view;
+  const org = document.getElementById('orgDataSelect').value;
+  if (!org) return;
+
+  const mergeData = getData();
+  const ocrStore = getOrgDataStore();
+  const orgMerge = mergeData.orgs[org];
+  const orgOCR = ocrStore[org] || [];
+  const content = document.getElementById('orgDataContent');
+  const toolbar = document.getElementById('orgDataToolbar');
+
+  function isRowDone(ranch, ri, row) {
+    const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
+    const d = new Set((ranch.progress || {})[ri] || []);
+    return req.length > 0 && req.every(ci => d.has(ci));
+  }
+
+  // Update active nav
+  document.querySelectorAll('.orgdata-nav-item').forEach(el => el.classList.remove('active'));
+  // Find and activate
+  const navItems = document.querySelectorAll('.orgdata-nav-item');
+  navItems.forEach(el => { if (el.getAttribute('onclick')?.includes("'" + view + "'")) el.classList.add('active'); });
+
+  let html = '';
+
+  if (view === 'sites-overview') {
+    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span><div class="orgdata-search"><input type="text" placeholder="Filter sites..." oninput="filterOrgDataTable(\'Sites\',this.value)"></div>';
+    if (orgMerge) {
+      const ranches = Object.keys(orgMerge.ranches || {}).sort();
+      html += '<table id="orgDataTableSites"><thead><tr><th>Site Name</th><th>Locations</th><th>Completion</th></tr></thead><tbody>';
+      ranches.forEach(rName => {
+        const ranch = orgMerge.ranches[rName];
+        const total = ranch.rows.length;
+        let done = 0;
+        ranch.rows.forEach((row, ri) => { if (isRowDone(ranch, ri, row)) done++; });
+        const pct = total > 0 ? Math.round(done / total * 100) : 0;
+        const cls = done === total && total > 0 ? ' class="orgdata-row-done"' : '';
+        html += '<tr' + cls + ' style="cursor:pointer" onclick="showOrgDataView(\'ranch-' + escHtml(rName).replace(/'/g, "\\'") + '\');renderOrgData()"><td>' + escHtml(rName) + '</td><td>' + total + '</td><td>' + pct + '%</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+  } else if (view.startsWith('ranch-')) {
+    const rName = view.substring(6);
+    const ranch = orgMerge?.ranches?.[rName];
+    toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(rName) + '</span><div class="orgdata-search"><input type="text" placeholder="Filter..." oninput="filterOrgDataTable(\'Locations\',this.value)"></div>';
+    if (ranch && ranch.rows.length > 0) {
+      html += '<table id="orgDataTableLocations" data-type="merge" data-org="' + escHtml(org) + '"><thead><tr>';
+      HEADERS.forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
+      html += '</tr></thead><tbody>';
+      ranch.rows.forEach((row, ri) => {
+        const done = isRowDone(ranch, ri, row);
+        html += '<tr' + (done ? ' class="orgdata-row-done"' : '') + ' data-ranch="' + escHtml(rName) + '" data-ri="' + ri + '">';
+        row.forEach((cell, ci) => {
+          const cellDone = (ranch.progress || {})[ri] && new Set((ranch.progress || {})[ri]).has(ci);
+          html += '<td' + (cellDone ? ' class="orgdata-cell-done"' : '') + ' data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    } else { html = '<p class="ocr-placeholder">No data for this site.</p>'; }
+  } else if (view.startsWith('ocr-')) {
+    const idx = parseInt(view.substring(4));
+    const item = orgOCR[idx];
+    if (item) {
+      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(item.name) + '</span><div class="orgdata-search"><input type="text" placeholder="Filter..." oninput="filterOrgDataTable(\'Ocr' + idx + '\',this.value)"></div><button onclick="deleteOrgDataItem(\'' + escHtml(org).replace(/'/g, "\\'") + '\',' + idx + ')" style="padding:5px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--red);cursor:pointer;font-size:11px;font-family:inherit;">Delete</button>';
+      html += '<table id="orgDataTableOcr' + idx + '" data-org="' + escHtml(org) + '" data-idx="' + idx + '"><thead><tr>';
+      (item.headers || []).forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
+      html += '</tr></thead><tbody>';
+      (item.rows || []).forEach((row, ri) => {
+        const rowDone = (item.doneCells && item.doneCells[ri]) || [];
+        const rowArchived = (item.archived && item.archived[ri]) || [];
+        const allDone = rowDone.length >= row.filter(c => c.trim()).length && row.filter(c => c.trim()).length > 0;
+        html += '<tr' + (allDone ? ' class="orgdata-row-done"' : '') + ' data-ri="' + ri + '">';
+        row.forEach((cell, ci) => {
+          const isDone = rowDone.includes(ci);
+          const isArchived = rowArchived.includes(ci);
+          let cls = isArchived ? ' class="orgdata-cell-archived"' : isDone ? ' class="orgdata-cell-done"' : '';
+          html += '<td' + cls + ' data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+  }
+
+  content.innerHTML = html;
+
+  // Add interactions
+  let lastClickedCell = null;
+  content.querySelectorAll('table').forEach(table => {
+    // Sort headers
+    table.querySelectorAll('th').forEach((th, ci) => {
+      th.style.cursor = 'pointer';
+      th.dataset.sortDir = '';
+      th.addEventListener('click', () => {
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const dir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+        // Reset all headers in this table
+        table.querySelectorAll('th').forEach(h => { h.dataset.sortDir = ''; h.classList.remove('sort-active'); });
+        th.dataset.sortDir = dir;
+        th.classList.add('sort-active');
+        rows.sort((a, b) => {
+          const av = (a.children[ci]?.textContent || '').trim();
+          const bv = (b.children[ci]?.textContent || '').trim();
+          const an = parseFloat(av), bn = parseFloat(bv);
+          if (!isNaN(an) && !isNaN(bn)) return dir === 'asc' ? an - bn : bn - an;
+          return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+        });
+        rows.forEach(r => tbody.appendChild(r));
+      });
+    });
+
+    // Click/double-click on cells
+    const allTds = Array.from(table.querySelectorAll('td'));
+    allTds.forEach(td => {
+      let clickCount = 0;
+      td.addEventListener('click', (e) => {
+        if (td.classList.contains('orgdata-cell-archived')) return;
+        const text = td.textContent.trim();
+        if (!text) return;
+
+        // Shift-click: bulk mark done from last clicked to this cell
+        if (e.shiftKey && lastClickedCell && lastClickedCell.closest('table') === table) {
+          const startIdx = allTds.indexOf(lastClickedCell);
+          const endIdx = allTds.indexOf(td);
+          if (startIdx >= 0 && endIdx >= 0) {
+            const from = Math.min(startIdx, endIdx);
+            const to = Math.max(startIdx, endIdx);
+            const bulkCells = [];
+            for (let i = from; i <= to; i++) {
+              const c = allTds[i];
+              if (c.classList.contains('orgdata-cell-archived') || !c.textContent.trim()) continue;
+              if (!c.classList.contains('orgdata-cell-done')) {
+                c.classList.add('orgdata-cell-done');
+                saveOrgDataCellState(table, c, 'done');
+                checkOrgDataRowDone(c.closest('tr'));
+                bulkCells.push({ tableId: table.id, ri: c.dataset.ri, ci: c.dataset.ci });
+              }
+            }
+            if (bulkCells.length > 0) pushUndo({ type: 'orgdata-bulk', cells: bulkCells });
+            const prev = content.querySelector('.orgdata-cell-clicked');
+            if (prev) prev.classList.remove('orgdata-cell-clicked');
+            td.classList.add('orgdata-cell-clicked');
+            lastClickedCell = td;
+            return;
+          }
+        }
+
+        clickCount++;
+        if (clickCount === 1) {
+          setTimeout(() => {
+            if (clickCount === 1) {
+              navigator.clipboard.writeText(text).then(() => {
+                const prev = content.querySelector('.orgdata-cell-clicked');
+                if (prev) prev.classList.remove('orgdata-cell-clicked');
+                td.classList.add('orgdata-cell-done');
+                td.classList.add('orgdata-cell-clicked');
+                lastClickedCell = td;
+                checkOrgDataRowDone(td.closest('tr'));
+                saveOrgDataCellState(table, td, 'done');
+                pushUndo({ type: 'orgdata-done', ri: td.dataset.ri, ci: td.dataset.ci });
+              });
+            } else {
+              td.classList.remove('orgdata-cell-done');
+              td.classList.remove('orgdata-cell-clicked');
+              const tr = td.closest('tr');
+              if (tr) tr.classList.remove('orgdata-row-done');
+              saveOrgDataCellState(table, td, 'undone');
+              pushUndo({ type: 'orgdata-undone', ri: td.dataset.ri, ci: td.dataset.ci });
+            }
+            clickCount = 0;
+          }, 200);
+        }
+      });
+
+      // Right-click to archive/restore
+      td.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const ri = td.dataset.ri;
+        const ci = td.dataset.ci;
+        if (ri === undefined || ci === undefined) return;
+        const isArchived = td.classList.contains('orgdata-cell-archived');
+        const menu = document.getElementById('ctxMenu');
+        menu.innerHTML = isArchived
+          ? '<div data-action="restore">Restore Cell</div>'
+          : '<div data-action="archive">Archive Cell</div>';
+        menu.style.display = 'block';
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.onclick = (ev) => {
+          const action = ev.target.dataset.action;
+          menu.style.display = 'none';
+          if (action === 'archive') {
+            td.classList.add('orgdata-cell-archived');
+            td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
+            saveOrgDataCellState(table, td, 'archive');
+            pushUndo({ type: 'orgdata-archive', ri: td.dataset.ri, ci: td.dataset.ci });
+          } else if (action === 'restore') {
+            td.classList.remove('orgdata-cell-archived');
+            saveOrgDataCellState(table, td, 'unarchive');
+            pushUndo({ type: 'orgdata-unarchive', ri: td.dataset.ri, ci: td.dataset.ci });
+          }
+        };
+      });
+    });
+  });
+
+  updateOrgDataStats();
+}
+
+function saveOrgDataCellState(table, td, action) {
+  const ri = parseInt(td.dataset.ri);
+  const ci = parseInt(td.dataset.ci);
+  if (isNaN(ri) || isNaN(ci)) return;
+
+  // Table Merge data
+  if (table.dataset.type === 'merge') {
+    const orgName = table.dataset.org;
+    const tr = td.closest('tr');
+    const ranchName = tr?.dataset.ranch;
+    if (!orgName || !ranchName) return;
+    const data = getData();
+    const ranch = getRanch(data, orgName, ranchName);
+    if (!ranch) return;
+    if (!ranch.progress[ri]) ranch.progress[ri] = [];
+    const prog = new Set(ranch.progress[ri]);
+    if (action === 'done') prog.add(ci);
+    else if (action === 'undone') prog.delete(ci);
+    ranch.progress[ri] = [...prog];
+    saveData(data);
+    return;
+  }
+
+  // OCR saved data
+  const orgAttr = table.dataset.org;
+  const idxAttr = table.dataset.idx;
+  if (!orgAttr || idxAttr === undefined) return;
+
+  const store = getOrgDataStore();
+  const item = store[orgAttr] && store[orgAttr][parseInt(idxAttr)];
+  if (!item) return;
+
+  if (!item.doneCells) item.doneCells = item.rows.map(() => []);
+  if (!item.archived) item.archived = item.rows.map(() => []);
+
+  if (action === 'done') {
+    if (!item.doneCells[ri].includes(ci)) item.doneCells[ri].push(ci);
+  } else if (action === 'undone') {
+    item.doneCells[ri] = item.doneCells[ri].filter(c => c !== ci);
+  } else if (action === 'archive') {
+    if (!item.archived[ri].includes(ci)) item.archived[ri].push(ci);
+    item.doneCells[ri] = item.doneCells[ri].filter(c => c !== ci);
+  } else if (action === 'unarchive') {
+    item.archived[ri] = item.archived[ri].filter(c => c !== ci);
+  }
+
+  saveOrgDataStore(store);
+}
+
+function checkOrgDataRowDone(tr) {
+  if (!tr) return;
+  const cells = tr.querySelectorAll('td');
+  let total = 0, done = 0;
+  cells.forEach(td => {
+    if (td.textContent.trim()) { total++; if (td.classList.contains('orgdata-cell-done')) done++; }
+  });
+  if (done >= total && total > 0) tr.classList.add('orgdata-row-done');
+  else tr.classList.remove('orgdata-row-done');
+  if (typeof updateOrgDataStats === 'function') updateOrgDataStats();
+}
+
+function filterOrgDataTable(id, query) {
+  const table = document.getElementById('orgDataTable' + id.charAt(0).toUpperCase() + id.slice(1));
+  if (!table) return;
+  const q = query.toLowerCase().trim();
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    if (!q) { tr.style.display = ''; return; }
+    const text = tr.textContent.toLowerCase();
+    tr.style.display = text.includes(q) ? '' : 'none';
+  });
+}
+
+function toggleOrgDataNav(section) {
+  const list = document.getElementById('orgdataList' + section.charAt(0).toUpperCase() + section.slice(1));
+  const arrow = document.getElementById('orgdataArrow' + section.charAt(0).toUpperCase() + section.slice(1));
+  if (list) list.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open');
+  const isOpen = list?.classList.contains('open');
+  localStorage.setItem('orgdataNav_' + section, isOpen ? 'open' : 'closed');
+}
+
+function toggleOrgDataItem(idx) {
+  const body = document.getElementById('orgDataBody' + idx);
+  if (body) body.classList.toggle('open');
+}
+
+function deleteOrgDataItem(org, idx) {
+  if (!confirm('Delete this saved data?')) return;
+  const store = getOrgDataStore();
+  if (store[org]) { store[org].splice(idx, 1); saveOrgDataStore(store); }
+  renderOrgData();
+}
+
+// ─── OCR Tool ───
+let ocrImage = null; // original Image object
+let ocrCrop = null;  // {x, y, w, h} in image coords
+let ocrCropFrac = null; // {x, y, w, h} as fractions of canvas display size
+let cropDragging = false;
+let cropStart = null;
+
+document.getElementById('ocrDropzone').addEventListener('click', (e) => {
+  // Only trigger file picker if no image loaded yet (clicking empty dropzone)
+  if (!ocrImage) {
+    document.getElementById('ocrFileInput').click();
+  }
+});
+
+document.getElementById('ocrFileInput').addEventListener('change', (e) => {
+  if (e.target.files[0]) loadOCRImage(e.target.files[0]);
+  e.target.value = '';
+});
+
+const dz = document.getElementById('ocrDropzone');
+dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('ocr-dragover'); });
+dz.addEventListener('dragleave', () => { dz.classList.remove('ocr-dragover'); });
+dz.addEventListener('drop', (e) => {
+  e.preventDefault(); dz.classList.remove('ocr-dragover');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadOCRImage(file);
+});
+
+document.addEventListener('paste', (e) => {
+  const activePage = document.querySelector('.page.active');
+  if (!activePage || activePage.id !== 'page-ocr') return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  const items = e.clipboardData.items;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type.startsWith('image/')) {
+      e.preventDefault();
+      loadOCRImage(items[i].getAsFile());
+      return;
+    }
+  }
+});
+
+function loadOCRImage(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      ocrImage = img;
+      ocrCrop = null;
+      document.getElementById('ocrDropContent').style.display = 'none';
+      document.getElementById('ocrCanvasWrap').style.display = 'flex';
+      // Delay to let layout compute before measuring container size
+      requestAnimationFrame(() => { requestAnimationFrame(() => { drawOCRCanvas(); }); });
+      document.getElementById('ocrExtractBtn').disabled = false;
+      document.getElementById('ocrReplaceBtn').style.display = '';
+      document.getElementById('ocrCropHint').style.display = '';
+      document.getElementById('ocrCropBtn').style.display = 'none';
+    document.getElementById('ocrColumnBtn').style.display = 'none';
+    document.getElementById('ocrClearCropBtn').style.display = 'none';
+      document.getElementById('ocrCropSel').style.display = 'none';
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+let ocrZoomScale = 1;
+let ocrPan = { x: 0, y: 0 };
+let ocrBaseScale = 1;
+let ocrPanning = false;
+let ocrPanStart = null;
+let ocrMode = 'crop'; // 'crop' or 'pan'
+
+function drawOCRCanvas() {
+  const canvas = document.getElementById('ocrCanvas');
+  const wrap = document.getElementById('ocrCanvasWrap');
+  const wrapW = wrap.clientWidth || 600;
+  const wrapH = wrap.clientHeight || 400;
+
+  // Draw at full resolution for sharpness
+  canvas.width = ocrImage.width;
+  canvas.height = ocrImage.height;
+
+  // CSS display size fits container
+  ocrBaseScale = Math.min(wrapW / ocrImage.width, wrapH / ocrImage.height);
+  canvas.style.width = Math.round(ocrImage.width * ocrBaseScale) + 'px';
+  canvas.style.height = Math.round(ocrImage.height * ocrBaseScale) + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(ocrImage, 0, 0);
+
+  ocrZoomScale = 1;
+  ocrPan = { x: 0, y: 0 };
+  applyOCRTransform();
+}
+
+function applyOCRTransform() {
+  const canvas = document.getElementById('ocrCanvas');
+  canvas.style.transform = 'scale(' + ocrZoomScale + ') translate(' + ocrPan.x + 'px, ' + ocrPan.y + 'px)';
+  document.getElementById('ocrZoomLevel').textContent = Math.round(ocrZoomScale * 100) + '%';
+  positionCropOverlay();
+}
+
+function positionCropOverlay() {
+  if (!ocrCropFrac) return;
+  const canvas = document.getElementById('ocrCanvas');
+  const wrap = document.getElementById('ocrCanvasWrap');
+  const sel = document.getElementById('ocrCropSel');
+
+  // Use the canvas bounding rect which reflects all transforms
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+
+  const left = canvasRect.left - wrapRect.left + ocrCropFrac.x * canvasRect.width;
+  const top = canvasRect.top - wrapRect.top + ocrCropFrac.y * canvasRect.height;
+  const w = ocrCropFrac.w * canvasRect.width;
+  const h = ocrCropFrac.h * canvasRect.height;
+
+  sel.style.display = 'block';
+  sel.style.left = left + 'px';
+  sel.style.top = top + 'px';
+  sel.style.width = w + 'px';
+  sel.style.height = h + 'px';
+}
+
+function ocrZoom(delta) {
+  ocrZoomScale = Math.max(0.5, Math.min(5, ocrZoomScale + delta));
+  if (ocrZoomScale <= 1) { ocrPan = { x: 0, y: 0 }; }
+  applyOCRTransform();
+}
+
+function ocrZoomReset() {
+  ocrZoomScale = 1;
+  ocrPan = { x: 0, y: 0 };
+  applyOCRTransform();
+}
+
+// Crop selection via mouse on canvas
+const canvasWrap = document.getElementById('ocrCanvasWrap');
+
+function getCanvasMousePos(e) {
+  const canvas = document.getElementById('ocrCanvas');
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top,
+    rect: rect
+  };
+}
+
+// Scroll to zoom
+canvasWrap.addEventListener('wheel', (e) => {
+  if (!ocrImage) return;
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.15 : 0.15;
+  ocrZoom(delta);
+}, { passive: false });
+
+// Left click = crop
+canvasWrap.addEventListener('mousedown', (e) => {
+  if (!ocrImage || e.button !== 0) return;
+  const pos = getCanvasMousePos(e);
+  cropStart = { x: pos.x, y: pos.y };
+  cropDragging = true;
+  ocrCrop = null;
+  ocrCropFrac = null;
+  document.getElementById('ocrCropSel').style.display = 'none';
+  document.getElementById('ocrCropBtn').style.display = 'none';
+    document.getElementById('ocrColumnBtn').style.display = 'none';
+    document.getElementById('ocrClearCropBtn').style.display = 'none';
+});
+
+// Right click = pan
+canvasWrap.addEventListener('mousedown', (e) => {
+  if (!ocrImage || e.button !== 2) return;
+  e.preventDefault();
+  ocrPanning = true;
+  ocrPanStart = { x: e.clientX - ocrPan.x, y: e.clientY - ocrPan.y };
+  canvasWrap.style.cursor = 'grabbing';
+});
+
+// Disable context menu on canvas wrap
+canvasWrap.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+
+document.addEventListener('mousemove', (e) => {
+  // Pan
+  if (ocrPanning && ocrPanStart) {
+    ocrPan.x = e.clientX - ocrPanStart.x;
+    ocrPan.y = e.clientY - ocrPanStart.y;
+    applyOCRTransform();
+    return;
+  }
+
+  // Crop
+  if (!cropDragging || !cropStart) return;
+  const pos = getCanvasMousePos(e);
+  const canvas = document.getElementById('ocrCanvas');
+  const canvasRect = canvas.getBoundingClientRect();
+
+  const x = Math.min(cropStart.x, pos.x);
+  const y = Math.min(cropStart.y, pos.y);
+  const w = Math.abs(pos.x - cropStart.x);
+  const h = Math.abs(pos.y - cropStart.y);
+
+  // Store as fractions of the rendered canvas size
+  ocrCropFrac = { x: x / canvasRect.width, y: y / canvasRect.height, w: w / canvasRect.width, h: h / canvasRect.height };
+  positionCropOverlay();
+});
+
+document.addEventListener('mouseup', (e) => {
+  // Pan end
+  if (ocrPanning) {
+    ocrPanning = false;
+    ocrPanStart = null;
+    canvasWrap.style.cursor = 'crosshair';
+    return;
+  }
+
+  // Crop end
+  if (!cropDragging) return;
+  cropDragging = false;
+  const pos = getCanvasMousePos(e);
+  const canvas = document.getElementById('ocrCanvas');
+
+  const x = Math.min(cropStart.x, pos.x);
+  const y = Math.min(cropStart.y, pos.y);
+  const w = Math.abs(pos.x - cropStart.x);
+  const h = Math.abs(pos.y - cropStart.y);
+
+  if (w > 5 && h > 5) {
+    const canvasRect = canvas.getBoundingClientRect();
+    ocrCropFrac = { x: x / canvasRect.width, y: y / canvasRect.height, w: w / canvasRect.width, h: h / canvasRect.height };
+    positionCropOverlay();
+    const scaleX = ocrImage.width / canvasRect.width;
+    const scaleY = ocrImage.height / canvasRect.height;
+    let cx = Math.round(x * scaleX), cy = Math.round(y * scaleY);
+    let cw = Math.round(w * scaleX), ch = Math.round(h * scaleY);
+    // Clamp to image bounds
+    cx = Math.max(0, cx); cy = Math.max(0, cy);
+    cw = Math.min(cw, ocrImage.width - cx);
+    ch = Math.min(ch, ocrImage.height - cy);
+    ocrCrop = { x: cx, y: cy, w: cw, h: ch };
+    document.getElementById('ocrCropBtn').style.display = '';
+    document.getElementById('ocrColumnBtn').style.display = '';
+    document.getElementById('ocrClearCropBtn').style.display = '';
+  } else {
+    ocrCrop = null;
+    document.getElementById('ocrCropSel').style.display = 'none';
+    document.getElementById('ocrCropBtn').style.display = 'none';
+    document.getElementById('ocrColumnBtn').style.display = 'none';
+    document.getElementById('ocrClearCropBtn').style.display = 'none';
+  }
+  cropStart = null;
+});
+
+function getCroppedImageData() {
+  const c = document.createElement('canvas');
+  c.width = ocrCrop.w;
+  c.height = ocrCrop.h;
+  c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, ocrCrop.h, 0, 0, ocrCrop.w, ocrCrop.h);
+  return c.toDataURL('image/png');
+}
+
+async function runOCR() {
+  if (!ocrImage) return;
+  // Convert full image to data URL
+  const c = document.createElement('canvas');
+  c.width = ocrImage.width; c.height = ocrImage.height;
+  c.getContext('2d').drawImage(ocrImage, 0, 0);
+  await doOCR(c.toDataURL('image/png'));
+}
+
+async function runCroppedOCR() {
+  if (!ocrImage || !ocrCrop) return;
+  await doOCR(getCroppedImageData());
+}
+
+async function runColumnOCR() {
+  if (!ocrImage || !ocrCrop) return;
+  // Same x and width as crop, but from crop top all the way to image bottom
+  const c = document.createElement('canvas');
+  const colH = ocrImage.height - ocrCrop.y;
+  c.width = ocrCrop.w;
+  c.height = colH;
+  c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, colH, 0, 0, ocrCrop.w, colH);
+  await doOCR(c.toDataURL('image/png'));
+}
+
+async function doOCR(imageData) {
+  const progress = document.getElementById('ocrProgress');
+  const fill = document.getElementById('ocrProgressFill');
+  const ptext = document.getElementById('ocrProgressText');
+  const output = document.getElementById('ocrOutput');
+  const copyBtn = document.getElementById('ocrCopyBtn');
+
+  progress.style.display = '';
+  fill.style.width = '0%';
+  ptext.textContent = 'Initializing OCR engine...';
+  output.value = '';
+  copyBtn.style.display = 'none';
+  document.getElementById('ocrExtractBtn').disabled = true;
+
+  try {
+    const result = await Tesseract.recognize(imageData, 'eng', {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          fill.style.width = pct + '%';
+          ptext.textContent = 'Extracting text... ' + pct + '%';
+        } else {
+          ptext.textContent = m.status || 'Processing...';
+        }
+      }
+    });
+    const cleaned = cleanOCRText(result.data.text);
+    // Fix duplicate farm codes: if a crop appears twice under same code, first is likely OE
+    const lines = cleaned.split('\n');
+    const fixedLines = fixDuplicateFarmCodes(lines);
+    // Sort lines alphabetically to match source ordering
+    const sorted = fixedLines.sort((a, b) => a.localeCompare(b)).join('\n');
+    output.value = sorted;
+    renderOCRTable(sorted);
+    fill.style.width = '100%';
+    ptext.textContent = 'Done!';
+    copyBtn.style.display = '';
+    document.getElementById('ocrSaveBtn').style.display = '';
+  } catch (err) {
+    ptext.textContent = 'Error: ' + err.message;
+  }
+  document.getElementById('ocrExtractBtn').disabled = false;
+}
+
+let ocrArchivedCells = new Set(); // "ri-ci" keys
+
+function filterOCRTable(query) {
+  const wrap = document.getElementById('ocrTableWrap');
+  const rows = wrap.querySelectorAll('tbody tr');
+  const q = query.toLowerCase().trim();
+
+  rows.forEach(tr => {
+    if (!q) {
+      tr.classList.remove('ocr-row-hidden');
+      // Remove highlights
+      tr.querySelectorAll('.ocr-highlight').forEach(h => {
+        h.replaceWith(document.createTextNode(h.textContent));
+      });
+      return;
+    }
+
+    const cells = tr.querySelectorAll('td');
+    let match = false;
+    cells.forEach(td => {
+      const text = td.textContent;
+      // Remove old highlights
+      td.querySelectorAll('.ocr-highlight').forEach(h => {
+        h.replaceWith(document.createTextNode(h.textContent));
+      });
+      td.normalize();
+
+      if (text.toLowerCase().includes(q)) {
+        match = true;
+        // Add highlight
+        const regex = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+        td.innerHTML = td.textContent.replace(regex, '<span class="ocr-highlight">$1</span>');
+        // Re-append badge if it was there
+      }
+    });
+    tr.classList.toggle('ocr-row-hidden', !match);
+  });
+}
+
+function archiveOCRCell(ri, ci) {
+  const key = ri + '-' + ci;
+  ocrArchivedCells.add(key);
+  const wrap = document.getElementById('ocrTableWrap');
+  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-ci="' + ci + '"]');
+  if (td) {
+    td.classList.add('ocr-cell-archived');
+    td.classList.remove('ocr-cell-done', 'ocr-cell-clicked');
+  }
+}
+
+function unarchiveOCRCell(ri, ci) {
+  const key = ri + '-' + ci;
+  ocrArchivedCells.delete(key);
+  const wrap = document.getElementById('ocrTableWrap');
+  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-ci="' + ci + '"]');
+  if (td) td.classList.remove('ocr-cell-archived');
+}
+
+function switchOCRTab(tab) {
+  document.querySelectorAll('.ocr-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.ocr-tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector('.ocr-tab[onclick*="' + tab + '"]').classList.add('active');
+  document.getElementById(tab === 'table' ? 'ocrTabTable' : 'ocrTabRaw').classList.add('active');
+}
+
+function parseOCRToTable(text) {
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return { headers: [], rows: [] };
+
+  // Detect columns: split each line by 2+ spaces or tabs
+  const parsed = lines.map(line => line.split(/\t|\s{2,}/).map(c => c.trim()).filter(c => c));
+
+  // Find the most common column count
+  const colCounts = {};
+  parsed.forEach(row => { colCounts[row.length] = (colCounts[row.length] || 0) + 1; });
+  const mostCommon = Object.entries(colCounts).sort((a, b) => b[1] - a[1])[0];
+  const expectedCols = parseInt(mostCommon[0]);
+
+  if (expectedCols <= 1) {
+    // Single column — just use line text
+    return { headers: ['Text'], rows: parsed.map(r => [r.join(' ')]) };
+  }
+
+  // Check if first row looks like headers (contains mostly text, not numbers)
+  const firstRow = parsed[0];
+  const isHeader = firstRow.length === expectedCols &&
+    firstRow.filter(c => /^[a-zA-Z\s]+$/.test(c)).length >= firstRow.length * 0.5;
+
+  let headers, dataRows;
+  if (isHeader) {
+    headers = firstRow;
+    dataRows = parsed.slice(1).filter(r => r.length >= expectedCols - 1);
+  } else {
+    headers = Array.from({ length: expectedCols }, (_, i) => 'Col ' + (i + 1));
+    dataRows = parsed.filter(r => r.length >= expectedCols - 1);
+  }
+
+  // Pad short rows
+  dataRows = dataRows.map(r => {
+    while (r.length < headers.length) r.push('');
+    return r.slice(0, headers.length);
+  });
+
+  return { headers, rows: dataRows };
+}
+
+let ocrTableDone = {};
+
+function renderOCRTable(text) {
+  const wrap = document.getElementById('ocrTableWrap');
+  const { headers, rows } = parseOCRToTable(text);
+  ocrTableDone = {};
+
+  if (rows.length === 0) {
+    wrap.innerHTML = '<p class="ocr-placeholder">No table data detected.</p>';
+    return;
+  }
+
+  let html = '<table><thead><tr>';
+  headers.forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
+  html += '</tr></thead><tbody>';
+
+  rows.forEach((row, ri) => {
+    ocrTableDone[ri] = new Set();
+    html += '<tr data-ri="' + ri + '">';
+    row.forEach((cell, ci) => {
+      html += '<td data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  // Add click-to-copy and right-click archive handlers
+  ocrArchivedCells = new Set();
+  wrap.querySelectorAll('td').forEach(td => {
+    let clickCount = 0;
+    td.addEventListener('click', () => {
+      const ri = parseInt(td.dataset.ri);
+      const ci = parseInt(td.dataset.ci);
+      if (ocrArchivedCells.has(ri + '-' + ci)) return;
+      const cell = td.textContent;
+      if (!cell.trim()) return;
+      clickCount++;
+      if (clickCount === 1) {
+        setTimeout(() => {
+          if (clickCount === 1) {
+            navigator.clipboard.writeText(cell).then(() => {
+              const prev = wrap.querySelector('.ocr-cell-clicked');
+              if (prev) prev.classList.remove('ocr-cell-clicked');
+              td.classList.add('ocr-cell-done');
+              td.classList.add('ocr-cell-clicked');
+              ocrTableDone[ri].add(ci);
+              checkOCRRowDone(ri, rows[ri].length);
+            });
+          } else {
+            td.classList.remove('ocr-cell-done');
+            td.classList.remove('ocr-cell-clicked');
+            ocrTableDone[ri].delete(ci);
+            checkOCRRowDone(ri, rows[ri].length);
+          }
+          clickCount = 0;
+        }, 200);
+      }
+    });
+
+    // Right-click context menu
+    td.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const ri = parseInt(td.dataset.ri);
+      const ci = parseInt(td.dataset.ci);
+      const key = ri + '-' + ci;
+      const isArchived = ocrArchivedCells.has(key);
+      const menu = document.getElementById('ctxMenu');
+      menu.innerHTML = isArchived
+        ? '<div data-action="unarchive">Restore Cell</div>'
+        : '<div data-action="archive">Archive Cell</div>';
+      menu.style.display = 'block';
+      menu.style.left = e.clientX + 'px';
+      menu.style.top = e.clientY + 'px';
+      menu.onclick = (ev) => {
+        const action = ev.target.dataset.action;
+        menu.style.display = 'none';
+        if (action === 'archive') archiveOCRCell(ri, ci);
+        else if (action === 'unarchive') unarchiveOCRCell(ri, ci);
+      };
+    });
+  });
+}
+
+function checkOCRRowDone(ri, totalCols) {
+  const wrap = document.getElementById('ocrTableWrap');
+  const tr = wrap.querySelector('tr[data-ri="' + ri + '"]');
+  if (!tr) return;
+  const doneCols = ocrTableDone[ri] ? ocrTableDone[ri].size : 0;
+  const nonEmpty = tr.querySelectorAll('td').length;
+  let emptyCount = 0;
+  tr.querySelectorAll('td').forEach(td => { if (!td.textContent.trim()) emptyCount++; });
+  const needed = nonEmpty - emptyCount;
+
+  if (doneCols >= needed && needed > 0) {
+    tr.classList.add('ocr-row-done');
+    if (!tr.querySelector('.ocr-badge')) {
+      const firstTd = tr.querySelector('td');
+      const badge = document.createElement('span');
+      badge.className = 'ocr-badge';
+      badge.textContent = '\u2713 Done';
+      firstTd.appendChild(badge);
+    }
+  } else {
+    tr.classList.remove('ocr-row-done');
+    const badge = tr.querySelector('.ocr-badge');
+    if (badge) badge.remove();
+  }
+}
+
+function fixDuplicateFarmCodes(lines) {
+  // Detect duplicate crop entries under the same farm code
+  // If "OF Broccoli" appears twice, the first occurrence should be "OE Broccoli"
+  // This handles OCR misreading OE as OF
+  const codePattern = /^(.+\s)([A-Z]{2})(\s.+)$/;
+  const seen = {}; // "CODE CROP" -> array of line indices
+
+  lines.forEach((line, i) => {
+    const m = line.match(codePattern);
+    if (m) {
+      const key = m[2] + m[3]; // e.g. "OF Broccoli"
+      if (!seen[key]) seen[key] = [];
+      seen[key].push(i);
+    }
+  });
+
+  // For any duplicates under OF, change the first occurrence to OE
+  Object.keys(seen).forEach(key => {
+    if (seen[key].length > 1 && key.startsWith('OF')) {
+      const firstIdx = seen[key][0];
+      const m = lines[firstIdx].match(codePattern);
+      if (m) {
+        lines[firstIdx] = m[1] + 'OE' + m[3];
+      }
+    }
+  });
+
+  return lines;
+}
+
+function cleanOCRText(raw) {
+  return raw
+    .split('\n')
+    .map(line => {
+      let l = line.trim();
+      // Remove lines that are only symbols/punctuation/noise
+      if (!/[a-zA-Z0-9]/.test(l)) return null;
+      // Remove lines that are very short and look like artifacts
+      if (l.length <= 2 && !/^\d+$/.test(l)) return null;
+      // Remove lines that are mostly non-alphanumeric junk
+      const alphaNum = l.replace(/[^a-zA-Z0-9\s]/g, '').length;
+      if (l.length > 3 && alphaNum / l.length < 0.3) return null;
+
+      // Fix common OCR misreads
+      // "!" -> "l"
+      l = l.replace(/!/g, 'l');
+
+      // "8" -> "B" in 2-letter farm codes (e.g. "8F" -> "BF", "A8" -> "AB")
+      l = l.replace(/\b8([A-Z])\b/g, 'B$1');
+      l = l.replace(/\b([A-Z])8\b/g, '$1B');
+      // "8" -> "B" at start of word before lowercase (e.g. "8ok" -> "Bok")
+      l = l.replace(/\b8([a-z])/g, 'B$1');
+      // "80" before space+letter -> "BO" (e.g. "80 G" -> "BO G")
+      l = l.replace(/\b80\b(?=\s+[A-Z])/g, 'BO');
+      // "806" -> "BO G" (80->BO, 6->G misread)
+      l = l.replace(/\b806\b/g, 'BO G');
+      // "0" -> "O" when between uppercase letters
+      l = l.replace(/([A-Z])0([A-Z])/g, '$1O$2');
+
+      // "£5" -> "ES" (common OCR misread)
+      l = l.replace(/£5/g, 'ES');
+      // "SF" -> "BF" when it's a farm code
+      l = l.replace(/\bSF\b(?=\s)/g, 'BF');
+      // "AS" -> "AB" when it's a farm code before a crop
+      l = l.replace(/\bAS\b(?=\s+[A-Z])/g, 'AB');
+      // "OE" is a valid farm code — do not replace
+      // "Re" -> "RE" (case fix)
+      l = l.replace(/\bRe\b(?=\s)/g, 'RE');
+
+      // Fix "Brea " -> "Break " (truncated)
+      l = l.replace(/\bBrea\b/g, 'Break');
+      // Fix "reac" -> "Break" (garbled)
+      l = l.replace(/\breac\b/gi, 'Break');
+      // Fix "(NP)" -> "(NPT)" (missing T)
+      l = l.replace(/\(NP\)/g, '(NPT)');
+      // Fix "(NPT " -> "(NPT) " (missing closing paren)
+      l = l.replace(/\(NPT(?=\s)/g, '(NPT)');
+      // Fix missing "5" in "min" pattern: "min £5" already handled, but "5 min" without 5
+      l = l.replace(/\)\s*min\b/g, ') 5 min');
+
+      // Fix Sroccoll/Sroccoli -> Broccoli
+      l = l.replace(/\bSroccol[il]?\b/gi, 'Broccoli');
+      // Fix all Cauliflower misspellings
+      l = l.replace(/\bC[ao]u[il]?[il]?f[il]?[io]?w?e?r?\b/gi, function(m) {
+        // Only replace if it looks like a cauliflower misspelling (starts with Ca/Co, has f)
+        if (/^C[ao]u/i.test(m) && /f/i.test(m)) return 'Cauliflower';
+        return m;
+      });
+      // Fix remaining specific Cauliflower misspellings
+      l = l.replace(/\bCavifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCouifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCoufower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauliower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauifiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauiifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauiffiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfover\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulifiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCouiffoner\b/gi, 'Cauliflower');
+      // Fix Broccoli misspellings
+      l = l.replace(/\bBroccol\b/g, 'Broccoli');
+      l = l.replace(/\bBrocco\b/g, 'Broccoli');
+      // Fix Cilantro misspellings
+      l = l.replace(/\bCllantro\b/gi, 'Cilantro');
+      // Fix Cabbage misspellings
+      l = l.replace(/\bCaboage\b/gi, 'Cabbage');
+      // Fix Irrigation misspellings
+      l = l.replace(/\b[Il]igation\b/gi, 'Irrigation');
+      l = l.replace(/\b[Il]rigation\b/gi, 'Irrigation');
+      l = l.replace(/\blrigation\b/gi, 'Irrigation');
+      l = l.replace(/\bmigation\b/gi, 'Irrigation');
+      // Fix WETH -> WE/TH
+      l = l.replace(/\bWETH\b/g, 'WE/TH');
+
+      // Remove junk lines (random garbled words)
+      if (/^[A-Z]{3,6}$/.test(l) && !/^(NPT|WE|TH)$/.test(l)) return null;
+
+      // Remove periods (OCR artifact)
+      l = l.replace(/\./g, '');
+      // Remove semicolons (OCR artifact)
+      l = l.replace(/;/g, '');
+      // Remove colons at end of line
+      l = l.replace(/:$/g, '');
+      l = l.replace(/^:|:$/g, '');
+
+      // Remove standalone numbers (page numbers, UI artifacts)
+      if (/^\d{1,3}$/.test(l)) return null;
+
+      // Clean up multiple spaces
+      l = l.replace(/\s{2,}/g, ' ');
+      // Remove isolated single special chars surrounded by spaces
+      l = l.replace(/\s[^\w\s\/]\s/g, ' ').trim();
+      return l;
+    })
+    .filter(line => line !== null && line.length > 0)
+    .join('\n');
+}
+
+function copyOCRText() {
+  const output = document.getElementById('ocrOutput');
+  navigator.clipboard.writeText(output.value).then(() => {
+    const btn = document.getElementById('ocrCopyBtn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy All'; }, 1500);
+  });
+}
+
+function clearCrop() {
+  ocrCrop = null;
+  ocrCropFrac = null;
+  document.getElementById('ocrCropSel').style.display = 'none';
+  document.getElementById('ocrCropBtn').style.display = 'none';
+  document.getElementById('ocrColumnBtn').style.display = 'none';
+  document.getElementById('ocrClearCropBtn').style.display = 'none';
+}
+
+function clearOCR() {
+  ocrImage = null; ocrCrop = null; ocrCropFrac = null;
+  document.getElementById('ocrCanvasWrap').style.display = 'none';
+  document.getElementById('ocrCropSel').style.display = 'none';
+  document.getElementById('ocrDropContent').style.display = '';
+  document.getElementById('ocrExtractBtn').disabled = true;
+  document.getElementById('ocrReplaceBtn').style.display = 'none';
+  document.getElementById('ocrCropBtn').style.display = 'none';
+    document.getElementById('ocrColumnBtn').style.display = 'none';
+    document.getElementById('ocrClearCropBtn').style.display = 'none';
+  document.getElementById('ocrCropHint').style.display = 'none';
+  document.getElementById('ocrProgress').style.display = 'none';
+  document.getElementById('ocrOutput').value = '';
+  document.getElementById('ocrCopyBtn').style.display = 'none';
+  document.getElementById('ocrSaveBtn').style.display = 'none';
+  document.getElementById('ocrTableWrap').innerHTML = '<p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>';
+  ocrTableDone = {};
+}
+</script>
+</body>
+</html>
