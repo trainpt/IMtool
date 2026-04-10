@@ -6,6 +6,8 @@ const TRK_FLAGS    = "dpt_flags_v1";
 const TRK_NOTES    = "dpt_notes_v1";
 const TRK_BACKUP   = "dpt_backup_v1";
 const TRK_SHEETS   = "dpt_sheets_v2";
+const TRK_SHEETS_FULL = "dpt_sheets_full_v1";
+const TRK_ACTIVE   = "dpt_active_v1";
 
 let trkStorageOk = true;
 function sGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch(e) { trkStorageOk = false; return null; } }
@@ -75,18 +77,83 @@ function trkSave() { sSet(TRK_STORAGE, trkTouched); sSet(TRK_FLAGS, trkFlags); s
 function trkBackup() { sSet(TRK_BACKUP, { touched: trkTouched, flags: trkFlags, notes: trkNotes, time: Date.now() }); }
 function trkSaveSheetsMeta() {
   const meta = {};
+  const full = {};
   Object.keys(trkSheets).forEach(k => {
     const s = trkSheets[k];
-    meta[k] = { name: s.name, colOrder: s.colOrder, hiddenCols: [...(s.hiddenCols || [])], colWidths: s.colWidths || {}, rids: trkGetRids(s.rows || []) };
+    const hidden = s.hiddenCols instanceof Set ? [...s.hiddenCols] : [...(s.hiddenCols || [])];
+    const rids = trkGetRids(s.rows || []);
+    meta[k] = { name: s.name, colOrder: s.colOrder, hiddenCols: hidden, colWidths: s.colWidths || {}, rids };
+    full[k] = {
+      name: s.name,
+      headers: s.headers,
+      rows: s.rows,
+      rids,
+      colOrder: s.colOrder,
+      hiddenCols: hidden,
+      colWidths: s.colWidths || {},
+      orgName: s.orgName || ''
+    };
   });
   sSet(TRK_SHEETS, meta);
+  sSet(TRK_SHEETS_FULL, full);
+  if (trkActiveSheet) sSet(TRK_ACTIVE, trkActiveSheet);
+}
+
+function trkRestoreFromLocal() {
+  const full = sGet(TRK_SHEETS_FULL);
+  if (!full || typeof full !== 'object') return false;
+  const keys = Object.keys(full);
+  if (keys.length === 0) return false;
+
+  // Raw restore only. trkTouched/trkFlags/trkNotes are already loaded from
+  // localStorage at module init and are the freshest source of progress truth —
+  // do NOT merge from the session store here (it may hold older values that
+  // would overwrite more recent marks).
+  keys.forEach(k => {
+    const s = full[k];
+    if (!s || !Array.isArray(s.headers) || !Array.isArray(s.rows)) return;
+    const rows = s.rows.map(r => Array.isArray(r) ? r.slice() : r);
+    trkTagRows(rows, s.rids);
+    trkSheets[k] = {
+      name: s.name,
+      headers: s.headers,
+      rows: rows,
+      colOrder: s.colOrder || s.headers.map((_, i) => i),
+      hiddenCols: new Set(s.hiddenCols || []),
+      colWidths: s.colWidths || {},
+      orgName: s.orgName || ''
+    };
+  });
+
+  const savedActive = sGet(TRK_ACTIVE);
+  const activeKey = (savedActive && trkSheets[savedActive]) ? savedActive : Object.keys(trkSheets)[0];
+  if (activeKey) {
+    trkSwitchToSheet(activeKey);
+    return true;
+  }
+  return false;
 }
 function makeSheetKey(name) { return 'sheet_' + String(name).trim().replace(/[^a-zA-Z0-9]/g, '_').toLowerCase(); }
+
+// Remove any stale progress entries (touched/flags/notes) keyed to `sheetKey`.
+// Used when a fresh load is happening — prevents old marks from a previous
+// sheet with the same key from auto-striking the new data.
+function trkPurgeSheetProgress(sheetKey) {
+  if (!sheetKey) return;
+  const prefix = `trk-${sheetKey}-`;
+  Object.keys(trkTouched).forEach(k => { if (k.startsWith(prefix)) delete trkTouched[k]; });
+  Object.keys(trkFlags).forEach(k => { if (k.startsWith(prefix)) delete trkFlags[k]; });
+  Object.keys(trkNotes).forEach(k => { if (k.startsWith(prefix)) delete trkNotes[k]; });
+}
 
 // Assign stable IDs to rows so progress follows them through sorts
 function trkTagRows(rows, savedRids) {
   rows.forEach((r, i) => {
-    if (r._rid === undefined) r._rid = savedRids ? (savedRids[i] !== undefined ? savedRids[i] : i) : i;
+    if (savedRids && savedRids[i] !== undefined) {
+      r._rid = savedRids[i];
+    } else if (r._rid === undefined) {
+      r._rid = i;
+    }
   });
   return rows;
 }
@@ -603,19 +670,115 @@ function trkRenderSheetTabs() {
     tab.appendChild(label); tab.appendChild(mini); tab.appendChild(close); bar.appendChild(tab);
   });
   const addBtn = document.createElement('div'); addBtn.className = 'trk-sheet-tab trk-sheet-tab-add';
-  addBtn.textContent = '+ Add Sheet'; addBtn.title = 'Load another sheet';
-  addBtn.onclick = () => {
-    $('trk-main').style.display = 'none'; $('trk-setup').style.display = '';
-    trkPopulateSavedSessions();
-    // Pre-fill org from currently loaded sheets
-    const currentOrg = Object.values(trkSheets).find(s => s.orgName)?.orgName || '';
-    if (currentOrg) {
-      const orgSel = $('trk-save-org');
-      if (orgSel) orgSel.value = currentOrg;
-    }
-  };
+  addBtn.textContent = '+ Add Sheet'; addBtn.title = 'Add another sheet to this org';
+  addBtn.onclick = () => trkOpenQuickAdd();
   bar.appendChild(addBtn);
 }
+
+// ══════════════════════════════════════════
+// ── Quick Add Sheet modal ──
+// ══════════════════════════════════════════
+function trkCurrentOrg() {
+  return Object.values(trkSheets).find(s => s.orgName)?.orgName || '';
+}
+
+function trkOpenQuickAdd() {
+  const org = trkCurrentOrg();
+  const overlay = $('trk-quickadd-overlay');
+  if (!overlay) return;
+  $('trk-quickadd-org').textContent = org ? '→ ' + org : '';
+  trkRenderQuickAddList();
+  $('trk-quickadd-file').value = '';
+  overlay.classList.add('show');
+}
+
+function trkCloseQuickAdd() {
+  const overlay = $('trk-quickadd-overlay');
+  if (overlay) overlay.classList.remove('show');
+}
+
+function trkRenderQuickAddList() {
+  const list = $('trk-quickadd-list');
+  if (!list) return;
+  const names = typeof getSheetNames === 'function' ? getSheetNames() : [];
+  if (names.length === 0) {
+    list.innerHTML = '<div class="trk-saved-empty">No imported sheets available. Use Import in the top bar or upload below.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  names.forEach(n => {
+    const sheet = typeof getSheet === 'function' ? getSheet(n) : null;
+    const key = makeSheetKey(n);
+    const alreadyLoaded = !!trkSheets[key];
+    const item = document.createElement('div');
+    item.className = 'trk-saved-item';
+    item.style.cursor = alreadyLoaded ? 'default' : 'pointer';
+    item.style.opacity = alreadyLoaded ? '0.5' : '1';
+    item.innerHTML =
+      '<span class="trk-saved-item-name">' + esc(n) + '</span>' +
+      '<span class="trk-saved-item-meta">' + (sheet ? sheet.rowCount + ' rows' : '') + '</span>' +
+      (alreadyLoaded ? '<span class="trk-saved-item-pct">Already added</span>' : '<span class="trk-saved-item-pct" style="background:var(--accent-soft);color:var(--accent);">Add</span>');
+    if (!alreadyLoaded && sheet) {
+      item.addEventListener('click', () => {
+        // Route through the exact same entry point the full setup uses.
+        trkCloseQuickAdd();
+        trkGotoSetupWithOrg();
+        if (typeof window.trkLoadSheetData === 'function') {
+          window.trkLoadSheetData(sheet.headers, sheet.rows, n);
+        }
+      });
+    }
+    list.appendChild(item);
+  });
+}
+
+// Switch the tracker to the setup screen and prefill the current org so the
+// user lands on the same staging flow as a normal manual load.
+function trkGotoSetupWithOrg() {
+  $('trk-main').style.display = 'none';
+  $('trk-setup').style.display = '';
+  trkPopulateSavedSessions();
+  const org = trkCurrentOrg();
+  if (org) {
+    const orgSel = $('trk-save-org');
+    if (orgSel) orgSel.value = org;
+    const newOrgInput = $('trk-save-new-org');
+    if (newOrgInput) newOrgInput.value = '';
+  }
+}
+
+// Wire up buttons once
+(function trkBindQuickAdd() {
+  const overlay = document.getElementById('trk-quickadd-overlay');
+  if (!overlay) return;
+  const closeBtn = document.getElementById('trk-quickadd-close');
+  if (closeBtn) closeBtn.addEventListener('click', trkCloseQuickAdd);
+  overlay.addEventListener('click', e => { if (e.target === overlay) trkCloseQuickAdd(); });
+
+  const fileInput = document.getElementById('trk-quickadd-file');
+  if (fileInput) {
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      // Hand off to the existing file pipeline — identical parsing, preview,
+      // blank-column detection, etc. Org is prefilled by trkGotoSetupWithOrg().
+      trkCloseQuickAdd();
+      trkGotoSetupWithOrg();
+      $('trk-file-name').textContent = file.name;
+      const sheetName = file.name.replace(/\.\w+$/, '');
+      trkReadFile(file, sheetName);
+      e.target.value = '';
+    });
+  }
+
+  const advBtn = document.getElementById('trk-quickadd-advanced');
+  if (advBtn) {
+    advBtn.addEventListener('click', () => {
+      trkCloseQuickAdd();
+      trkGotoSetupWithOrg();
+    });
+  }
+})();
 
 function trkSheetProgress(key) {
   const sheet = trkSheets[key]; if (!sheet) return { done: 0, total: 0 };
@@ -714,9 +877,15 @@ $('trk-btn-build').addEventListener('click', () => {
   if (trkStagedMulti && trkStagedMulti.length > 0) {
     // If only 1 sheet staged, use the renamed name from the input field
     const userRename = ($('trk-staging-name').value || '').trim();
+    const existingSessionKeys = new Set(
+      orgName ? trkLoadSession(orgName).map(s => s.key) : []
+    );
     trkStagedMulti.forEach((sh, idx) => {
       const sheetName = (trkStagedMulti.length === 1 && userRename) ? userRename : sh.name;
       const key = makeSheetKey(sheetName);
+      // Fresh load → wipe any stale progress tied to this key unless there's
+      // an existing saved session we want to preserve.
+      if (!existingSessionKeys.has(key)) trkPurgeSheetProgress(key);
       const savedMeta = sGet(TRK_SHEETS) || {};
       const saved = savedMeta[key];
       const colOrder = saved?.colOrder?.length === sh.headers.length ? saved.colOrder : sh.headers.map((_, i) => i);
@@ -743,12 +912,17 @@ $('trk-btn-build').addEventListener('click', () => {
   }
 
   // Before adding, load any existing saved sheets for this org that aren't already loaded
+  const existingSessions = orgName ? trkLoadSession(orgName) : [];
   if (orgName) {
-    const existingSessions = trkLoadSession(orgName);
     existingSessions.forEach(s => {
       if (!trkSheets[s.key]) trkRestoreSession(orgName, s, true);
     });
   }
+
+  // Fresh load → wipe stale progress tied to this key unless there's a saved
+  // session for it we want to preserve.
+  const hasSavedSession = existingSessions.some(s => s.key === key);
+  if (!hasSavedSession) trkPurgeSheetProgress(key);
 
   trkSheets[key] = { name, headers: trkStagingHeaders, rows: trkTagRows(trkStagingRows.map(r => r.map(c => String(c)))), colOrder: [...trkStagingColOrder], hiddenCols: hidden, colWidths: {}, orgName };
   // Ensure all loaded sheets share the same org
@@ -762,7 +936,9 @@ $('trk-btn-build').addEventListener('click', () => {
 });
 
 $('trk-btn-back').addEventListener('click', () => {
-  if (Object.keys(trkSheets).length > 0 && trkActiveSheet) { $('trk-setup').style.display = 'none'; $('trk-main').style.display = 'flex'; }
+  $('trk-main').style.display = 'none';
+  $('trk-setup').style.display = '';
+  if (typeof trkInit === 'function') trkInit();
 });
 
 // ══════════════════════════════════════════
@@ -1983,6 +2159,35 @@ window.trkLoadSheetData = function(headers, rows, name) {
   $('trk-setup').style.display = ''; $('trk-main').style.display = 'none';
 };
 
-window.trkInit = function() { trkPopulateSavedSessions(); };
+let trkRestored = false;
+window.trkInit = function() {
+  trkPopulateSavedSessions();
+  if (!trkRestored && Object.keys(trkSheets).length === 0) {
+    trkRestored = true;
+    trkRestoreFromLocal();
+  }
+};
+
+// Debug exposure — safe to leave on; lets you inspect state via DevTools console.
+window.trkDebug = {
+  get touched() { return trkTouched; },
+  get flags() { return trkFlags; },
+  get notes() { return trkNotes; },
+  get sheets() { return trkSheets; },
+  get activeSheet() { return trkActiveSheet; },
+  auditRows() {
+    const out = [];
+    document.querySelectorAll('#trk-tbody tr').forEach((tr, i) => {
+      const tds = tr.querySelectorAll('td[data-uid]');
+      if (tds.length === 0) return;
+      const doneCount = Array.from(tds).filter(td => trkTouched[td.dataset.uid] === true).length;
+      const rowDone = tr.classList.contains('trk-row-done');
+      const btn = tr.querySelector('.trk-row-btn');
+      const btnDone = btn ? btn.classList.contains('done') : null;
+      out.push({ row: i + 1, total: tds.length, doneCount, rowDone, btnDone, btnPresent: !!btn });
+    });
+    return out;
+  }
+};
 
 })();
