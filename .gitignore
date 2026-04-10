@@ -1,0 +1,25 @@
+# Backup files
+backup/
+
+# Saved progress/screenshots
+Saved Progress/
+Screenshots/
+
+# Planning docs
+REWRITE-PLAN.md
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
