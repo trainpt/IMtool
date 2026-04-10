@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IM Tools</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
 
@@ -376,32 +376,47 @@
       <!-- Main tracker view -->
       <div id="trk-main" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
         <div class="page-toolbar">
-          <span class="breadcrumb" id="trk-breadcrumb">Data Progress Tracker</span>
-          <span id="trk-eta" class="small" style="margin-left:8px;"></span>
-          <div class="rv-search-wrap">
-            <input type="text" id="trk-search" class="input-field" placeholder="Search..." style="width:180px;">
+          <div class="toolbar-left">
+            <span class="breadcrumb" id="trk-breadcrumb">Data Progress Tracker</span>
+            <span id="trk-eta" class="small text-muted"></span>
           </div>
-          <button class="btn btn-ghost btn-sm" id="trk-btn-undo" title="Undo last edit" style="display:none;">&#8630; Undo</button>
-          <span id="trk-sel-info" class="trk-sel-info" style="display:none;"></span>
-          <span id="trk-sel-actions" style="display:none;">
-            <button class="btn btn-success btn-sm" id="trk-sel-done" title="Mark selected as done">&#10003; Done</button>
-            <button class="btn btn-ghost btn-sm" id="trk-sel-undone" title="Mark selected as not done">Undone</button>
-            <button class="btn btn-ghost btn-sm" id="trk-sel-flag" title="Flag selected red">&#128308; Flag</button>
-            <button class="btn btn-ghost btn-sm" id="trk-sel-note" title="Add note to selected">&#128221; Note</button>
-            <button class="btn btn-ghost btn-sm" id="trk-sel-edit" title="Edit selected cell values">&#9998; Edit</button>
-          </span>
-          <label class="btn btn-ghost btn-sm" id="trk-btn-import-done" title="Import done list CSV">&#10003; Import Done<input type="file" id="trk-import-done-file" accept=".csv,.xlsx,.xls" hidden></label>
-          <button class="btn btn-ghost btn-sm" id="trk-btn-save" title="Save session">&#128190; Save</button>
-          <button class="btn btn-ghost btn-sm" id="trk-btn-bulkedit" title="Find &amp; Replace / Bulk Edit">&#9998; Bulk Edit</button>
-          <select id="trk-filter-done" class="input-field" style="width:auto;font-size:11px;padding:3px 6px;" title="Filter rows">
-            <option value="all">All rows</option>
-            <option value="done">Done only</option>
-            <option value="notdone">Not done only</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" id="trk-btn-download" title="Download current sheet as CSV">&#8615; Download</button>
-          <button class="btn btn-ghost btn-sm" id="trk-btn-autofit" title="Fit all columns to screen">&#8596; Fit Cols</button>
-          <button class="btn btn-ghost" id="trk-btn-back">Back to Setup</button>
-          <button class="btn btn-warning btn-sm" id="trk-btn-reset">Reset Progress</button>
+          <div class="toolbar-right">
+            <div class="toolbar-group">
+              <div class="search-input">
+                <input type="text" id="trk-search" class="input-field" placeholder="Search...">
+              </div>
+              <select id="trk-filter-done" class="input-field input-sm" title="Filter rows">
+                <option value="all">All rows</option>
+                <option value="done">Done only</option>
+                <option value="notdone">Not done only</option>
+              </select>
+            </div>
+            <span id="trk-sel-info" class="trk-sel-info" style="display:none;"></span>
+            <span id="trk-sel-actions" class="toolbar-group" style="display:none;">
+              <button class="btn btn-success btn-sm" id="trk-sel-done" title="Mark selected as done">&#10003; Done</button>
+              <button class="btn btn-ghost btn-sm" id="trk-sel-undone" title="Mark selected as not done">Undone</button>
+              <button class="btn btn-ghost btn-sm" id="trk-sel-flag" title="Flag selected red">&#128308; Flag</button>
+              <button class="btn btn-ghost btn-sm" id="trk-sel-note" title="Add note to selected">&#128221; Note</button>
+              <button class="btn btn-ghost btn-sm" id="trk-sel-edit" title="Edit selected cell values">&#9998; Edit</button>
+            </span>
+            <button class="btn btn-ghost btn-sm" id="trk-btn-undo" title="Undo last edit" style="display:none;">&#8630; Undo</button>
+            <span class="toolbar-sep"></span>
+            <div class="toolbar-group">
+              <button class="btn btn-ghost btn-sm" id="trk-btn-bulkedit" title="Find &amp; Replace / Bulk Edit">&#9998; Bulk Edit</button>
+              <label class="btn btn-ghost btn-sm" id="trk-btn-import-done" title="Import done list CSV">&#8615; Import Done<input type="file" id="trk-import-done-file" accept=".csv,.xlsx,.xls" hidden></label>
+              <button class="btn btn-ghost btn-sm" id="trk-btn-download" title="Download current sheet as CSV">&#8615; Export</button>
+            </div>
+            <span class="toolbar-sep"></span>
+            <div class="toolbar-group">
+              <button class="btn btn-ghost btn-sm btn-icon" id="trk-btn-autofit" title="Fit columns to screen" aria-label="Fit columns">&#8596;</button>
+              <button class="btn btn-primary btn-sm" id="trk-btn-save" title="Save session">&#128190; Save</button>
+            </div>
+            <span class="toolbar-sep"></span>
+            <div class="toolbar-group">
+              <button class="btn btn-ghost btn-sm" id="trk-btn-back" title="Back to Setup">&#8592; Setup</button>
+              <button class="btn btn-danger btn-sm" id="trk-btn-reset" title="Reset all progress">Reset</button>
+            </div>
+          </div>
         </div>
         <div id="trk-hidden-cols" class="trk-hidden-cols" style="display:none;"></div>
         <div class="rv-progress-wrap">
@@ -531,6 +546,22 @@
         </div>
       </div>
       <div id="trk-tooltip" style="display:none;position:fixed;z-index:300;background:#fffbe6;border:1px solid #e5c518;border-radius:4px;padding:4px 8px;font-size:11px;max-width:260px;pointer-events:none;"></div>
+
+      <!-- Quick Add Sheet Modal -->
+      <div id="trk-quickadd-overlay" class="modal-overlay">
+        <div class="modal modal-md">
+          <h3>Add Sheet <span id="trk-quickadd-org" class="text-muted" style="font-weight:500;font-size:13px;"></span></h3>
+          <p>Pick an imported sheet or upload a file — it will be added to the current org and opened as a new tab.</p>
+          <label class="panel-label">From Imported Data</label>
+          <div id="trk-quickadd-list" class="trk-saved-list" style="max-height:220px;overflow:auto;margin-bottom:12px;"></div>
+          <label class="panel-label">Or Upload a File</label>
+          <input type="file" id="trk-quickadd-file" accept=".xlsx,.xls,.csv" class="input-file">
+          <div class="modal-actions">
+            <button class="btn btn-ghost" id="trk-quickadd-advanced">Advanced Setup…</button>
+            <button class="btn btn-ghost" id="trk-quickadd-close">Cancel</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ─── Page: Sheet Preview ─── -->
@@ -658,6 +689,7 @@ function switchPage(pageName) {
   const tab = document.querySelector('.topbar-tab[data-page="' + pageName + '"]');
   if (page) page.classList.add('active');
   if (tab) tab.classList.add('active');
+  try { localStorage.setItem('imtool_activePage', pageName); } catch (e) {}
 
   // Build sidebar content per tool
   buildSidebar(pageName);
@@ -1736,7 +1768,12 @@ populateToolSheetSelects = populateSheetSelects;
 
 // ═══ Init ═══
 initGlobalImport();
-switchPage('merge');
+(function () {
+  let last = 'merge';
+  try { last = localStorage.getItem('imtool_activePage') || 'merge'; } catch (e) {}
+  if (!document.querySelector('.topbar-tab[data-page="' + last + '"]')) last = 'merge';
+  switchPage(last);
+})();
 </script>
 </body>
 </html>
