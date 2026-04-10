@@ -1,1052 +1,755 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<title>IM Tools</title>
-<link rel="stylesheet" href="styles.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IM Tools</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<!-- Top Navigation -->
-<nav class="topnav">
-  <div class="topnav-brand">
-    <span class="topnav-logo">IM</span>
-    <span class="topnav-title">IM Tools</span>
+<!-- ═══ Top Bar ═══ -->
+<nav class="topbar">
+  <div class="topbar-brand">
+    <span class="topbar-logo">IM</span>
+    <span class="topbar-title">IM Tools</span>
   </div>
-  <div class="topnav-tabs">
-    <button class="topnav-tab active" data-page="home" onclick="switchPage('home')">
-      <span class="tab-icon">&#8962;</span> Home
-    </button>
-    <button class="topnav-tab" data-page="merge" onclick="switchPage('merge')">
-      <span class="tab-icon">&#8644;</span> Table Merge
-    </button>
-    <button class="topnav-tab" data-page="ocr" onclick="switchPage('ocr')">
-      <span class="tab-icon">&#128065;</span> Image to Text
-    </button>
-    <button class="topnav-tab" data-page="orgdata" onclick="switchPage('orgdata')">
-      <span class="tab-icon">&#128194;</span> Org Data
-    </button>
+  <div class="topbar-tabs" id="topbarTabs">
+    <button class="topbar-tab active" data-page="merge">&#8644; Table Merge</button>
+    <button class="topbar-tab" data-page="ocr">&#128065; Image to Text</button>
+    <button class="topbar-tab" data-page="orgdata">&#128194; Org Data</button>
+    <button class="topbar-tab" data-page="review">&#9745; Variant Review</button>
+    <button class="topbar-tab" data-page="coleditor">&#9998; Column Editor</button>
+    <button class="topbar-tab" data-page="tracker">&#9744; Data Progress</button>
   </div>
-  <div class="topnav-right">
-    <span class="topnav-team">IM Team</span>
+  <div class="topbar-right">
+    <button class="topbar-import" id="btnGlobalImport">&#43; Import</button>
+    <button class="topbar-icon-btn" id="btnSave" title="Save to file">&#128190;</button>
+    <label class="topbar-icon-btn" title="Load from file">&#128194;<input type="file" id="loadFileInput" accept=".json" hidden></label>
+    <span class="save-status" id="saveStatus"></span>
   </div>
 </nav>
 
-<!-- Page: Home -->
-<div class="page active" id="page-home">
-  <div class="home">
+<!-- ═══ App Body (sidebar + main) ═══ -->
+<div class="app-body">
 
-    <!-- Compact header + stats row -->
-    <div class="home-top">
-      <h1 class="home-title">IM Tools</h1>
-      <div class="home-stats-row" id="homeStats"></div>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-dynamic" id="sidebarDynamic">
+      <!-- Populated per-tool by switchPage() -->
     </div>
-
-    <!-- Tools grid -->
-    <div class="home-grid">
-
-      <div class="hcard hcard-active" onclick="switchPage('merge')">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-blue">&#8644;</div>
-          <span class="hcard-badge hcard-badge-active">Active</span>
-        </div>
-        <h3>Table Merge</h3>
-        <p>Upload, merge, and track spreadsheet data across orgs and ranches.</p>
-        <div class="hcard-meta" id="mergeToolMeta"></div>
-      </div>
-
-      <div class="hcard hcard-active" onclick="switchPage('ocr')">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-green">&#128065;</div>
-          <span class="hcard-badge hcard-badge-active">Active</span>
-        </div>
-        <h3>Image to Text</h3>
-        <p>Upload a screenshot or image and extract text using OCR.</p>
-      </div>
-
-      <div class="hcard hcard-active" onclick="switchPage('orgdata')">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-amber">&#128194;</div>
-          <span class="hcard-badge hcard-badge-active">Active</span>
-        </div>
-        <h3>Org Data</h3>
-        <p>View all saved data across tools, organized by org.</p>
-      </div>
-
-      <div class="hcard hcard-disabled">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-gray">&#9201;</div>
-          <span class="hcard-badge hcard-badge-soon">Soon</span>
-        </div>
-        <h3>Audit Log</h3>
-        <p>Track changes and data modification history.</p>
-      </div>
-
-      <div class="hcard hcard-disabled">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-gray">&#9881;</div>
-          <span class="hcard-badge hcard-badge-soon">Soon</span>
-        </div>
-        <h3>Bulk Editor</h3>
-        <p>Mass update fields across multiple records at once.</p>
-      </div>
-
-      <div class="hcard hcard-disabled">
-        <div class="hcard-top">
-          <div class="hcard-icon hcard-icon-gray">&#8681;</div>
-          <span class="hcard-badge hcard-badge-soon">Soon</span>
-        </div>
-        <h3>Export Center</h3>
-        <p>Export data in multiple formats for external use.</p>
-      </div>
-
+    <div class="sidebar-sheets">
+      <div class="sidebar-label">Imported Sheets</div>
+      <div id="sheetList"><div class="sidebar-empty">No data imported</div></div>
     </div>
+  </aside>
 
-  </div>
-</div>
+  <!-- Main Content -->
+  <div class="main-content">
 
-<!-- Page: Table Merge -->
-<div class="page" id="page-merge">
-  <div class="app-layout">
-
-    <div class="sidebar" id="sidebar">
-      <div class="sidebar-resize" id="sidebarResize"></div>
-      <div class="sidebar-header">Projects</div>
-      <div id="orgList"></div>
-      <div id="archiveSection"></div>
-      <div class="sidebar-bottom">
-        <div class="save-section">
-          <button class="save-btn" onclick="manualSave()">Save to File</button>
-          <label class="load-btn">Load<input type="file" id="loadFileInput" accept=".json" style="display:none;"></label>
-          <div class="save-status" id="saveStatus">Not linked to file</div>
+    <!-- ─── Page: Table Merge ─── -->
+    <div class="page active" id="page-merge">
+      <div class="page-toolbar" id="mergeToolbar">
+        <span class="breadcrumb" id="mergeBreadcrumb">Select a project</span>
+        <label class="btn btn-ghost" id="mergeUploadBtn" style="display:none;">&#8679; Upload<input type="file" id="mergeFileInput" accept=".xlsx,.xls,.csv" hidden></label>
+        <button class="btn btn-ghost" id="mergeHeaderBtn" style="display:none;">&#9776; Headers</button>
+        <button class="btn btn-ghost" id="mergePasteBtn" style="display:none;">&#9112; Paste</button>
+        <button class="btn btn-success" id="mergeDoneAllBtn" style="display:none;">&#10003; All Done</button>
+        <button class="btn btn-warning" id="mergeResetBtn" style="display:none;">&#8634; Reset</button>
+        <button class="btn btn-danger" id="mergeClearBtn" style="display:none;">&#10005; Clear</button>
+      </div>
+      <div class="page-infobar" id="mergeInfobar">
+        <div class="hint-text">
+          <kbd>Click</kbd> copy <kbd>Dbl-click</kbd> undo <kbd>Right-click</kbd> move <kbd>Ctrl+V</kbd> paste
         </div>
-        <label>New Organization</label>
-        <div class="new-org-row">
-          <input type="text" id="newOrgName" placeholder="Organization name...">
-          <button onclick="createOrg()">+</button>
-        </div>
+        <div id="mergeMapping"></div>
       </div>
-    </div>
-
-    <div class="main">
-      <div class="toolbar">
-        <span class="breadcrumb" id="breadcrumb">Select a project</span>
-        <label class="upload-btn" id="uploadLabel" style="display:none;">&#8679; Upload<input type="file" id="fileInput" accept=".xlsx,.xls,.csv"></label>
-        <button class="btn-default" id="headerBtn" style="display:none;" onclick="toggleHeaderSetup()">&#9776; Headers</button>
-        <button class="btn-default" id="pasteBtn" style="display:none;" onclick="togglePasteBox()">&#9112; Paste</button>
-        <button class="btn-done" id="doneAllBtn" style="display:none;" onclick="markAllDone()">&#10003; All Done</button>
-        <button class="btn-reset" id="resetBtn" style="display:none;" onclick="resetProgress()">&#8634; Reset</button>
-        <button class="btn-clear" id="clearBtn" style="display:none;" onclick="clearRanchData()">&#10005; Clear</button>
-      </div>
-      <div class="info-bar" id="infoBar">
-        <div class="hint-text"><span class="hint-key">Click</span> to copy <span class="hint-sep">&middot;</span> <span class="hint-key">Double-click</span> to undo <span class="hint-sep">&middot;</span> <span class="hint-key">Right-click</span> to move <span class="hint-sep">&middot;</span> <span class="hint-key">Ctrl+V</span> to paste</div>
-        <div id="mappingStatus"></div>
-      </div>
-      <div id="headerSetupBox" style="display:none; padding: 0 20px;">
-        <div style="background:#f8f9fb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:8px;">
-          <label style="font-weight:600; font-size:13px; display:block; margin-bottom:8px; color:#1a1a1a;">Paste the header row from your spreadsheet</label>
-          <textarea id="headerArea" style="width:100%; height:50px; font-family:'Inter',monospace; font-size:12px; border:1px solid #e5e7eb; border-radius:8px; padding:10px; resize:vertical; background:#fff; color:#1a1a1a;" placeholder="Copy the header row from Excel/Sheets and paste here..."></textarea>
-          <div style="margin-top:10px; display:flex; gap:8px;">
-            <button onclick="processHeaderPaste()" class="confirm-btn" style="padding:8px 18px; border:none; border-radius:8px; cursor:pointer; font-size:13px;">Set Up Mapping</button>
-            <button onclick="toggleHeaderSetup()" class="cancel-btn" style="padding:8px 18px; border-radius:8px; cursor:pointer; font-size:13px;">Cancel</button>
-          </div>
+      <div id="mergeHeaderSetup" class="panel-box" style="display:none;">
+        <label class="panel-label">Paste the header row from your spreadsheet</label>
+        <textarea id="mergeHeaderArea" class="panel-textarea" rows="2" placeholder="Copy header row, paste here..."></textarea>
+        <div class="panel-actions">
+          <button class="btn btn-primary" id="mergeHeaderConfirm">Set Up Mapping</button>
+          <button class="btn btn-ghost" id="mergeHeaderCancel">Cancel</button>
         </div>
       </div>
-      <div id="columnMapper" style="display:none;"></div>
-      <div id="pasteBox" style="display:none; padding: 0 20px;">
-        <div style="background:#f8f9fb; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:8px;">
-          <label style="font-weight:600; font-size:13px; display:block; margin-bottom:8px; color:#1a1a1a;">Paste data rows (no header row needed)</label>
-          <textarea id="pasteArea" style="width:100%; height:100px; font-family:'Inter',monospace; font-size:12px; border:1px solid #e5e7eb; border-radius:8px; padding:10px; resize:vertical; background:#fff; color:#1a1a1a;" placeholder="Copy the data rows from Excel/Sheets and paste here..."></textarea>
-          <div style="margin-top:10px; display:flex; gap:8px;">
-            <button class="confirm-btn" onclick="processPasteBox()" style="padding:8px 18px; border:none; border-radius:8px; cursor:pointer; font-size:13px;">Import Pasted Data</button>
-            <button class="cancel-btn" onclick="togglePasteBox()" style="padding:8px 18px; border-radius:8px; cursor:pointer; font-size:13px;">Cancel</button>
-          </div>
+      <div id="mergeColumnMapper" style="display:none;"></div>
+      <div id="mergePasteBox" class="panel-box" style="display:none;">
+        <label class="panel-label">Paste data rows (no header needed)</label>
+        <textarea id="mergePasteArea" class="panel-textarea" rows="4" placeholder="Copy data rows, paste here..."></textarea>
+        <div class="panel-actions">
+          <button class="btn btn-primary" id="mergePasteConfirm">Import Pasted Data</button>
+          <button class="btn btn-ghost" id="mergePasteCancel">Cancel</button>
         </div>
       </div>
       <div class="table-wrap">
-        <table>
-          <thead><tr id="thead"></tr></thead>
-          <tbody id="tbody"></tbody>
+        <table class="data-table">
+          <thead><tr id="mergeThead"></tr></thead>
+          <tbody id="mergeTbody"></tbody>
         </table>
       </div>
-      <div class="empty-msg" id="emptyMsg">Create an organization, then add ranches and upload Excel files.</div>
+      <div class="empty-state" id="mergeEmpty">Select a ranch from the sidebar, or import data to get started.</div>
     </div>
 
-  </div>
-</div>
-
-<!-- Page: Image to Text (OCR) -->
-<div class="page" id="page-ocr">
-  <div class="ocr-page">
-    <div class="ocr-header">
-      <h1>Image to Text</h1>
-      <p>Upload or paste a screenshot to extract text. Works entirely in your browser.</p>
-    </div>
-
-    <div class="ocr-layout">
-      <div class="ocr-input-panel">
-        <div class="ocr-dropzone" id="ocrDropzone">
-          <div class="ocr-dropzone-content" id="ocrDropContent">
-            <div class="ocr-drop-icon">&#128247;</div>
-            <p><strong>Drop an image here</strong> or click to upload</p>
-            <p class="ocr-drop-hint">PNG, JPG, BMP &middot; or paste with Ctrl+V</p>
-          </div>
-          <div class="ocr-canvas-wrap" id="ocrCanvasWrap" style="display:none;">
-            <canvas id="ocrCanvas"></canvas>
-            <div class="ocr-crop-selection" id="ocrCropSel" style="display:none;"></div>
-            <div class="ocr-zoom-controls">
-              <button class="ocr-zoom-btn" onclick="ocrZoom(-0.25)" title="Zoom out">-</button>
-              <span class="ocr-zoom-level" id="ocrZoomLevel">100%</span>
-              <button class="ocr-zoom-btn" onclick="ocrZoom(0.25)" title="Zoom in">+</button>
-              <button class="ocr-zoom-btn" onclick="ocrZoomReset()" title="Fit to view">&#8634;</button>
+    <!-- ─── Page: Image to Text (OCR) ─── -->
+    <div class="page" id="page-ocr">
+      <div class="ocr-page">
+        <div class="ocr-header">
+          <h2>Image to Text</h2>
+          <p>Upload or paste a screenshot to extract text. Works entirely in your browser.</p>
+        </div>
+        <div class="ocr-layout" id="ocrLayout">
+          <div class="ocr-input-panel">
+            <div class="ocr-dropzone" id="ocrDropzone">
+              <div class="ocr-dropzone-content" id="ocrDropContent">
+                <div class="ocr-drop-icon">&#128247;</div>
+                <p><strong>Drop an image here</strong> or click to upload</p>
+                <p class="ocr-drop-hint">PNG, JPG, BMP &middot; or paste with Ctrl+V</p>
+              </div>
+              <div class="ocr-canvas-wrap" id="ocrCanvasWrap" style="display:none;">
+                <canvas id="ocrCanvas"></canvas>
+                <div class="ocr-crop-selection" id="ocrCropSel" style="display:none;"></div>
+                <div class="ocr-zoom-controls">
+                  <button class="ocr-zoom-btn" onclick="ocrZoom(-0.25)" title="Zoom out">-</button>
+                  <span class="ocr-zoom-level" id="ocrZoomLevel">100%</span>
+                  <button class="ocr-zoom-btn" onclick="ocrZoom(0.25)" title="Zoom in">+</button>
+                  <button class="ocr-zoom-btn" onclick="ocrZoomReset()" title="Fit to view">&#8634;</button>
+                </div>
+              </div>
+              <input type="file" id="ocrFileInput" accept="image/*" style="display:none;">
+            </div>
+            <div class="ocr-actions">
+              <button class="ocr-btn ocr-btn-primary" id="ocrExtractBtn" onclick="runOCR()" disabled>Extract Full</button>
+              <button class="ocr-btn ocr-btn-accent" id="ocrCropBtn" onclick="runCroppedOCR()" style="display:none;">Extract Selection</button>
+              <button class="ocr-btn ocr-btn-accent" id="ocrColumnBtn" onclick="runColumnOCR()" style="display:none;">Extract Column</button>
+              <button class="ocr-btn ocr-btn-secondary" id="ocrClearCropBtn" onclick="clearCrop()" style="display:none;">Clear Crop</button>
+              <button class="ocr-btn ocr-btn-secondary" id="ocrReplaceBtn" style="display:none;" onclick="document.getElementById('ocrFileInput').click()">Replace Image</button>
+              <button class="ocr-btn ocr-btn-secondary" onclick="clearOCR()">Clear</button>
+            </div>
+            <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom</div>
+            <div class="ocr-progress" id="ocrProgress" style="display:none;">
+              <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
+              <span class="ocr-progress-text" id="ocrProgressText">Initializing...</span>
             </div>
           </div>
-          <input type="file" id="ocrFileInput" accept="image/*" style="display:none;">
+          <div class="ocr-output-panel" id="ocrOutputPanel">
+            <div class="ocr-output-header">
+              <div class="ocr-output-tabs">
+                <button class="ocr-tab active" onclick="switchOCRTab('table')">Table</button>
+                <button class="ocr-tab" onclick="switchOCRTab('raw')">Raw Text</button>
+              </div>
+              <div class="ocr-search">
+                <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
+              </div>
+              <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
+              <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
+            </div>
+            <div class="ocr-tab-content active" id="ocrTabTable">
+              <div class="ocr-table-wrap" id="ocrTableWrap">
+                <p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>
+              </div>
+            </div>
+            <div class="ocr-tab-content" id="ocrTabRaw">
+              <textarea class="ocr-textarea" id="ocrOutput" readonly placeholder="Extracted text will appear here..."></textarea>
+            </div>
+          </div>
         </div>
-        <div class="ocr-actions">
-          <button class="ocr-btn ocr-btn-primary" id="ocrExtractBtn" onclick="runOCR()" disabled>Extract Full</button>
-          <button class="ocr-btn ocr-btn-accent" id="ocrCropBtn" onclick="runCroppedOCR()" style="display:none;">Extract Selection</button>
-          <button class="ocr-btn ocr-btn-accent" id="ocrColumnBtn" onclick="runColumnOCR()" style="display:none;">Extract Column</button>
-          <button class="ocr-btn ocr-btn-secondary" id="ocrClearCropBtn" onclick="clearCrop()" style="display:none;">Clear Crop</button>
-          <button class="ocr-btn ocr-btn-secondary" id="ocrReplaceBtn" style="display:none;" onclick="document.getElementById('ocrFileInput').click()">Replace Image</button>
-          <button class="ocr-btn ocr-btn-secondary" onclick="clearOCR()">Clear</button>
+      </div>
+    </div>
+
+    <!-- ─── Page: Org Data ─── -->
+    <div class="page" id="page-orgdata">
+      <div class="orgdata-main">
+        <div class="page-toolbar" id="orgdataToolbar"></div>
+        <div class="table-wrap" id="orgdataContent">
+          <p class="empty-state">Select an organization and section from the sidebar.</p>
         </div>
-        <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom</div>
-        <div class="ocr-progress" id="ocrProgress" style="display:none;">
-          <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
-          <span class="ocr-progress-text" id="ocrProgressText">Initializing...</span>
+      </div>
+    </div>
+
+    <!-- ─── Page: Variant Review ─── -->
+    <div class="page" id="page-review">
+      <div id="rv-setup" class="rv-setup">
+        <div class="rv-setup-inner">
+          <h2>Variant Review</h2>
+          <p>Select an imported sheet or upload a file, then map your columns.</p>
+          <div class="rv-setup-row">
+            <div class="rv-setup-section">
+              <label>Data Source</label>
+              <select id="rv-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
+              <span class="text-muted small">Or upload directly:</span>
+              <input type="file" id="rv-file-upload" accept=".xlsx,.xls,.csv" class="input-file">
+              <span id="rv-file-name" class="text-muted"></span>
+            </div>
+            <div class="rv-setup-section">
+              <label>Database File <em class="text-muted">(optional)</em></label>
+              <select id="rv-db-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
+              <span class="text-muted small">Or upload directly:</span>
+              <input type="file" id="rv-db-upload" accept=".xlsx,.xls,.csv" class="input-file">
+              <span id="rv-db-name" class="text-muted"></span>
+            </div>
+          </div>
+          <div id="rv-mapping" class="rv-mapping" style="display:none;">
+            <h3>Map Your Columns</h3>
+            <div class="rv-map-grid">
+              <div class="rv-map-item"><label>Site / Farm</label><select id="rv-map-site" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Block / Name</label><select id="rv-map-block" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Crop</label><select id="rv-map-crop" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Variety</label><select id="rv-map-variety" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Rootstock</label><select id="rv-map-rootstock" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Type</label><select id="rv-map-type" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Acreage</label><select id="rv-map-acreage" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>Plant Count</label><select id="rv-map-plantcount" class="input-field"><option value="">--</option></select></div>
+            </div>
+          </div>
+          <div id="rv-db-mapping" class="rv-mapping" style="display:none;">
+            <h3>Map Database Columns</h3>
+            <div class="rv-map-grid">
+              <div class="rv-map-item"><label>DB Site</label><select id="rv-dbmap-site" class="input-field"><option value="">--</option></select></div>
+              <div class="rv-map-item"><label>DB Block</label><select id="rv-dbmap-block" class="input-field"><option value="">--</option></select></div>
+            </div>
+          </div>
+          <div id="rv-preview-wrap" style="display:none;margin-top:20px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;overflow:hidden;">
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;">Preview <span id="rv-preview-count" class="text-muted"></span></h3>
+            <div style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);">
+              <table class="data-table" id="rv-preview-table"><thead><tr id="rv-preview-head"></tr></thead><tbody id="rv-preview-body"></tbody></table>
+            </div>
+          </div>
+          <div class="rv-setup-actions" id="rv-setup-actions" style="display:none;margin-top:16px;">
+            <button class="btn btn-primary" id="rv-btn-build" style="padding:10px 24px;font-size:14px;">&#9654; Load Data</button>
+            <button class="btn btn-ghost" id="rv-btn-default" style="display:none;">Load Default</button>
+          </div>
+        </div>
+      </div>
+      <!-- Main review view (hidden until data loaded) -->
+      <div id="rv-main" style="display:none;">
+        <div id="rv-review-ui">
+          <div class="page-toolbar" id="rv-toolbar">
+            <span class="breadcrumb" id="rv-breadcrumb">Variant Review</span>
+            <span id="rv-eta" class="small" style="margin-left:8px;"></span>
+            <div class="rv-search-wrap">
+              <input type="text" id="rv-search" class="input-field" placeholder="Search..." style="width:180px;">
+            </div>
+            <button class="btn btn-ghost" id="rv-btn-back">Back to Setup</button>
+          </div>
+          <div id="rv-progress-wrap" class="rv-progress-wrap">
+            <div class="rv-progress-bar"><div id="rv-bar" class="rv-progress-fill"></div></div>
+            <span id="rv-pct" class="rv-progress-text">0%</span>
+            <span id="rv-stat" class="small" style="margin-left:8px;"></span>
+            <span id="rv-detail" class="small" style="margin-left:8px;"></span>
+          </div>
+          <div class="table-wrap" id="rv-table-wrap">
+            <table class="data-table rv-table" id="rv-main-table">
+              <thead><tr id="rv-thead"></tr></thead>
+              <tbody id="rv-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="rv-ctx" class="ctx-menu" style="display:none;">
+          <div id="rv-ctx-flag">Toggle Flag</div>
+          <div id="rv-ctx-note">Add Note</div>
+          <div id="rv-ctx-clear-note" style="display:none;">Clear Note</div>
+        </div>
+        <div id="rv-note-overlay" class="modal-overlay">
+          <div class="modal">
+            <h3>Note</h3>
+            <textarea id="rv-note-text" class="panel-textarea" rows="3" placeholder="Enter note..."></textarea>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" id="rv-note-cancel">Cancel</button>
+              <button class="btn btn-primary" id="rv-note-save">Save</button>
+            </div>
+          </div>
+        </div>
+        <div id="rv-tooltip" style="display:none;position:fixed;z-index:300;background:#fffbe6;border:1px solid #e5c518;border-radius:4px;padding:4px 8px;font-size:11px;max-width:260px;pointer-events:none;"></div>
+      </div>
+    </div>
+
+    <!-- ─── Page: Column Editor ─── -->
+    <div class="page" id="page-coleditor">
+      <div class="ce-wrap">
+        <div class="ce-file-bar">
+          <div class="ce-file-slot">
+            <label>Data Source</label>
+            <select id="ce-sheet-select" class="input-field" style="width:100%;margin-bottom:6px;"><option value="">-- Select imported sheet --</option></select>
+            <span class="text-muted small">Or upload CSV:</span>
+            <span id="ce-target-name" class="text-muted">No file loaded</span>
+            <input type="file" id="ce-file-target" accept=".csv,.xlsx,.xls" class="input-file">
+          </div>
+        </div>
+        <div id="ce-controls" class="ce-controls" style="display:none;">
+          <div class="ce-group"><label>Mode</label><select id="ce-mode" class="input-field"><option value="auto">Auto from column</option><option value="manual">Manual text</option></select></div>
+          <div class="ce-group"><label>Target Column</label><select id="ce-col-select" class="input-field"><option value="">--</option></select></div>
+          <div class="ce-group" id="ce-source-group"><label>Source Column</label><select id="ce-source-col" class="input-field"><option value="">--</option></select></div>
+          <div class="ce-group" id="ce-separator-group"><label>Extract from source</label><select id="ce-separator" class="input-field"><option value="right">Right of hyphen</option><option value="left">Left of hyphen</option><option value="full">Full value</option><option value="last-word">Last word</option></select></div>
+          <div class="ce-group" id="ce-manual-group" style="display:none;"><label>Text to Append</label><input type="text" id="ce-append-text" class="input-field" placeholder="e.g. - CHELAN"></div>
+          <div class="ce-group"><label>Skip if target has</label><select id="ce-skip-mode" class="input-field"><option value="hyphen">A " - " hyphen</option><option value="custom">Exact text</option><option value="none">Don't skip</option></select></div>
+          <div class="ce-group" style="flex-direction:row;align-items:flex-end;gap:6px;">
+            <button class="btn btn-primary" id="ce-btn-preview">Preview</button>
+            <button class="btn btn-success" id="ce-btn-apply" disabled>Apply</button>
+            <button class="btn btn-warning" id="ce-btn-undo" disabled>Undo</button>
+          </div>
+          <div class="ce-group" style="flex-direction:row;align-items:flex-end;gap:6px;">
+            <button class="btn btn-ghost" id="ce-btn-copy">Copy Columns</button>
+            <label class="small" style="display:flex;align-items:center;gap:3px;"><input type="checkbox" id="ce-copy-changed"> Changed only</label>
+          </div>
+          <div class="ce-group" style="flex-direction:row;align-items:flex-end;gap:6px;">
+            <button class="btn btn-ghost" id="ce-btn-hide-unchanged">Hide Unchanged</button>
+            <button class="btn btn-ghost" id="ce-btn-show-all">Show All</button>
+          </div>
+          <div class="ce-group" style="flex-direction:row;align-items:flex-end;gap:6px;margin-left:auto;">
+            <button class="btn btn-ghost" id="ce-btn-sel-all">Select All</button>
+            <button class="btn btn-ghost" id="ce-btn-sel-none">Select None</button>
+            <button class="btn btn-ghost" id="ce-btn-invert">Invert</button>
+          </div>
+        </div>
+        <div id="ce-status" class="ce-status"></div>
+        <div id="ce-table-wrap" class="table-wrap" style="display:none;">
+          <table id="ce-table" class="data-table">
+            <thead id="ce-thead"></thead>
+            <tbody id="ce-tbody"></tbody>
+          </table>
+        </div>
+        <div id="ce-footer" class="ce-status" style="display:none;">
+          <span id="ce-foot-info">0 rows</span> &middot; <span id="ce-foot-sel">0 selected</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Page: Data Progress Tracker ─── -->
+    <div class="page" id="page-tracker">
+      <div id="trk-setup" class="rv-setup">
+        <div class="rv-setup-inner">
+          <h2>Data Progress Tracker</h2>
+          <p>Load any sheet and track cell-by-cell completion. Drag columns to reorder.</p>
+
+          <!-- Saved Sessions -->
+          <div id="trk-saved-wrap" class="trk-saved-wrap">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Saved Sessions</label>
+            <select id="trk-saved-org" class="input-field" style="width:100%;margin-bottom:8px;">
+              <option value="">-- Select organization --</option>
+            </select>
+            <div id="trk-saved-list" class="trk-saved-list"></div>
+          </div>
+
+          <div style="margin:16px 0;border-top:1px solid var(--border);padding-top:16px;">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Or load new data</label>
+          </div>
+
+          <div class="rv-setup-section">
+            <label>Data Source</label>
+            <select id="trk-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
+            <span class="text-muted small">Or upload directly:</span>
+            <input type="file" id="trk-file-upload" accept=".xlsx,.xls,.csv" class="input-file">
+            <span id="trk-file-name" class="text-muted"></span>
+          </div>
+          <div id="trk-name-wrap" style="margin-top:12px;">
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+              <div style="flex:1;min-width:200px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Sheet Name</label>
+                <input type="text" id="trk-staging-name" class="input-field" placeholder="Name for this sheet..." style="width:100%;">
+              </div>
+              <div style="flex:1;min-width:200px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Save to Organization</label>
+                <select id="trk-save-org" class="input-field" style="width:100%;"></select>
+              </div>
+              <div style="min-width:160px;">
+                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Or new org</label>
+                <input type="text" id="trk-save-new-org" class="input-field" placeholder="New org name..." style="width:100%;">
+              </div>
+            </div>
+          </div>
+          <div id="trk-col-list" style="display:none;margin-top:16px;">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Column Order <span class="text-muted small">(drag to reorder)</span></label>
+            <div id="trk-col-list-inner" class="trk-col-list-inner"></div>
+          </div>
+          <div id="trk-preview-wrap" style="display:none;margin-top:20px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;overflow:hidden;">
+            <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;">Preview <span id="trk-preview-count" class="text-muted"></span></h3>
+            <div style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);">
+              <table class="data-table" id="trk-preview-table"><thead></thead><tbody></tbody></table>
+            </div>
+          </div>
+          <div id="trk-blank-prompt" style="display:none;margin-top:12px;"></div>
+          <div id="trk-setup-actions" style="display:none;margin-top:16px;gap:8px;">
+            <button class="btn btn-primary" id="trk-btn-build" style="padding:10px 24px;font-size:14px;">&#9654; Start Tracking</button>
+          </div>
+        </div>
+      </div>
+      <!-- Main tracker view -->
+      <div id="trk-main" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+        <div class="page-toolbar">
+          <span class="breadcrumb" id="trk-breadcrumb">Data Progress Tracker</span>
+          <span id="trk-eta" class="small" style="margin-left:8px;"></span>
+          <div class="rv-search-wrap">
+            <input type="text" id="trk-search" class="input-field" placeholder="Search..." style="width:180px;">
+          </div>
+          <button class="btn btn-ghost btn-sm" id="trk-btn-undo" title="Undo last edit" style="display:none;">&#8630; Undo</button>
+          <span id="trk-sel-info" class="trk-sel-info" style="display:none;"></span>
+          <span id="trk-sel-actions" style="display:none;">
+            <button class="btn btn-success btn-sm" id="trk-sel-done" title="Mark selected as done">&#10003; Done</button>
+            <button class="btn btn-ghost btn-sm" id="trk-sel-undone" title="Mark selected as not done">Undone</button>
+            <button class="btn btn-ghost btn-sm" id="trk-sel-flag" title="Flag selected red">&#128308; Flag</button>
+            <button class="btn btn-ghost btn-sm" id="trk-sel-note" title="Add note to selected">&#128221; Note</button>
+            <button class="btn btn-ghost btn-sm" id="trk-sel-edit" title="Edit selected cell values">&#9998; Edit</button>
+          </span>
+          <label class="btn btn-ghost btn-sm" id="trk-btn-import-done" title="Import done list CSV">&#10003; Import Done<input type="file" id="trk-import-done-file" accept=".csv,.xlsx,.xls" hidden></label>
+          <button class="btn btn-ghost btn-sm" id="trk-btn-save" title="Save session">&#128190; Save</button>
+          <button class="btn btn-ghost btn-sm" id="trk-btn-bulkedit" title="Find &amp; Replace / Bulk Edit">&#9998; Bulk Edit</button>
+          <select id="trk-filter-done" class="input-field" style="width:auto;font-size:11px;padding:3px 6px;" title="Filter rows">
+            <option value="all">All rows</option>
+            <option value="done">Done only</option>
+            <option value="notdone">Not done only</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="trk-btn-download" title="Download current sheet as CSV">&#8615; Download</button>
+          <button class="btn btn-ghost btn-sm" id="trk-btn-autofit" title="Fit all columns to screen">&#8596; Fit Cols</button>
+          <button class="btn btn-ghost" id="trk-btn-back">Back to Setup</button>
+          <button class="btn btn-warning btn-sm" id="trk-btn-reset">Reset Progress</button>
+        </div>
+        <div id="trk-hidden-cols" class="trk-hidden-cols" style="display:none;"></div>
+        <div class="rv-progress-wrap">
+          <div class="rv-progress-bar"><div id="trk-bar" class="rv-progress-fill"></div></div>
+          <span id="trk-pct" class="rv-progress-text">0%</span>
+          <span id="trk-stat" class="small" style="margin-left:8px;"></span>
+          <span id="trk-detail" class="small" style="margin-left:8px;"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table trk-table" id="trk-main-table">
+            <thead><tr id="trk-thead"></tr></thead>
+            <tbody id="trk-tbody"></tbody>
+          </table>
+        </div>
+        <div id="trk-sheet-tabs" class="trk-sheet-tabs trk-sheet-tabs-bottom"></div>
+      </div>
+      <!-- Import Done Modal -->
+      <div id="trk-done-overlay" class="modal-overlay">
+        <div class="modal" style="max-width:520px;">
+          <h3>Import Done List</h3>
+          <p class="text-muted small">Upload a CSV/Excel of items already completed. Pick which column to match on — only rows where the values match exactly will be marked done.</p>
+          <div style="display:flex;gap:12px;margin-bottom:12px;">
+            <div style="flex:1;">
+              <label class="panel-label">Match tracker column</label>
+              <select id="trk-done-trk-col" class="input-field" style="width:100%;"></select>
+            </div>
+            <div style="flex:1;">
+              <label class="panel-label">Against imported column</label>
+              <select id="trk-done-imp-col" class="input-field" style="width:100%;"></select>
+            </div>
+          </div>
+          <div id="trk-done-preview" class="trk-bulk-preview"></div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" id="trk-done-preview-btn">Preview Matches</button>
+            <button class="btn btn-primary" id="trk-done-apply-btn" disabled>Mark Done (0)</button>
+            <button class="btn btn-ghost" id="trk-done-close">Close</button>
+          </div>
         </div>
       </div>
 
-      <div class="ocr-output-panel">
-        <div class="ocr-output-header">
-          <div class="ocr-output-tabs">
-            <button class="ocr-tab active" onclick="switchOCRTab('table')">Table</button>
-            <button class="ocr-tab" onclick="switchOCRTab('raw')">Raw Text</button>
+      <!-- Bulk Edit Modal -->
+      <div id="trk-bulk-overlay" class="modal-overlay">
+        <div class="modal" style="max-width:520px;">
+          <h3>Bulk Edit</h3>
+          <div class="trk-bulk-tabs">
+            <button class="trk-bulk-tab active" data-mode="replace">Find &amp; Replace</button>
+            <button class="trk-bulk-tab" data-mode="setcol">Set Column Value</button>
+            <button class="trk-bulk-tab" data-mode="clear">Clear / Remove</button>
           </div>
-          <div class="ocr-search">
-            <span class="search-icon">&#128269;</span>
-            <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
+          <!-- Find & Replace -->
+          <div class="trk-bulk-panel" id="trk-bulk-replace">
+            <label class="panel-label">In column</label>
+            <select id="trk-bulk-col" class="input-field" style="width:100%;margin-bottom:8px;"><option value="all">All columns</option></select>
+            <label class="panel-label">Find</label>
+            <input type="text" id="trk-bulk-find" class="input-field" style="width:100%;margin-bottom:4px;" placeholder="Text to find...">
+            <select id="trk-bulk-find-pick" class="input-field" style="width:100%;margin-bottom:8px;display:none;"><option value="">-- Pick a value --</option></select>
+            <label class="panel-label">Replace with</label>
+            <input type="text" id="trk-bulk-replace-val" class="input-field" style="width:100%;margin-bottom:8px;" placeholder="Replacement (leave empty to delete)">
+            <div style="display:flex;gap:12px;margin-bottom:8px;">
+              <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="trk-bulk-case"> Case sensitive</label>
+              <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="trk-bulk-exact"> Exact match only</label>
+            </div>
+            <div id="trk-bulk-preview" class="trk-bulk-preview"></div>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" id="trk-bulk-find-btn">Preview</button>
+              <button class="btn btn-primary" id="trk-bulk-apply-btn" disabled>Apply (0 changes)</button>
+              <button class="btn btn-ghost" id="trk-bulk-close">Close</button>
+            </div>
           </div>
-          <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
-          <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
-        </div>
-        <div class="ocr-tab-content active" id="ocrTabTable">
-          <div class="ocr-table-wrap" id="ocrTableWrap">
-            <p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>
+          <!-- Set Column -->
+          <div class="trk-bulk-panel" id="trk-bulk-setcol" style="display:none;">
+            <label class="panel-label">Target column</label>
+            <select id="trk-set-col" class="input-field" style="width:100%;margin-bottom:8px;"></select>
+            <label class="panel-label">Set value to</label>
+            <input type="text" id="trk-set-val" class="input-field" style="width:100%;margin-bottom:8px;" placeholder="New value for all rows...">
+            <label class="panel-label">Only where column is</label>
+            <select id="trk-set-filter" class="input-field" style="width:100%;margin-bottom:10px;">
+              <option value="any">Any value (all rows)</option>
+              <option value="empty">Empty</option>
+              <option value="notempty">Not empty</option>
+              <option value="equals">Equals...</option>
+            </select>
+            <input type="text" id="trk-set-filter-val" class="input-field" style="width:100%;margin-bottom:10px;display:none;" placeholder="Equals this value...">
+            <div id="trk-set-preview" class="trk-bulk-preview"></div>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" id="trk-set-preview-btn">Preview</button>
+              <button class="btn btn-primary" id="trk-set-apply-btn" disabled>Apply (0 changes)</button>
+              <button class="btn btn-ghost" id="trk-set-close">Close</button>
+            </div>
           </div>
-        </div>
-        <div class="ocr-tab-content" id="ocrTabRaw">
-          <textarea class="ocr-textarea" id="ocrOutput" readonly placeholder="Extracted text will appear here..."></textarea>
+          <!-- Clear/Remove -->
+          <div class="trk-bulk-panel" id="trk-bulk-clear" style="display:none;">
+            <label class="panel-label">Action</label>
+            <select id="trk-clear-action" class="input-field" style="width:100%;margin-bottom:8px;">
+              <option value="clear-col">Clear entire column</option>
+              <option value="remove-text">Remove specific text from cells</option>
+              <option value="trim">Trim whitespace</option>
+            </select>
+            <label class="panel-label">Target column</label>
+            <select id="trk-clear-col" class="input-field" style="width:100%;margin-bottom:8px;"></select>
+            <input type="text" id="trk-clear-text" class="input-field" style="width:100%;margin-bottom:10px;display:none;" placeholder="Text to remove...">
+            <div id="trk-clear-preview" class="trk-bulk-preview"></div>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" id="trk-clear-preview-btn">Preview</button>
+              <button class="btn btn-primary" id="trk-clear-apply-btn" disabled>Apply (0 changes)</button>
+              <button class="btn btn-ghost" id="trk-clear-close">Close</button>
+            </div>
+          </div>
         </div>
       </div>
+      <!-- Context menu -->
+      <div id="trk-ctx" class="ctx-menu" style="display:none;">
+        <div id="trk-ctx-edit">&#9998; Edit Cell</div>
+        <div id="trk-ctx-flag">Toggle Flag</div>
+        <div id="trk-ctx-note">Add Note</div>
+        <div id="trk-ctx-clear-note" style="display:none;">Clear Note</div>
+      </div>
+      <!-- Note modal -->
+      <div id="trk-note-overlay" class="modal-overlay">
+        <div class="modal">
+          <h3>Note</h3>
+          <textarea id="trk-note-text" class="panel-textarea" rows="3" placeholder="Enter note..."></textarea>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" id="trk-note-cancel">Cancel</button>
+            <button class="btn btn-primary" id="trk-note-save">Save</button>
+          </div>
+        </div>
+      </div>
+      <div id="trk-tooltip" style="display:none;position:fixed;z-index:300;background:#fffbe6;border:1px solid #e5c518;border-radius:4px;padding:4px 8px;font-size:11px;max-width:260px;pointer-events:none;"></div>
+    </div>
+
+    <!-- ─── Page: Sheet Preview ─── -->
+    <div class="page" id="page-sheetpreview">
+      <div class="page-toolbar" id="sheetPreviewToolbar">
+        <span class="breadcrumb" id="sheetPreviewTitle">Sheet</span>
+        <input type="text" id="sheetPreviewFilter" class="input-field" placeholder="Filter..." style="width:180px;">
+        <button class="btn btn-primary" id="sheetSendMerge">&#8644; Send to Table Merge</button>
+        <button class="btn btn-ghost" id="sheetOpenReview">Open in Review</button>
+        <button class="btn btn-ghost" id="sheetOpenEditor">Open in Editor</button>
+        <button class="btn btn-danger" id="sheetDeleteBtn">Delete</button>
+      </div>
+      <div class="table-wrap" id="sheetPreviewContent"></div>
+    </div>
+
+  </div><!-- end main-content -->
+</div><!-- end app-body -->
+
+<!-- ═══ Stats Bar ═══ -->
+<div class="stats-bar" id="statsBar"></div>
+
+<!-- ═══ Modals ═══ -->
+
+<!-- Global Import -->
+<div class="modal-overlay" id="globalImportModal">
+  <div class="modal modal-md">
+    <h3>Import Data</h3>
+    <div id="importStep1">
+      <p class="text-muted">Upload an Excel or CSV file. Select sheets and assign to an organization.</p>
+      <div class="import-dropzone" id="importDropzone">
+        <div class="import-drop-icon">&#128196;</div>
+        <p><strong>Drop a file here</strong> or click to browse</p>
+        <p class="text-muted small">.xlsx, .xls, .csv</p>
+      </div>
+      <input type="file" id="importFileInput" accept=".xlsx,.xls,.csv" hidden>
+    </div>
+    <div id="importStep2" style="display:none;">
+      <div id="importFileName" class="text-muted small"></div>
+      <div id="importSheetList"></div>
+      <label class="panel-label">Assign to Organization</label>
+      <div class="row-flex gap-sm">
+        <select id="importOrgSelect" class="input-field flex-1"></select>
+        <input type="text" id="importNewOrg" class="input-field flex-1" placeholder="Or create new...">
+      </div>
+      <div id="importSuccess" class="alert alert-success" style="display:none;"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="importBackBtn" style="display:none;">Back</button>
+      <button class="btn btn-ghost" id="importCloseBtn">Close</button>
     </div>
   </div>
 </div>
 
-<!-- Page: Org Data -->
-<div class="page" id="page-orgdata">
-  <div class="app-layout">
-    <div class="orgdata-sidebar">
-      <div class="orgdata-sidebar-top">
-        <select id="orgDataSelect" onchange="renderOrgData()"></select>
-      </div>
-      <div class="orgdata-nav" id="orgDataNav"></div>
-    </div>
-    <div class="orgdata-main">
-      <div class="orgdata-toolbar" id="orgDataToolbar"></div>
-      <div class="orgdata-table-wrap" id="orgDataContent">
-        <p class="ocr-placeholder">Select an organization and section.</p>
-      </div>
+<!-- Move Row -->
+<div class="modal-overlay" id="moveRowModal">
+  <div class="modal">
+    <h3>Move row to another ranch</h3>
+    <select id="moveRowTarget" class="input-field"></select>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="moveRowCancel">Cancel</button>
+      <button class="btn btn-primary" id="moveRowConfirm">Move</button>
     </div>
   </div>
 </div>
 
-<!-- Save to Org modal -->
+<!-- Import Destination (merge) -->
+<div class="modal-overlay" id="importDestModal">
+  <div class="modal modal-md">
+    <h3>Choose where to import each ranch</h3>
+    <div id="importDestList"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="importDestCancel">Cancel</button>
+      <button class="btn btn-primary" id="importDestConfirm">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Save to Org (OCR) -->
 <div class="modal-overlay" id="saveToOrgModal">
   <div class="modal">
     <h3>Save to Organization</h3>
-    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Organization</label>
-    <select id="saveToOrgSelect" style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);"></select>
-    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Name / Label</label>
-    <div id="saveToOrgExisting" style="margin-bottom:8px;"></div>
-    <input type="text" id="saveToOrgName" placeholder="e.g. Break Prep Jobs, Site List..." style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);">
-    <label style="font-size:12px;font-weight:500;color:var(--text-secondary);display:block;margin-bottom:4px;">Source Tool</label>
-    <input type="text" id="saveToOrgSource" value="Image to Text" readonly style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-secondary);color:var(--text-tertiary);">
+    <label class="panel-label">Organization</label>
+    <div class="row-flex gap-sm" style="margin-bottom:10px;">
+      <select id="saveToOrgSelect" class="input-field flex-1" style="width:auto;"></select>
+      <input type="text" id="saveToOrgNewOrg" class="input-field flex-1" placeholder="Or type new org...">
+    </div>
+    <label class="panel-label">Name / Label</label>
+    <div id="saveToOrgExisting" style="margin-bottom:6px;"></div>
+    <input type="text" id="saveToOrgName" class="input-field" style="width:100%;margin-bottom:10px;" placeholder="e.g. Break Prep Jobs...">
+    <label class="panel-label">Source</label>
+    <input type="text" id="saveToOrgSource" class="input-field" value="Image to Text" readonly style="width:100%;opacity:0.6;margin-bottom:10px;">
     <div class="modal-actions">
-      <button class="cancel-btn" onclick="closeSaveToOrg()">Cancel</button>
-      <button class="confirm-btn" onclick="confirmSaveToOrg()">Save</button>
+      <button class="btn btn-ghost" id="saveToOrgCancel">Cancel</button>
+      <button class="btn btn-primary" id="saveToOrgConfirm">Save</button>
     </div>
   </div>
 </div>
 
-<div class="stats-bar" id="statsBar"></div>
-
-<!-- Move row modal -->
-<div class="modal-overlay" id="moveModal">
-  <div class="modal">
-    <h3>Move row to another ranch</h3>
-    <select id="moveTarget"></select>
-    <div class="modal-actions">
-      <button class="cancel-btn" onclick="closeMoveModal()">Cancel</button>
-      <button class="confirm-btn" onclick="confirmMoveRow()">Move</button>
-    </div>
-  </div>
-</div>
-
-<!-- Import destination modal -->
-<div class="modal-overlay" id="importDestModal">
-  <div class="modal" style="min-width:400px;max-width:500px;max-height:80vh;overflow-y:auto;">
-    <h3>Choose where to import each ranch</h3>
-    <div id="importDestList"></div>
-    <div class="modal-actions" style="margin-top:12px;">
-      <button class="cancel-btn" onclick="cancelImportDest()">Cancel</button>
-      <button class="confirm-btn" onclick="confirmImportDest()">Import</button>
-    </div>
-  </div>
-</div>
-
-<!-- Context menu -->
+<!-- Context Menu -->
 <div class="ctx-menu" id="ctxMenu" style="display:none;"></div>
 
+<!-- ═══ Scripts ═══ -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="utils.js"></script>
+<script src="data-store.js"></script>
+<script src="global-import.js"></script>
 <script src="app.js"></script>
+<script src="review-data.js"></script>
+<script src="review-logic.js"></script>
+<script src="coleditor.js"></script>
+<script src="tracker-logic.js"></script>
 <script>
-function switchPage(pageName) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.topnav-tab').forEach(t => t.classList.remove('active'));
-  const page = document.getElementById('page-' + pageName);
-  const tab = document.querySelector('.topnav-tab[data-page="' + pageName + '"]');
-  if (page) page.classList.add('active');
-  if (tab) tab.classList.add('active');
-  if (pageName === 'home') { renderHomeStats(); hideStatsBar(); }
-  if (pageName === 'orgdata') { renderOrgDataSelect(); renderOrgData(); updateOrgDataStats(); }
-  if (pageName === 'ocr') { hideStatsBar(); }
-  if (pageName === 'merge') { /* renderStats called by renderMain */ }
-}
-
-function renderHomeStats() {
-  const data = getData();
-  const orgs = Object.keys(data.orgs || {});
-  let totalRanches = 0, totalRows = 0, totalDone = 0;
-
-  orgs.forEach(orgName => {
-    const org = data.orgs[orgName];
-    const ranches = Object.keys(org.ranches || {});
-    totalRanches += ranches.length;
-    ranches.forEach(ranchName => {
-      const ranch = org.ranches[ranchName];
-      if (!ranch.rows) return;
-      totalRows += ranch.rows.length;
-      ranch.rows.forEach((row, ri) => {
-        const required = row.reduce((cols, cell, ci) => {
-          if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci);
-          return cols;
-        }, []);
-        const done = new Set((ranch.progress || {})[ri] || []);
-        if (required.every(ci => done.has(ci))) totalDone++;
-      });
-    });
-  });
-
-  const pct = totalRows > 0 ? Math.round((totalDone / totalRows) * 100) : 0;
-
-  document.getElementById('homeStats').innerHTML =
-    '<div class="home-stat-pill"><strong>' + orgs.length + '</strong> orgs</div>' +
-    '<div class="home-stat-pill"><strong>' + totalRanches + '</strong> sites</div>' +
-    '<div class="home-stat-pill"><strong>' + totalDone.toLocaleString() + '</strong> / ' + totalRows.toLocaleString() + ' done</div>' +
-    '<div class="home-stat-pill"><strong>' + pct + '%</strong><span class="hstat-bar"><span class="hstat-bar-fill" style="width:' + pct + '%"></span></span></div>';
-
-  const metaEl = document.getElementById('mergeToolMeta');
-  if (metaEl) {
-    metaEl.innerHTML = '<span class="hcard-meta-item">' + totalRanches + ' sites</span><span class="hcard-meta-item">' + totalRows.toLocaleString() + ' records</span><span class="hcard-meta-item">' + pct + '% complete</span>';
-  }
-}
-
-renderHomeStats();
-hideStatsBar();
-
-function hideStatsBar() {
-  document.getElementById('statsBar').style.display = 'none';
-}
-
-function showStatsBar(total, done) {
-  const bar = document.getElementById('statsBar');
-  const remaining = total - done;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  bar.style.display = 'block';
-  bar.innerHTML =
-    '<span class="stat"><span class="stat-value">' + total + '</span> total</span>' +
-    '<span class="stat"><span class="stat-value stat-done">' + done + '</span> done</span>' +
-    '<span class="stat"><span class="stat-value stat-remaining">' + remaining + '</span> left</span>' +
-    '<span class="stat"><span class="stat-value stat-pct">' + pct + '%</span>' +
-    '<span class="stat-progress"><span class="stat-progress-fill" style="width:' + pct + '%;"></span></span></span>';
-}
-
-function updateOrgDataStats() {
-  const org = document.getElementById('orgDataSelect')?.value;
-  if (!org || !orgDataView) { hideStatsBar(); return; }
-
-  const mergeData = getData();
-  const ocrStore = getOrgDataStore();
-  const orgMerge = mergeData.orgs[org];
-  const orgOCR = ocrStore[org] || [];
-
-  if (orgDataView === 'sites-overview') {
-    if (!orgMerge) { hideStatsBar(); return; }
-    const ranches = Object.keys(orgMerge.ranches || {});
-    let total = ranches.length, done = 0;
-    ranches.forEach(rName => {
-      const ranch = orgMerge.ranches[rName];
-      const rTotal = ranch.rows.length;
-      let rDone = 0;
-      ranch.rows.forEach((row, ri) => {
-        const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-        const d = new Set((ranch.progress || {})[ri] || []);
-        if (req.every(ci => d.has(ci))) rDone++;
-      });
-      if (rDone === rTotal && rTotal > 0) done++;
-    });
-    showStatsBar(total, done);
-  } else if (orgDataView.startsWith('ranch-')) {
-    const rName = orgDataView.substring(6);
-    const ranch = orgMerge?.ranches?.[rName];
-    if (!ranch) { hideStatsBar(); return; }
-    let total = ranch.rows.length, done = 0;
-    ranch.rows.forEach((row, ri) => {
-      const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-      const d = new Set((ranch.progress || {})[ri] || []);
-      if (req.every(ci => d.has(ci))) done++;
-    });
-    showStatsBar(total, done);
-  } else if (orgDataView.startsWith('ocr-')) {
-    const idx = parseInt(orgDataView.substring(4));
-    const item = orgOCR[idx];
-    if (!item) { hideStatsBar(); return; }
-    let total = 0, done = 0;
-    item.rows.forEach((row, ri) => {
-      const rowArchived = (item.archived && item.archived[ri]) || [];
-      const rowDone = (item.doneCells && item.doneCells[ri]) || [];
-      // Count non-empty, non-archived cells
-      let nonEmpty = 0;
-      row.forEach((c, ci) => { if (c.trim() && !rowArchived.includes(ci)) nonEmpty++; });
-      if (nonEmpty === 0) return; // fully archived row, skip
-      total++;
-      // Check if all non-archived non-empty cells are done
-      let allDone = true;
-      row.forEach((c, ci) => {
-        if (c.trim() && !rowArchived.includes(ci) && !rowDone.includes(ci)) allDone = false;
-      });
-      if (allDone) done++;
-    });
-    showStatsBar(total, done);
-  } else {
-    hideStatsBar();
-  }
-}
-
-// ─── Undo system ───
-const undoStack = [];
-const MAX_UNDO = 50;
-
-function pushUndo(action) {
-  undoStack.push(action);
-  if (undoStack.length > MAX_UNDO) undoStack.shift();
-}
-
-function performUndo() {
-  const action = undoStack.pop();
-  if (!action) return;
-
-  if (action.type === 'orgdata-done' || action.type === 'orgdata-undone') {
-    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
-    const table = td?.closest('table');
-    if (td && table) {
-      if (action.type === 'orgdata-done') {
-        td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
-        saveOrgDataCellState(table, td, 'undone');
-        const tr = td.closest('tr');
-        if (tr) tr.classList.remove('orgdata-row-done');
-      } else {
-        td.classList.add('orgdata-cell-done');
-        saveOrgDataCellState(table, td, 'done');
-        checkOrgDataRowDone(td.closest('tr'));
-      }
-    }
-  } else if (action.type === 'orgdata-bulk') {
-    // Undo bulk select
-    action.cells.forEach(c => {
-      const td = document.querySelector('table[id="' + c.tableId + '"] td[data-ri="' + c.ri + '"][data-ci="' + c.ci + '"]');
-      const table = td?.closest('table');
-      if (td && table) {
-        td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
-        saveOrgDataCellState(table, td, 'undone');
-        const tr = td.closest('tr');
-        if (tr) tr.classList.remove('orgdata-row-done');
-      }
-    });
-  } else if (action.type === 'orgdata-archive') {
-    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
-    const table = td?.closest('table');
-    if (td && table) {
-      td.classList.remove('orgdata-cell-archived');
-      saveOrgDataCellState(table, td, 'unarchive');
-    }
-  } else if (action.type === 'orgdata-unarchive') {
-    const td = document.querySelector('td[data-ri="' + action.ri + '"][data-ci="' + action.ci + '"]');
-    const table = td?.closest('table');
-    if (td && table) {
-      td.classList.add('orgdata-cell-archived');
-      td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
-      saveOrgDataCellState(table, td, 'archive');
-    }
-  } else if (action.type === 'merge-done' || action.type === 'merge-undone') {
-    // Table Merge cell undo
-    const tbody = document.getElementById('tbody');
-    if (tbody) {
-      const td = tbody.querySelector('td[data-ci="' + action.ci + '"]');
-      // Re-render is simplest for merge
-      if (typeof renderMain === 'function') renderMain();
-    }
-  }
-}
-
-document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-    e.preventDefault();
-    performUndo();
-  }
+// ═══ Page Switching ═══
+document.getElementById('topbarTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.topbar-tab');
+  if (!tab) return;
+  switchPage(tab.dataset.page);
 });
 
-// ─── Org Data Store ───
-const ORG_DATA_KEY = 'orgDataStore';
+function switchPage(pageName) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.topbar-tab').forEach(t => t.classList.remove('active'));
+  const page = document.getElementById('page-' + pageName);
+  const tab = document.querySelector('.topbar-tab[data-page="' + pageName + '"]');
+  if (page) page.classList.add('active');
+  if (tab) tab.classList.add('active');
 
-function getOrgDataStore() {
-  try { return JSON.parse(localStorage.getItem(ORG_DATA_KEY)) || {}; } catch(e) { return {}; }
-}
-function saveOrgDataStore(store) { localStorage.setItem(ORG_DATA_KEY, JSON.stringify(store)); }
+  // Build sidebar content per tool
+  buildSidebar(pageName);
 
-function showSaveToOrg() {
-  const data = getData();
-  const select = document.getElementById('saveToOrgSelect');
-  select.innerHTML = '';
-  Object.keys(data.orgs || {}).sort().forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name; opt.textContent = name;
-    select.appendChild(opt);
-  });
-  document.getElementById('saveToOrgName').value = '';
-  updateSaveToOrgExisting();
-  select.onchange = updateSaveToOrgExisting;
-  document.getElementById('saveToOrgModal').classList.add('show');
+  // Tool-specific init
+  if (pageName === 'merge' && typeof initMergePage === 'function') initMergePage();
+  if (pageName === 'orgdata' && typeof initOrgDataPage === 'function') initOrgDataPage();
+  if (pageName === 'ocr') hideStatsBar();
+  if (pageName === 'review') { hideStatsBar(); populateSheetSelects(); if (typeof rvInit === 'function') rvInit(); }
+  if (pageName === 'coleditor') { hideStatsBar(); populateSheetSelects(); }
+  if (pageName === 'tracker') { hideStatsBar(); populateSheetSelects(); if (typeof trkInit === 'function') trkInit(); }
+  if (pageName === 'sheetpreview') hideStatsBar();
 }
 
-function updateSaveToOrgExisting() {
-  const org = document.getElementById('saveToOrgSelect').value;
-  const container = document.getElementById('saveToOrgExisting');
-  const store = getOrgDataStore();
-  const items = (store[org] || []);
+function buildSidebar(pageName) {
+  const dyn = document.getElementById('sidebarDynamic');
 
-  if (items.length === 0) {
-    container.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary);">No existing saves for this org.</span>';
-    return;
-  }
+  if (pageName === 'merge') {
+    dyn.innerHTML = '<div class="sidebar-label">Projects</div><div id="mergeOrgList"></div><div id="mergeArchive"></div>' +
+      '<div class="sidebar-input-row"><input type="text" id="newOrgName" class="input-field" placeholder="New org..."><button class="btn btn-primary btn-sm" id="newOrgBtn">+</button></div>';
+    if (typeof renderMergeSidebar === 'function') renderMergeSidebar();
 
-  let html = '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
-  items.forEach(item => {
-    html += '<button type="button" onclick="document.getElementById(\'saveToOrgName\').value=\'' + item.name.replace(/'/g, "\\'") + '\'" style="padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:11px;font-family:inherit;transition:all 0.15s;">' + escHtml(item.name) + ' <span style="color:var(--text-tertiary);">(' + item.rows.length + ')</span></button>';
-  });
-  html += '</div>';
-  container.innerHTML = html;
-}
+  } else if (pageName === 'orgdata') {
+    dyn.innerHTML = '<div style="padding:8px 12px;"><select id="orgDataSelect" class="input-field" style="width:100%;"></select></div><div id="orgDataNav"></div>';
+    if (typeof initOrgDataPage === 'function') initOrgDataPage();
 
-function closeSaveToOrg() {
-  document.getElementById('saveToOrgModal').classList.remove('show');
-}
-
-function confirmSaveToOrg() {
-  const org = document.getElementById('saveToOrgSelect').value;
-  const name = document.getElementById('saveToOrgName').value.trim();
-  const source = document.getElementById('saveToOrgSource').value;
-  if (!org || !name) { alert('Please select an org and enter a name.'); return; }
-
-  const wrap = document.getElementById('ocrTableWrap');
-  const headers = [];
-  wrap.querySelectorAll('th').forEach(th => headers.push(th.textContent));
-  const rows = [];
-  const archived = [];
-  const doneCells = [];
-  wrap.querySelectorAll('tbody tr').forEach((tr, ri) => {
-    const row = [];
-    const rowDone = [];
-    tr.querySelectorAll('td').forEach((td, ci) => {
-      row.push(td.textContent.replace(/\u2713 Done/g, '').trim());
-      if (td.classList.contains('ocr-cell-done')) rowDone.push(ci);
-    });
-    if (row.some(c => c)) {
-      rows.push(row);
-      doneCells.push(rowDone);
-      // Check if any cell in this row is archived
-      const archivedRow = [];
-      tr.querySelectorAll('td').forEach((td, ci) => {
-        if (td.classList.contains('ocr-cell-archived')) archivedRow.push(ci);
+  } else if (pageName === 'review' || pageName === 'coleditor' || pageName === 'tracker') {
+    // Show imported sheets as quick-load in sidebar
+    const names = getSheetNames();
+    let html = '<div class="sidebar-label">Quick Load Sheet</div>';
+    if (names.length === 0) {
+      html += '<div class="sidebar-empty">Import data first</div>';
+    } else {
+      names.forEach(n => {
+        const s = getSheet(n);
+        html += '<div class="sb-item" onclick="quickLoadSheet(\'' + escJs(n) + '\',\'' + pageName + '\')" title="' + escHtml(n) + '">' +
+          '<span class="name">' + escHtml(n) + '</span><span class="count">' + (s?s.rowCount:'?') + '</span></div>';
       });
-      archived.push(archivedRow);
     }
-  });
+    dyn.innerHTML = html;
 
-  if (rows.length === 0) { alert('No data to save.'); return; }
-
-  const store = getOrgDataStore();
-  if (!store[org]) store[org] = [];
-
-  // Check if an extraction with this name already exists
-  const existingIdx = store[org].findIndex(item => item.name === name);
-
-  if (existingIdx >= 0) {
-    if (!confirm('An extraction named "' + name + '" already exists. Replace it and transfer done progress for matching rows?')) return;
-
-    const existing = store[org][existingIdx];
-
-    // Build lookup of old row text -> done/archived status
-    const oldStatus = {};
-    (existing.rows || []).forEach((oldRow, ri) => {
-      const key = oldRow.join('\t');
-      oldStatus[key] = {
-        doneCells: (existing.doneCells && existing.doneCells[ri]) || [],
-        archived: (existing.archived && existing.archived[ri]) || []
-      };
-    });
-
-    // Transfer status to new rows by matching exact text
-    const newDoneCells = [];
-    const newArchived = [];
-    rows.forEach((row, ri) => {
-      const key = row.join('\t');
-      if (oldStatus[key]) {
-        newDoneCells.push(oldStatus[key].doneCells);
-        newArchived.push(oldStatus[key].archived);
-      } else {
-        newDoneCells.push(doneCells[ri] || []);
-        newArchived.push(archived[ri] || []);
-      }
-    });
-
-    store[org][existingIdx] = {
-      name: name,
-      source: source,
-      headers: headers,
-      rows: rows,
-      doneCells: newDoneCells,
-      archived: newArchived,
-      savedAt: new Date().toISOString()
-    };
-
-    saveOrgDataStore(store);
-    closeSaveToOrg();
-    const transferred = rows.filter((row) => oldStatus[row.join('\t')]).length;
-    alert('Replaced "' + name + '" in ' + org + ' (' + rows.length + ' rows, ' + transferred + ' with transferred progress).');
   } else {
-    store[org].push({
-      name: name,
-      source: source,
-      headers: headers,
-      rows: rows,
-      doneCells: doneCells,
-      archived: archived,
-      savedAt: new Date().toISOString()
-    });
-    saveOrgDataStore(store);
-    closeSaveToOrg();
-    alert('Saved "' + name + '" to ' + org + ' (' + rows.length + ' rows).');
+    dyn.innerHTML = '';
   }
 }
 
-let orgDataView = null; // current view key
+function quickLoadSheet(name, tool) {
+  const sheet = getSheet(name);
+  if (!sheet) return;
+  // Highlight active
+  document.querySelectorAll('#sidebarDynamic .sb-item').forEach(el => el.classList.remove('active'));
+  event?.target?.closest?.('.sb-item')?.classList.add('active');
 
-function renderOrgDataSelect() {
-  const data = getData();
-  const select = document.getElementById('orgDataSelect');
-  const current = select.value;
-  select.innerHTML = '<option value="">-- Select Org --</option>';
-  Object.keys(data.orgs || {}).sort().forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name; opt.textContent = name;
-    if (name === current) opt.selected = true;
-    select.appendChild(opt);
-  });
+  if (tool === 'review' && typeof rvLoadSheetData === 'function') {
+    rvLoadSheetData(sheet.headers, sheet.rows);
+  } else if (tool === 'coleditor' && typeof ceLoadSheetData === 'function') {
+    ceLoadSheetData(sheet.headers, sheet.rows);
+  } else if (tool === 'tracker' && typeof trkLoadSheetData === 'function') {
+    trkLoadSheetData(sheet.headers, sheet.rows, name);
+  }
 }
 
-function renderOrgData() {
-  const org = document.getElementById('orgDataSelect').value;
-  const nav = document.getElementById('orgDataNav');
-  const content = document.getElementById('orgDataContent');
-  const toolbar = document.getElementById('orgDataToolbar');
-
-  if (!org) {
-    nav.innerHTML = '';
-    toolbar.innerHTML = '';
-    content.innerHTML = '<p class="ocr-placeholder">Select an organization.</p>';
-    return;
-  }
-
-  const mergeData = getData();
-  const ocrStore = getOrgDataStore();
-  const orgMerge = mergeData.orgs[org];
-  const orgOCR = ocrStore[org] || [];
-  const ranches = orgMerge ? Object.keys(orgMerge.ranches || {}).sort() : [];
-
-  function isRowDone(ranch, ri, row) {
-    const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-    const d = new Set((ranch.progress || {})[ri] || []);
-    return req.length > 0 && req.every(ci => d.has(ci));
-  }
-
-  // Build sidebar nav
-  let navHtml = '';
-
-  // Sites & Locations (collapsible)
-  const sitesOpen = localStorage.getItem('orgdataNav_sites') !== 'closed';
-  navHtml += '<div class="orgdata-nav-group">';
-  navHtml += '<div class="orgdata-nav-label orgdata-nav-collapsible" onclick="toggleOrgDataNav(\'sites\')">';
-  navHtml += '<span class="orgdata-nav-arrow' + (sitesOpen ? ' open' : '') + '" id="orgdataArrowSites">&#9654;</span>';
-  navHtml += 'Sites & Locations <span class="nav-count">' + ranches.length + '</span></div>';
-  navHtml += '<div class="orgdata-nav-list' + (sitesOpen ? ' open' : '') + '" id="orgdataListSites">';
-  navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'sites-overview' ? ' active' : '') + '" onclick="showOrgDataView(\'sites-overview\')"><span class="nav-label">All Sites</span><span class="nav-count">' + ranches.length + '</span></div>';
-  ranches.forEach(rName => {
-    const ranch = orgMerge.ranches[rName];
-    const total = ranch.rows.length;
-    let done = 0;
-    ranch.rows.forEach((row, ri) => { if (isRowDone(ranch, ri, row)) done++; });
-    const isDone = done === total && total > 0;
-    navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'ranch-' + rName ? ' active' : '') + (isDone ? ' nav-done' : '') + '" onclick="showOrgDataView(\'ranch-' + escHtml(rName).replace(/'/g, "\\'") + '\')" title="' + escHtml(rName) + '"><span class="nav-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(rName) + '</span><span class="nav-count">' + total + '</span></div>';
-  });
-  navHtml += '</div></div>';
-
-  // Jobs & Production (collapsible)
-  const jobsOpen = localStorage.getItem('orgdataNav_jobs') !== 'closed';
-  navHtml += '<div class="orgdata-nav-group">';
-  navHtml += '<div class="orgdata-nav-label orgdata-nav-collapsible" onclick="toggleOrgDataNav(\'jobs\')">';
-  navHtml += '<span class="orgdata-nav-arrow' + (jobsOpen ? ' open' : '') + '" id="orgdataArrowJobs">&#9654;</span>';
-  navHtml += 'Jobs & Production <span class="nav-count">' + orgOCR.length + '</span></div>';
-  navHtml += '<div class="orgdata-nav-list' + (jobsOpen ? ' open' : '') + '" id="orgdataListJobs">';
-  orgOCR.forEach((item, idx) => {
-    navHtml += '<div class="orgdata-nav-item' + (orgDataView === 'ocr-' + idx ? ' active' : '') + '" onclick="showOrgDataView(\'ocr-' + idx + '\')" title="' + escHtml(item.name) + '"><span class="nav-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(item.name) + '</span><span class="nav-count">' + item.rows.length + '</span></div>';
-  });
-  if (orgOCR.length === 0) navHtml += '<div class="orgdata-nav-item" style="opacity:0.4;cursor:default;"><span class="nav-label">No job data yet</span></div>';
-  navHtml += '</div></div>';
-
-  nav.innerHTML = navHtml;
-
-  // Auto-select first view if none
-  if (!orgDataView) orgDataView = 'sites-overview';
-  showOrgDataView(orgDataView);
+// ═══ Shared Helpers ═══
+function hideStatsBar() { document.getElementById('statsBar').style.display = 'none'; }
+function showStatsBar(total, done) {
+  const bar = document.getElementById('statsBar');
+  const rem = total - done, pct = total > 0 ? Math.round(done / total * 100) : 0;
+  bar.style.display = 'block';
+  bar.innerHTML = '<span class="stat"><strong>' + total + '</strong> total</span>' +
+    '<span class="stat"><strong class="text-success">' + done + '</strong> done</span>' +
+    '<span class="stat"><strong class="text-danger">' + rem + '</strong> left</span>' +
+    '<span class="stat"><strong class="text-accent">' + pct + '%</strong><span class="progress-mini"><span class="progress-mini-fill" style="width:' + pct + '%"></span></span></span>';
 }
 
-function showOrgDataView(view) {
-  orgDataView = view;
-  const org = document.getElementById('orgDataSelect').value;
-  if (!org) return;
-
-  const mergeData = getData();
-  const ocrStore = getOrgDataStore();
-  const orgMerge = mergeData.orgs[org];
-  const orgOCR = ocrStore[org] || [];
-  const content = document.getElementById('orgDataContent');
-  const toolbar = document.getElementById('orgDataToolbar');
-
-  function isRowDone(ranch, ri, row) {
-    const req = row.reduce((cols, cell, ci) => { if (cell !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-    const d = new Set((ranch.progress || {})[ri] || []);
-    return req.length > 0 && req.every(ci => d.has(ci));
-  }
-
-  // Update active nav
-  document.querySelectorAll('.orgdata-nav-item').forEach(el => el.classList.remove('active'));
-  // Find and activate
-  const navItems = document.querySelectorAll('.orgdata-nav-item');
-  navItems.forEach(el => { if (el.getAttribute('onclick')?.includes("'" + view + "'")) el.classList.add('active'); });
-
-  let html = '';
-
-  if (view === 'sites-overview') {
-    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span><div class="orgdata-search"><input type="text" placeholder="Filter sites..." oninput="filterOrgDataTable(\'Sites\',this.value)"></div>';
-    if (orgMerge) {
-      const ranches = Object.keys(orgMerge.ranches || {}).sort();
-      html += '<table id="orgDataTableSites"><thead><tr><th>Site Name</th><th>Locations</th><th>Completion</th></tr></thead><tbody>';
-      ranches.forEach(rName => {
-        const ranch = orgMerge.ranches[rName];
-        const total = ranch.rows.length;
-        let done = 0;
-        ranch.rows.forEach((row, ri) => { if (isRowDone(ranch, ri, row)) done++; });
-        const pct = total > 0 ? Math.round(done / total * 100) : 0;
-        const cls = done === total && total > 0 ? ' class="orgdata-row-done"' : '';
-        html += '<tr' + cls + ' style="cursor:pointer" onclick="showOrgDataView(\'ranch-' + escHtml(rName).replace(/'/g, "\\'") + '\');renderOrgData()"><td>' + escHtml(rName) + '</td><td>' + total + '</td><td>' + pct + '%</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
-  } else if (view.startsWith('ranch-')) {
-    const rName = view.substring(6);
-    const ranch = orgMerge?.ranches?.[rName];
-    toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(rName) + '</span><div class="orgdata-search"><input type="text" placeholder="Filter..." oninput="filterOrgDataTable(\'Locations\',this.value)"></div>';
-    if (ranch && ranch.rows.length > 0) {
-      html += '<table id="orgDataTableLocations" data-type="merge" data-org="' + escHtml(org) + '"><thead><tr>';
-      HEADERS.forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
-      html += '</tr></thead><tbody>';
-      ranch.rows.forEach((row, ri) => {
-        const done = isRowDone(ranch, ri, row);
-        html += '<tr' + (done ? ' class="orgdata-row-done"' : '') + ' data-ranch="' + escHtml(rName) + '" data-ri="' + ri + '">';
-        row.forEach((cell, ci) => {
-          const cellDone = (ranch.progress || {})[ri] && new Set((ranch.progress || {})[ri]).has(ci);
-          html += '<td' + (cellDone ? ' class="orgdata-cell-done"' : '') + ' data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-    } else { html = '<p class="ocr-placeholder">No data for this site.</p>'; }
-  } else if (view.startsWith('ocr-')) {
-    const idx = parseInt(view.substring(4));
-    const item = orgOCR[idx];
-    if (item) {
-      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(item.name) + '</span><div class="orgdata-search"><input type="text" placeholder="Filter..." oninput="filterOrgDataTable(\'Ocr' + idx + '\',this.value)"></div><button onclick="deleteOrgDataItem(\'' + escHtml(org).replace(/'/g, "\\'") + '\',' + idx + ')" style="padding:5px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--red);cursor:pointer;font-size:11px;font-family:inherit;">Delete</button>';
-      html += '<table id="orgDataTableOcr' + idx + '" data-org="' + escHtml(org) + '" data-idx="' + idx + '"><thead><tr>';
-      (item.headers || []).forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
-      html += '</tr></thead><tbody>';
-      (item.rows || []).forEach((row, ri) => {
-        const rowDone = (item.doneCells && item.doneCells[ri]) || [];
-        const rowArchived = (item.archived && item.archived[ri]) || [];
-        const allDone = rowDone.length >= row.filter(c => c.trim()).length && row.filter(c => c.trim()).length > 0;
-        html += '<tr' + (allDone ? ' class="orgdata-row-done"' : '') + ' data-ri="' + ri + '">';
-        row.forEach((cell, ci) => {
-          const isDone = rowDone.includes(ci);
-          const isArchived = rowArchived.includes(ci);
-          let cls = isArchived ? ' class="orgdata-cell-archived"' : isDone ? ' class="orgdata-cell-done"' : '';
-          html += '<td' + cls + ' data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-    }
-  }
-
-  content.innerHTML = html;
-
-  // Add interactions
-  let lastClickedCell = null;
-  content.querySelectorAll('table').forEach(table => {
-    // Sort headers
-    table.querySelectorAll('th').forEach((th, ci) => {
-      th.style.cursor = 'pointer';
-      th.dataset.sortDir = '';
-      th.addEventListener('click', () => {
-        const tbody = table.querySelector('tbody');
-        const rows = Array.from(tbody.querySelectorAll('tr'));
-        const dir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
-        // Reset all headers in this table
-        table.querySelectorAll('th').forEach(h => { h.dataset.sortDir = ''; h.classList.remove('sort-active'); });
-        th.dataset.sortDir = dir;
-        th.classList.add('sort-active');
-        rows.sort((a, b) => {
-          const av = (a.children[ci]?.textContent || '').trim();
-          const bv = (b.children[ci]?.textContent || '').trim();
-          const an = parseFloat(av), bn = parseFloat(bv);
-          if (!isNaN(an) && !isNaN(bn)) return dir === 'asc' ? an - bn : bn - an;
-          return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-        });
-        rows.forEach(r => tbody.appendChild(r));
-      });
-    });
-
-    // Click/double-click on cells
-    const allTds = Array.from(table.querySelectorAll('td'));
-    allTds.forEach(td => {
-      let clickCount = 0;
-      td.addEventListener('click', (e) => {
-        if (td.classList.contains('orgdata-cell-archived')) return;
-        const text = td.textContent.trim();
-        if (!text) return;
-
-        // Shift-click: bulk mark done from last clicked to this cell
-        if (e.shiftKey && lastClickedCell && lastClickedCell.closest('table') === table) {
-          const startIdx = allTds.indexOf(lastClickedCell);
-          const endIdx = allTds.indexOf(td);
-          if (startIdx >= 0 && endIdx >= 0) {
-            const from = Math.min(startIdx, endIdx);
-            const to = Math.max(startIdx, endIdx);
-            const bulkCells = [];
-            for (let i = from; i <= to; i++) {
-              const c = allTds[i];
-              if (c.classList.contains('orgdata-cell-archived') || !c.textContent.trim()) continue;
-              if (!c.classList.contains('orgdata-cell-done')) {
-                c.classList.add('orgdata-cell-done');
-                saveOrgDataCellState(table, c, 'done');
-                checkOrgDataRowDone(c.closest('tr'));
-                bulkCells.push({ tableId: table.id, ri: c.dataset.ri, ci: c.dataset.ci });
-              }
-            }
-            if (bulkCells.length > 0) pushUndo({ type: 'orgdata-bulk', cells: bulkCells });
-            const prev = content.querySelector('.orgdata-cell-clicked');
-            if (prev) prev.classList.remove('orgdata-cell-clicked');
-            td.classList.add('orgdata-cell-clicked');
-            lastClickedCell = td;
-            return;
-          }
-        }
-
-        clickCount++;
-        if (clickCount === 1) {
-          setTimeout(() => {
-            if (clickCount === 1) {
-              navigator.clipboard.writeText(text).then(() => {
-                const prev = content.querySelector('.orgdata-cell-clicked');
-                if (prev) prev.classList.remove('orgdata-cell-clicked');
-                td.classList.add('orgdata-cell-done');
-                td.classList.add('orgdata-cell-clicked');
-                lastClickedCell = td;
-                checkOrgDataRowDone(td.closest('tr'));
-                saveOrgDataCellState(table, td, 'done');
-                pushUndo({ type: 'orgdata-done', ri: td.dataset.ri, ci: td.dataset.ci });
-              });
-            } else {
-              td.classList.remove('orgdata-cell-done');
-              td.classList.remove('orgdata-cell-clicked');
-              const tr = td.closest('tr');
-              if (tr) tr.classList.remove('orgdata-row-done');
-              saveOrgDataCellState(table, td, 'undone');
-              pushUndo({ type: 'orgdata-undone', ri: td.dataset.ri, ci: td.dataset.ci });
-            }
-            clickCount = 0;
-          }, 200);
-        }
-      });
-
-      // Right-click to archive/restore
-      td.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        const ri = td.dataset.ri;
-        const ci = td.dataset.ci;
-        if (ri === undefined || ci === undefined) return;
-        const isArchived = td.classList.contains('orgdata-cell-archived');
-        const menu = document.getElementById('ctxMenu');
-        menu.innerHTML = isArchived
-          ? '<div data-action="restore">Restore Cell</div>'
-          : '<div data-action="archive">Archive Cell</div>';
-        menu.style.display = 'block';
-        menu.style.left = e.clientX + 'px';
-        menu.style.top = e.clientY + 'px';
-        menu.onclick = (ev) => {
-          const action = ev.target.dataset.action;
-          menu.style.display = 'none';
-          if (action === 'archive') {
-            td.classList.add('orgdata-cell-archived');
-            td.classList.remove('orgdata-cell-done', 'orgdata-cell-clicked');
-            saveOrgDataCellState(table, td, 'archive');
-            pushUndo({ type: 'orgdata-archive', ri: td.dataset.ri, ci: td.dataset.ci });
-          } else if (action === 'restore') {
-            td.classList.remove('orgdata-cell-archived');
-            saveOrgDataCellState(table, td, 'unarchive');
-            pushUndo({ type: 'orgdata-unarchive', ri: td.dataset.ri, ci: td.dataset.ci });
-          }
-        };
-      });
+var populateToolSheetSelects; // alias for review-logic.js
+function populateSheetSelects() {
+  const names = getSheetNames();
+  ['rv-sheet-select', 'rv-db-sheet-select', 'ce-sheet-select', 'trk-sheet-select'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">-- Select imported sheet --</option>';
+    names.forEach(n => {
+      const s = getSheet(n);
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n + ' (' + (s ? s.rowCount : '?') + ' rows)';
+      if (n === cur) opt.selected = true;
+      sel.appendChild(opt);
     });
   });
-
-  updateOrgDataStats();
 }
 
-function saveOrgDataCellState(table, td, action) {
-  const ri = parseInt(td.dataset.ri);
-  const ci = parseInt(td.dataset.ci);
-  if (isNaN(ri) || isNaN(ci)) return;
-
-  // Table Merge data
-  if (table.dataset.type === 'merge') {
-    const orgName = table.dataset.org;
-    const tr = td.closest('tr');
-    const ranchName = tr?.dataset.ranch;
-    if (!orgName || !ranchName) return;
-    const data = getData();
-    const ranch = getRanch(data, orgName, ranchName);
-    if (!ranch) return;
-    if (!ranch.progress[ri]) ranch.progress[ri] = [];
-    const prog = new Set(ranch.progress[ri]);
-    if (action === 'done') prog.add(ci);
-    else if (action === 'undone') prog.delete(ci);
-    ranch.progress[ri] = [...prog];
-    saveData(data);
-    return;
-  }
-
-  // OCR saved data
-  const orgAttr = table.dataset.org;
-  const idxAttr = table.dataset.idx;
-  if (!orgAttr || idxAttr === undefined) return;
-
-  const store = getOrgDataStore();
-  const item = store[orgAttr] && store[orgAttr][parseInt(idxAttr)];
-  if (!item) return;
-
-  if (!item.doneCells) item.doneCells = item.rows.map(() => []);
-  if (!item.archived) item.archived = item.rows.map(() => []);
-
-  if (action === 'done') {
-    if (!item.doneCells[ri].includes(ci)) item.doneCells[ri].push(ci);
-  } else if (action === 'undone') {
-    item.doneCells[ri] = item.doneCells[ri].filter(c => c !== ci);
-  } else if (action === 'archive') {
-    if (!item.archived[ri].includes(ci)) item.archived[ri].push(ci);
-    item.doneCells[ri] = item.doneCells[ri].filter(c => c !== ci);
-  } else if (action === 'unarchive') {
-    item.archived[ri] = item.archived[ri].filter(c => c !== ci);
-  }
-
-  saveOrgDataStore(store);
-}
-
-function checkOrgDataRowDone(tr) {
-  if (!tr) return;
-  const cells = tr.querySelectorAll('td');
-  let total = 0, done = 0;
-  cells.forEach(td => {
-    if (td.textContent.trim()) { total++; if (td.classList.contains('orgdata-cell-done')) done++; }
-  });
-  if (done >= total && total > 0) tr.classList.add('orgdata-row-done');
-  else tr.classList.remove('orgdata-row-done');
-  if (typeof updateOrgDataStats === 'function') updateOrgDataStats();
-}
-
-function filterOrgDataTable(id, query) {
-  const table = document.getElementById('orgDataTable' + id.charAt(0).toUpperCase() + id.slice(1));
-  if (!table) return;
-  const q = query.toLowerCase().trim();
-  table.querySelectorAll('tbody tr').forEach(tr => {
-    if (!q) { tr.style.display = ''; return; }
-    const text = tr.textContent.toLowerCase();
-    tr.style.display = text.includes(q) ? '' : 'none';
-  });
-}
-
-function toggleOrgDataNav(section) {
-  const list = document.getElementById('orgdataList' + section.charAt(0).toUpperCase() + section.slice(1));
-  const arrow = document.getElementById('orgdataArrow' + section.charAt(0).toUpperCase() + section.slice(1));
-  if (list) list.classList.toggle('open');
-  if (arrow) arrow.classList.toggle('open');
-  const isOpen = list?.classList.contains('open');
-  localStorage.setItem('orgdataNav_' + section, isOpen ? 'open' : 'closed');
-}
-
-function toggleOrgDataItem(idx) {
-  const body = document.getElementById('orgDataBody' + idx);
-  if (body) body.classList.toggle('open');
-}
-
-function deleteOrgDataItem(org, idx) {
-  if (!confirm('Delete this saved data?')) return;
-  const store = getOrgDataStore();
-  if (store[org]) { store[org].splice(idx, 1); saveOrgDataStore(store); }
-  renderOrgData();
-}
 
 // ─── OCR Tool ───
 let ocrImage = null; // original Image object
@@ -1657,6 +1360,18 @@ function cleanOCRText(raw) {
       l = l.replace(/\b806\b/g, 'BO G');
       // "0" -> "O" when between uppercase letters
       l = l.replace(/([A-Z])0([A-Z])/g, '$1O$2');
+      // "0" -> "O" at end of uppercase codes (e.g. "262320GY0" -> "262320GYO")
+      l = l.replace(/([A-Z])0\b/g, '$1O');
+
+      // "5" -> "S" when it's a trailing suffix on a site code (e.g. "Frost 125" -> "Frost 12S")
+      // Pattern: alpha-word + space + 1-3 digits + "5" at end of token
+      // Only when preceded by a letter-word (site name), not standalone numbers
+      l = l.replace(/([A-Za-z]\s+\d{1,3})5\b/g, '$1S');
+
+      // "HaH" -> "H&H" (common OCR misread of ampersand)
+      l = l.replace(/\bHaH\b/g, 'H&H');
+      // More general: single lowercase 'a' between uppercase letters likely means '&'
+      l = l.replace(/\b([A-Z])a([A-Z])\b/g, '$1&$2');
 
       // "£5" -> "ES" (common OCR misread)
       l = l.replace(/£5/g, 'ES');
@@ -1776,6 +1491,252 @@ function clearOCR() {
   document.getElementById('ocrTableWrap').innerHTML = '<p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>';
   ocrTableDone = {};
 }
+
+// ═══ Save to Org (OCR bridge) ═══
+function showSaveToOrg() {
+  const select = document.getElementById('saveToOrgSelect');
+  const orgNames = getAllOrgNames();
+  select.innerHTML = '<option value="">-- Select org --</option>';
+  orgNames.forEach(n => {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    select.appendChild(o);
+  });
+  // Auto-select first org if only one
+  if (orgNames.length === 1) select.value = orgNames[0];
+  document.getElementById('saveToOrgNewOrg').value = '';
+  document.getElementById('saveToOrgName').value = '';
+
+  const existing = document.getElementById('saveToOrgExisting');
+  const updateExisting = () => {
+    const org = select.value;
+    if (!org) { existing.innerHTML = ''; return; }
+    const saves = getOcrSaves(org);
+    if (!saves.length) { existing.innerHTML = '<span class="text-muted small">No existing saves for this org.</span>'; return; }
+    existing.innerHTML = saves.map(s =>
+      '<button type="button" class="btn btn-ghost btn-sm" style="margin:2px;" onclick="document.getElementById(\'saveToOrgName\').value=\'' + escJs(s.name) + '\'">' +
+      escHtml(s.name) + ' <span class="text-muted">(' + s.rows.length + ')</span></button>'
+    ).join('');
+  };
+  select.onchange = updateExisting;
+  updateExisting();
+  document.getElementById('saveToOrgModal').classList.add('show');
+}
+
+document.getElementById('saveToOrgCancel')?.addEventListener('click', () => {
+  document.getElementById('saveToOrgModal').classList.remove('show');
+});
+
+document.getElementById('saveToOrgConfirm')?.addEventListener('click', () => {
+  const selectVal = document.getElementById('saveToOrgSelect').value;
+  const newOrg = document.getElementById('saveToOrgNewOrg').value.trim();
+  const org = newOrg || selectVal;
+  const name = document.getElementById('saveToOrgName').value.trim();
+
+  if (!org) { alert('Select an organization or type a new name.'); return; }
+  if (!name) { alert('Enter a name/label for this save.'); return; }
+
+  // Create org if new
+  if (newOrg) createOrg(newOrg);
+
+  const wrap = document.getElementById('ocrTableWrap');
+  const headers = [];
+  wrap.querySelectorAll('th').forEach(th => headers.push(th.textContent));
+  const rows = [], doneCells = [], archived = [];
+  wrap.querySelectorAll('tbody tr').forEach(tr => {
+    const row = [], rd = [], ra = [];
+    tr.querySelectorAll('td').forEach((td, ci) => {
+      row.push(td.textContent.replace(/\u2713 Done/g, '').trim());
+      if (td.classList.contains('ocr-cell-done')) rd.push(ci);
+      if (td.classList.contains('ocr-cell-archived')) ra.push(ci);
+    });
+    if (row.some(c => c)) { rows.push(row); doneCells.push(rd); archived.push(ra); }
+  });
+
+  if (!rows.length) { alert('No data to save.'); return; }
+
+  saveOcrData(org, {
+    name, source: 'Image to Text', headers, rows,
+    doneCells, archived, savedAt: new Date().toISOString()
+  });
+
+  document.getElementById('saveToOrgModal').classList.remove('show');
+  alert('Saved "' + name + '" to ' + org + ' (' + rows.length + ' rows)');
+});
+
+// ═══ Org Data ═══
+let orgDataView = null;
+function initOrgDataPage() {
+  const select = document.getElementById('orgDataSelect');
+  if (!select) return;
+  const cur = select.value;
+  select.innerHTML = '<option value="">-- Select Org --</option>';
+  getAllOrgNames().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; if (n === cur) o.selected = true; select.appendChild(o); });
+  select.onchange = renderOrgDataNav;
+  renderOrgDataNav();
+}
+
+function renderOrgDataNav() {
+  const org = document.getElementById('orgDataSelect')?.value;
+  const nav = document.getElementById('orgDataNav');
+  if (!nav) return;
+  if (!org) { nav.innerHTML = ''; document.getElementById('orgdataContent').innerHTML = '<p class="empty-state">Select an organization.</p>'; hideStatsBar(); return; }
+
+  const store = getStore();
+  const orgData = store.orgs[org]; const ocrSaves = store.ocrSaves[org] || [];
+  const ranches = orgData ? Object.keys(orgData.ranches || {}).sort() : [];
+  const sheets = Object.keys(store.sheets || {}).filter(n => store.sheets[n].orgName === org).sort();
+
+  let html = '';
+  // Sites
+  html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'sites\')"><span class="arrow' + (localStorage.getItem('od_sites')!=='closed'?' open':'') + '" id="odArrow_sites">&#9654;</span> Sites <span class="count">' + ranches.length + '</span></div>';
+  html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_sites')!=='closed'?' open':'') + '" id="odList_sites">';
+  html += '<div class="sb-item' + (orgDataView==='sites'?' active':'') + '" onclick="showOrgData(\'sites\')"><span class="name">All Sites</span><span class="count">' + ranches.length + '</span></div>';
+  ranches.forEach(r => { html += '<div class="sb-item' + (orgDataView==='r-'+r?' active':'') + '" onclick="showOrgData(\'r-' + escJs(r) + '\')" title="' + escHtml(r) + '"><span class="name">' + escHtml(r) + '</span><span class="count">' + (orgData.ranches[r].rows?.length||0) + '</span></div>'; });
+  html += '</div></div>';
+  // Jobs
+  html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'jobs\')"><span class="arrow' + (localStorage.getItem('od_jobs')!=='closed'?' open':'') + '" id="odArrow_jobs">&#9654;</span> Jobs <span class="count">' + ocrSaves.length + '</span></div>';
+  html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_jobs')!=='closed'?' open':'') + '" id="odList_jobs">';
+  ocrSaves.forEach((s, i) => { html += '<div class="sb-item' + (orgDataView==='ocr-'+i?' active':'') + '" onclick="showOrgData(\'ocr-'+i+'\')" title="' + escHtml(s.name) + '"><span class="name">' + escHtml(s.name) + '</span><span class="count">' + s.rows.length + '</span></div>'; });
+  if (!ocrSaves.length) html += '<div class="sb-item" style="opacity:0.4;cursor:default;"><span class="name">None</span></div>';
+  html += '</div></div>';
+  // Imported sheets
+  if (sheets.length) {
+    html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'ods\')"><span class="arrow' + (localStorage.getItem('od_ods')!=='closed'?' open':'') + '" id="odArrow_ods">&#9654;</span> Sheets <span class="count">' + sheets.length + '</span></div>';
+    html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_ods')!=='closed'?' open':'') + '" id="odList_ods">';
+    sheets.forEach(n => { html += '<div class="sb-item' + (orgDataView==='s-'+n?' active':'') + '" onclick="showOrgData(\'s-' + escJs(n) + '\')" title="' + escHtml(n) + '"><span class="name">' + escHtml(n) + '</span><span class="count">' + (store.sheets[n].rowCount||0) + '</span></div>'; });
+    html += '</div></div>';
+  }
+  nav.innerHTML = html;
+  if (!orgDataView) orgDataView = 'sites';
+  showOrgData(orgDataView);
+}
+
+function toggleOrgdataSection(id) {
+  const l = document.getElementById('odList_'+id), a = document.getElementById('odArrow_'+id);
+  if (l) l.classList.toggle('open'); if (a) a.classList.toggle('open');
+  localStorage.setItem('od_'+id, l?.classList.contains('open')?'open':'closed');
+}
+
+function showOrgData(view) {
+  orgDataView = view;
+  const org = document.getElementById('orgDataSelect')?.value;
+  if (!org) return;
+  const store = getStore();
+  const content = document.getElementById('orgdataContent');
+  const toolbar = document.getElementById('orgdataToolbar');
+
+  // Update nav active
+  document.querySelectorAll('#orgDataNav .sb-item').forEach(el => el.classList.remove('active'));
+
+  let html = '';
+  if (view === 'sites') {
+    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
+    const orgData = store.orgs[org];
+    if (orgData) {
+      html += '<table class="data-table" id="odTable"><thead><tr><th>Site</th><th>Locations</th><th>Complete</th></tr></thead><tbody>';
+      Object.keys(orgData.ranches||{}).sort().forEach(r => {
+        const ranch = orgData.ranches[r]; const t = ranch.rows.length; let d = 0;
+        ranch.rows.forEach((row,ri) => { const req = row.reduce((c,v,ci)=>{if(v!==''&&!SKIP_FOR_DONE.has(ci))c.push(ci);return c;},[]); const dn = new Set((ranch.progress||{})[ri]||[]); if(req.every(ci=>dn.has(ci)))d++; });
+        html += '<tr' + (d===t&&t>0?' class="row-done"':'') + ' style="cursor:pointer" onclick="showOrgData(\'r-'+escJs(r)+'\');renderOrgDataNav()"><td>' + escHtml(r) + '</td><td>' + t + '</td><td>' + (t>0?Math.round(d/t*100):0) + '%</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+  } else if (view.startsWith('r-')) {
+    const rName = view.substring(2);
+    toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(rName) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
+    const ranch = store.orgs[org]?.ranches?.[rName];
+    if (ranch?.rows.length) {
+      html += '<table class="data-table" id="odTable"><thead><tr>' + HEADERS.map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
+      ranch.rows.forEach((row, ri) => {
+        const req = row.reduce((c,v,ci)=>{if(v!==''&&!SKIP_FOR_DONE.has(ci))c.push(ci);return c;},[]); const dn = new Set((ranch.progress||{})[ri]||[]);
+        html += '<tr' + (req.every(ci=>dn.has(ci))?' class="row-done"':'') + '>';
+        row.forEach((cell, ci) => { html += '<td' + (dn.has(ci)?' class="cell-highlighted"':'') + '>' + escHtml(cell) + '</td>'; });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+  } else if (view.startsWith('ocr-')) {
+    const idx = parseInt(view.substring(4));
+    const item = (store.ocrSaves[org]||[])[idx];
+    if (item) {
+      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(item.name) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
+      html += '<table class="data-table" id="odTable"><thead><tr>' + (item.headers||[]).map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
+      (item.rows||[]).forEach((row, ri) => {
+        const rd = (item.doneCells?.[ri])||[], ra = (item.archived?.[ri])||[];
+        html += '<tr' + (rd.length>=row.filter(c=>c.trim()).length&&row.filter(c=>c.trim()).length>0?' class="row-done"':'') + '>';
+        row.forEach((c,ci) => { let cls = ra.includes(ci)?' class="cell-archived"':rd.includes(ci)?' class="cell-highlighted"':''; html += '<td'+cls+'>' + escHtml(c) + '</td>'; });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+  } else if (view.startsWith('s-')) {
+    const sName = view.substring(2);
+    const sheet = store.sheets[sName];
+    if (sheet) {
+      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(sName) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
+      html += '<table class="data-table" id="odTable"><thead><tr>' + (sheet.headers||[]).map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
+      (sheet.rows||[]).forEach(row => { html += '<tr>' + row.map(c => '<td>' + escHtml(String(c)) + '</td>').join('') + '</tr>'; });
+      html += '</tbody></table>';
+    }
+  }
+  content.innerHTML = html || '<p class="empty-state">No data.</p>';
+
+  // Add click-to-copy + sort
+  const table = document.getElementById('odTable');
+  if (table) {
+    table.querySelectorAll('td').forEach(td => td.addEventListener('click', () => {
+      const t = td.textContent.trim(); if (!t) return;
+      navigator.clipboard.writeText(t);
+      const p = table.querySelector('.cell-clicked'); if (p) p.classList.remove('cell-clicked');
+      td.classList.add('cell-clicked');
+    }));
+    table.querySelectorAll('th').forEach((th,ci) => { th.dataset.sortDir = ''; th.addEventListener('click', () => {
+      const tbody = table.querySelector('tbody'); const rows = Array.from(tbody.querySelectorAll('tr'));
+      const dir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+      table.querySelectorAll('th').forEach(h => { h.dataset.sortDir = ''; h.classList.remove('sort-active'); });
+      th.dataset.sortDir = dir; th.classList.add('sort-active');
+      rows.sort((a,b) => { const av = (a.children[ci]?.textContent||'').trim(), bv = (b.children[ci]?.textContent||'').trim(); const an = parseFloat(av), bn = parseFloat(bv); if(!isNaN(an)&&!isNaN(bn)) return dir==='asc'?an-bn:bn-an; return dir==='asc'?av.localeCompare(bv):bv.localeCompare(av); });
+      rows.forEach(r => tbody.appendChild(r));
+    }); });
+  }
+}
+
+function filterOrgdataTable(q) {
+  const table = document.getElementById('odTable');
+  if (!table) return; q = q.toLowerCase().trim();
+  table.querySelectorAll('tbody tr').forEach(tr => { tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none'; });
+}
+
+// ═══ Tool Bridges (Review + Column Editor) ═══
+document.getElementById('rv-sheet-select')?.addEventListener('change', e => {
+  const name = e.target.value; if (!name) return;
+  const sheet = getSheet(name);
+  if (sheet && typeof rvLoadSheetData === 'function') rvLoadSheetData(sheet.headers, sheet.rows);
+});
+document.getElementById('rv-db-sheet-select')?.addEventListener('change', e => {
+  const name = e.target.value; if (!name) return;
+  const sheet = getSheet(name);
+  if (sheet && typeof rvLoadDbData === 'function') rvLoadDbData(sheet.headers, sheet.rows);
+});
+document.getElementById('ce-sheet-select')?.addEventListener('change', e => {
+  const name = e.target.value; if (!name) return;
+  const sheet = getSheet(name);
+  if (sheet && typeof ceLoadSheetData === 'function') ceLoadSheetData(sheet.headers, sheet.rows);
+});
+
+document.getElementById('trk-sheet-select')?.addEventListener('change', e => {
+  const name = e.target.value; if (!name) return;
+  const sheet = getSheet(name);
+  if (sheet && typeof trkLoadSheetData === 'function') trkLoadSheetData(sheet.headers, sheet.rows, name);
+});
+
+// Alias for review-logic.js compatibility
+populateToolSheetSelects = populateSheetSelects;
+
+// ═══ Init ═══
+initGlobalImport();
+switchPage('merge');
 </script>
 </body>
 </html>
