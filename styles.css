@@ -981,6 +981,8 @@ a { color: var(--accent); text-decoration: none; }
   min-height: 0;
 }
 .ocr-input-panel { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ocr-layout.ocr-image-hidden .ocr-input-panel { display: none; }
+.ocr-layout.ocr-image-hidden .ocr-output-panel { flex: 1 1 100%; }
 .ocr-output-panel {
   flex: 1;
   display: flex;
@@ -1189,11 +1191,10 @@ a { color: var(--accent); text-decoration: none; }
   cursor: pointer;
   white-space: nowrap;
 }
-.ocr-table-wrap .data-table th:first-child,
-.ocr-table-wrap th:first-child {
-  position: static;
-  border-right: none;
-  font-weight: 600;
+/* Sortable header row (first thead row) — needs to be solidly opaque so scrolling tbody doesn't bleed through */
+.ocr-table-wrap thead tr:first-child th {
+  background: var(--bg-alt);
+  z-index: 6;
 }
 .ocr-table-wrap .data-table th:hover,
 .ocr-table-wrap th:hover { background: var(--bg-muted); color: var(--text); }
@@ -1213,7 +1214,6 @@ a { color: var(--accent); text-decoration: none; }
 }
 .ocr-table-wrap .data-table td:first-child,
 .ocr-table-wrap td:first-child {
-  position: static;
   border-right: none;
   font-weight: normal;
   background: var(--bg);
@@ -1234,6 +1234,53 @@ a { color: var(--accent); text-decoration: none; }
 }
 .ocr-table-wrap tr.ocr-row-done:hover td { background: #dcfce7 !important; }
 .ocr-table-wrap tr.ocr-row-hidden { display: none; }
+.ocr-table-wrap th.ocr-sort-th {
+  cursor: pointer;
+  user-select: none;
+}
+.ocr-table-wrap th.ocr-sort-th:hover { background: var(--bg-muted); }
+.ocr-table-wrap th.ocr-sort-active { background: var(--accent-soft, #dbeafe); }
+.ocr-table-wrap .ocr-sort-arrow {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--accent, #3b82f6);
+  margin-left: 2px;
+  min-width: 10px;
+}
+/* Filter row sits directly below the sort header. The sort header is ~36px tall
+   (10px+10px padding + ~10px text + 1px border). Both rows must be fully opaque
+   so scrolling tbody rows don't bleed through. */
+.ocr-table-wrap tr.ocr-filter-row th {
+  padding: 4px 6px !important;
+  background: var(--bg-alt) !important;
+  position: sticky;
+  top: 36px;
+  z-index: 5;
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.ocr-table-wrap tr.ocr-filter-row th:hover { background: var(--bg-alt) !important; }
+.ocr-table-wrap .ocr-col-filter {
+  background: #ffffff !important;
+}
+.ocr-table-wrap .ocr-col-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: normal;
+  border: 1px solid var(--border, #d4d4d8);
+  border-radius: 4px;
+  background: #fff;
+  color: #18181b;
+  outline: none;
+}
+.ocr-table-wrap .ocr-col-filter:focus {
+  border-color: var(--accent, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
 .ocr-table-wrap .ocr-highlight {
   background: #fef08a;
   border-radius: 2px;
