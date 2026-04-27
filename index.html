@@ -120,12 +120,12 @@
             <div class="ocr-actions">
               <button class="ocr-btn ocr-btn-primary" id="ocrExtractBtn" onclick="runOCR()" disabled>Extract Full</button>
               <button class="ocr-btn ocr-btn-accent" id="ocrCropBtn" onclick="runCroppedOCR()" style="display:none;">Extract Selection</button>
-              <button class="ocr-btn ocr-btn-accent" id="ocrColumnBtn" onclick="runColumnOCR()" style="display:none;">Extract Column</button>
+              <button class="ocr-btn ocr-btn-accent" id="ocrColumnBtn" onclick="runColumnOCR()" style="display:none;" title="Include the header row in the crop — columns will be auto-detected">Extract Columns</button>
               <button class="ocr-btn ocr-btn-secondary" id="ocrClearCropBtn" onclick="clearCrop()" style="display:none;">Clear Crop</button>
               <button class="ocr-btn ocr-btn-secondary" id="ocrReplaceBtn" style="display:none;" onclick="document.getElementById('ocrFileInput').click()">Replace Image</button>
               <button class="ocr-btn ocr-btn-secondary" onclick="clearOCR()">Clear</button>
             </div>
-            <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom</div>
+            <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom &middot; For <b>Extract Columns</b>, include the header row in your crop</div>
             <div class="ocr-progress" id="ocrProgress" style="display:none;">
               <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
               <span class="ocr-progress-text" id="ocrProgressText">Initializing...</span>
@@ -140,6 +140,7 @@
               <div class="ocr-search">
                 <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
               </div>
+              <button class="ocr-copy-btn" id="ocrToggleImageBtn" onclick="toggleOCRImagePanel()" title="Hide the image cropping panel for a wider view of the extracted data">Hide Image</button>
               <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
               <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
             </div>
@@ -1065,13 +1066,320 @@ async function runCroppedOCR() {
 
 async function runColumnOCR() {
   if (!ocrImage || !ocrCrop) return;
-  // Same x and width as crop, but from crop top all the way to image bottom
+  // Same x and width as crop, but from crop top all the way to image bottom.
+  // The crop must include the header row — column boundaries are detected from header word positions.
   const c = document.createElement('canvas');
   const colH = ocrImage.height - ocrCrop.y;
   c.width = ocrCrop.w;
   c.height = colH;
   c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, colH, 0, 0, ocrCrop.w, colH);
-  await doOCR(c.toDataURL('image/png'));
+  await doMultiColumnOCR(c.toDataURL('image/png'));
+}
+
+async function doMultiColumnOCR(imageData) {
+  const progress = document.getElementById('ocrProgress');
+  const fill = document.getElementById('ocrProgressFill');
+  const ptext = document.getElementById('ocrProgressText');
+  const output = document.getElementById('ocrOutput');
+  const copyBtn = document.getElementById('ocrCopyBtn');
+
+  progress.style.display = '';
+  fill.style.width = '0%';
+  ptext.textContent = 'Initializing OCR engine...';
+  output.value = '';
+  copyBtn.style.display = 'none';
+  document.getElementById('ocrExtractBtn').disabled = true;
+
+  const fallback = (text) => {
+    const cleaned = cleanOCRText(text);
+    output.value = cleaned;
+    renderOCRTable(cleaned);
+    fill.style.width = '100%';
+    ptext.textContent = 'Done (fallback to single-column).';
+    copyBtn.style.display = '';
+    document.getElementById('ocrSaveBtn').style.display = '';
+    document.getElementById('ocrExtractBtn').disabled = false;
+  };
+
+  try {
+    const result = await Tesseract.recognize(imageData, 'eng', {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          fill.style.width = pct + '%';
+          ptext.textContent = 'Extracting text... ' + pct + '%';
+        } else {
+          ptext.textContent = m.status || 'Processing...';
+        }
+      }
+    });
+
+    const allWords = (result.data.words || [])
+      .filter(w => w && w.bbox && w.text && w.text.trim());
+    if (allWords.length < 6) {
+      fallback(result.data.text);
+      return;
+    }
+
+    const stripW = ocrCrop ? ocrCrop.w : Math.max(...allWords.map(w => w.bbox.x1)) + 5;
+    const minX = Math.min(...allWords.map(w => w.bbox.x0));
+
+    // Strip checkbox artifacts (e.g. "[J", "OJ", "0", "[O", "[m]") that the OCR generates from rendered checkboxes.
+    // Any short token in the leftmost x-band that contains brackets or is mostly non-alphanumeric.
+    const isCheckboxArtifact = (w) => {
+      const t = (w.text || '').trim();
+      if (!t) return true;
+      const nearLeft = w.bbox.x0 - minX < stripW * 0.06;
+      if (!nearLeft) return false;
+      if (t.length > 5) return false;
+      // contains bracket/paren chars
+      if (/[\[\]\(\)]/.test(t)) return true;
+      // pure non-alpha symbols
+      if (/^[^A-Za-z0-9]{1,4}$/.test(t)) return true;
+      // single/short tokens that look like checkbox glyph misreads (O, J, 0, l, I, |, m...)
+      if (/^[OJ0lI|mn]{1,3}$/.test(t)) return true;
+      return false;
+    };
+    const words = allWords.filter(w => !isCheckboxArtifact(w));
+    if (words.length < 6) { fallback(result.data.text); return; }
+
+    // --- Column detection via X-projection of word occupancy ---
+    const occ = new Uint8Array(Math.ceil(stripW) + 2);
+    words.forEach(w => {
+      const x0 = Math.max(0, Math.floor(w.bbox.x0));
+      const x1 = Math.min(occ.length - 1, Math.ceil(w.bbox.x1));
+      for (let x = x0; x <= x1; x++) occ[x] = 1;
+    });
+    const minGap = Math.max(12, Math.floor(stripW * 0.012));
+    const gaps = [];
+    let gs = null;
+    for (let x = 0; x < occ.length; x++) {
+      if (!occ[x]) {
+        if (gs === null) gs = x;
+      } else {
+        if (gs !== null && x - gs >= minGap) gaps.push({ x0: gs, x1: x });
+        gs = null;
+      }
+    }
+    const cols = [];
+    let prev = 0;
+    gaps.forEach(g => {
+      if (g.x0 > prev) cols.push({ x0: prev, x1: g.x0 });
+      prev = g.x1;
+    });
+    if (occ.length > prev) cols.push({ x0: prev, x1: occ.length });
+    // Drop columns that contain no word centers.
+    let keepCols = cols.filter(c => words.some(w => {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      return cx >= c.x0 && cx <= c.x1;
+    }));
+    // Drop leftmost narrow column (checkbox column). It's narrow AND its words are short/junky.
+    if (keepCols.length >= 2) {
+      const c0 = keepCols[0];
+      const c0Width = c0.x1 - c0.x0;
+      const c0Words = words.filter(w => {
+        const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+        return cx >= c0.x0 && cx <= c0.x1;
+      });
+      const avgLen = c0Words.length
+        ? c0Words.reduce((s, w) => s + (w.text || '').trim().length, 0) / c0Words.length
+        : 0;
+      if (c0Width < stripW * 0.06 || (c0Width < stripW * 0.1 && avgLen <= 4)) {
+        keepCols = keepCols.slice(1);
+      }
+    }
+    if (keepCols.length < 2) { fallback(result.data.text); return; }
+
+    // --- Row clustering by Y-overlap (handles descenders/wrapped lines that Tesseract splits) ---
+    words.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    const meanH = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
+    const rowTol = Math.max(meanH * 0.55, 6);
+    const rows = [];
+    words.forEach(w => {
+      const yc = (w.bbox.y0 + w.bbox.y1) / 2;
+      let row = null;
+      for (let r of rows) {
+        if (Math.abs(yc - r.yc) <= rowTol) { row = r; break; }
+      }
+      if (!row) {
+        row = { y0: w.bbox.y0, y1: w.bbox.y1, yc, words: [] };
+        rows.push(row);
+      }
+      row.words.push(w);
+      row.y0 = Math.min(row.y0, w.bbox.y0);
+      row.y1 = Math.max(row.y1, w.bbox.y1);
+      row.yc = (row.y0 + row.y1) / 2;
+    });
+    rows.sort((a, b) => a.yc - b.yc);
+
+    const assignToCol = (w) => {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      for (let i = 0; i < keepCols.length; i++) {
+        if (cx >= keepCols[i].x0 && cx <= keepCols[i].x1) return i;
+      }
+      // Otherwise nearest by edge distance
+      let best = 0, bestD = Infinity;
+      keepCols.forEach((c, i) => {
+        const cc = (c.x0 + c.x1) / 2;
+        const d = Math.abs(cc - cx);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      return best;
+    };
+
+    const cellsForRow = (row) => {
+      const cells = keepCols.map(() => []);
+      row.words.slice().sort((a, b) => a.bbox.x0 - b.bbox.x0).forEach(w => {
+        cells[assignToCol(w)].push((w.text || '').trim());
+      });
+      return cells.map(parts => cleanOCRCell(parts.join(' ')));
+    };
+
+    // --- Header detection: header rows are the leading rows that contain no data markers ---
+    // CASE-SENSITIVE: header words like "PRODUCTIVE", "STATIC", "DURATION TYPE" are uppercase;
+    // data row text is Title Case ("Productive time", "Static", "Hourly work"). So we match
+    // Title-Case keywords plus universally data-only tokens ($, "N min", em-dash).
+    const dataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bNon-Productive\b|\bBreak\b|\bLunch\b|\bPicking\b|\bPruning\b|\bHourly\b|\bwork\b/;
+    let headerEnd = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const txt = rows[i].words.map(w => w.text).join(' ');
+      if (dataMarker.test(txt)) { headerEnd = i; break; }
+      if (i >= 4) { headerEnd = 1; break; } // safety: never assume more than 4 header rows
+    }
+    if (headerEnd < 1) headerEnd = 1;
+
+    const headerCells = keepCols.map(() => []);
+    for (let i = 0; i < headerEnd; i++) {
+      const c = cellsForRow(rows[i]);
+      c.forEach((v, j) => { if (v) headerCells[j].push(v); });
+    }
+    // Strip sort-arrow glyphs (Tesseract reads ↓/↑ as "+", "^", etc.) from header text.
+    const headers = headerCells.map((parts, i) => {
+      let h = parts.join(' ').trim();
+      h = h.replace(/[+↓↑▲▼^<>*~]/g, ' ');
+      h = h.replace(/\s{2,}/g, ' ').trim();
+      return h || ('Col ' + (i + 1));
+    });
+
+    let dataRows = rows.slice(headerEnd)
+      .map(cellsForRow)
+      .filter(r => r.some(c => c && c.length));
+
+    // Drop sparse junk rows (e.g. "mir", "1 >") — must fill at least half the columns
+    // OR have a strong data signature ($, "N min", em-dash, "Productive"/"Static").
+    const minCellsRequired = Math.max(2, Math.ceil(keepCols.length / 2));
+    const rowDataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bHourly\b|\bLunch\b|\bBreak\b/;
+    dataRows = dataRows.filter(r => {
+      const filled = r.filter(c => c && c.trim().length).length;
+      if (filled >= minCellsRequired) return true;
+      const joined = r.join(' ');
+      return rowDataMarker.test(joined);
+    });
+
+    // Normalize: any cell whose entire trimmed content is just dashes (—, –, -) becomes empty.
+    // (Em-dash, en-dash, hyphen, underscore — all are "no value" placeholders in this UI.)
+    // This applies to every cell — real values like "NPT- Travel Time" are unaffected because
+    // they contain non-dash characters.
+    const dashOnly = /^[\s—–\-_]+$/;
+    dataRows.forEach(r => {
+      for (let i = 0; i < r.length; i++) {
+        if (dashOnly.test(r[i] || '')) r[i] = '';
+      }
+    });
+
+    // Normalize the "Collect Pieces"-style column: convert checkmark glyphs to ✓.
+    headers.forEach((h, idx) => {
+      if (/collect|piece/i.test(h)) {
+        dataRows.forEach(r => {
+          const v = (r[idx] || '').trim();
+          if (/^[v✓✔]+$/i.test(v) || /check/i.test(v)) {
+            r[idx] = '✓';
+          }
+        });
+      }
+    });
+
+    if (dataRows.length === 0) { fallback(result.data.text); return; }
+
+    const tsv = [headers.join('\t'), ...dataRows.map(r => r.join('\t'))].join('\n');
+    output.value = tsv;
+    renderOCRTable(tsv);
+
+    fill.style.width = '100%';
+    ptext.textContent = 'Done! Detected ' + keepCols.length + ' columns, ' + dataRows.length + ' rows.';
+    copyBtn.style.display = '';
+    document.getElementById('ocrSaveBtn').style.display = '';
+  } catch (err) {
+    ptext.textContent = 'Error: ' + err.message;
+  }
+  document.getElementById('ocrExtractBtn').disabled = false;
+}
+
+function cleanOCRCell(text) {
+  if (!text) return '';
+  let l = text.trim();
+
+  // Strip leading checkbox-OCR artifacts that may still be glued to the first cell.
+  l = l.replace(/^(?:\[+|\(+)?[OJ0lI|mn]{1,4}(?:\]+|\)+)?\s+(?=[A-Za-z0-9])/, '');
+  // Strip stray bracket characters anywhere
+  l = l.replace(/[\[\]]/g, '');
+
+  l = l.replace(/!/g, 'l');
+
+  // --- Descender split fixes (Tesseract reads g/y descenders as a separate "9" or letter token) ---
+  // "Prunin 9" → "Pruning", "Pickin g" → "Picking", "Trainin 9" → "Training"
+  l = l.replace(/\b([A-Za-z]+in)\s+[9gq]\b/g, '$1g');
+  // "Pruning, 9" or "Prunin, 9" with stray comma
+  l = l.replace(/\b([A-Za-z]+in),?\s+[9gq]\b/g, '$1g');
+  // "Droppin g" → "Dropping" (already covered above), but also "Dropping pping" duplicates
+  l = l.replace(/\b(\w+ing)\s+\1ing\b/gi, '$1ing');
+  // "Hourly ly" → "Hourly", "lg 9" → "lg" residue, "ly Harvest" leading
+  l = l.replace(/\bHourly\s+ly\b/g, 'Hourly');
+  l = l.replace(/^ly\s+/, '');
+  l = l.replace(/\blg\s+\d\b/g, '');
+  // "pi y" "pI" descender residue trailing
+  l = l.replace(/\s+p[iI]?\s*$/, '');
+  l = l.replace(/\s+y\s*$/, '');
+  // "ig y" residue
+  l = l.replace(/\big\s+y\b/g, '');
+  // "Break real" / "Brea " misreads (Break gets re-read partially)
+  l = l.replace(/\bBreak\s+real\b/g, 'Break');
+  l = l.replace(/\bBrea\b/g, 'Break');
+  // "Non-prod lon-productive" duplicates
+  l = l.replace(/\bNon-prod\s+lon-productive\b/g, 'Non-productive');
+  l = l.replace(/\bs\s+tatic\b/g, 'Static');
+
+  // --- Common job-name OCR misreads (NPT family) ---
+  // "NeT" → "NPT" (P misread as e). Apply before splitting sticky codes.
+  l = l.replace(/\bNeT\b/g, 'NPT');
+  l = l.replace(/\bNeT(\d)/g, 'NPT $1');
+  l = l.replace(/\bNeTS\b/g, 'NPT 5');
+  // Sticky ordinal+NPT+digits[+S]: "3rdNPT1S" → "3rd NPT 15", "2ndNPT10" → "2nd NPT 10"
+  l = l.replace(/\b(\d+)(rd|nd|st|th)NPT(\d+)([Ss]?)\b/gi, (_, num, ord, n, s) => {
+    return num + ord.toLowerCase() + ' NPT ' + n + (s ? '5' : '');
+  });
+  // "2dNPT2S" → "2nd NPT 25" (d misread of nd)
+  l = l.replace(/\b(\d+)dNPT(\d+)([Ss]?)\b/gi, (_, num, n, s) => {
+    return num + 'nd NPT ' + n + (s ? '5' : '');
+  });
+  // "NPT1S" / "NPT15" stuck without space → "NPT 15"
+  l = l.replace(/\bNPT(\d+)([Ss]?)\b/g, (_, n, s) => 'NPT ' + n + (s ? '5' : ''));
+  // Standalone NPT followed by trailing S → "NPT 5"
+  l = l.replace(/\bNPT\s+S\b/g, 'NPT 5');
+  // Trailing "S" after digits anywhere → "5" (e.g. "NPT 1S" → "NPT 15", "2S" → "25")
+  l = l.replace(/\b(\d+)S\b/g, (_, d) => d + '5');
+  l = l.replace(/\b2rd\b/g, '2nd');
+  // "Imigation" / "lrigation" → "Irrigation"
+  l = l.replace(/\b[Il]migation\b/g, 'Irrigation');
+  l = l.replace(/\b[Il]rigation\b/g, 'Irrigation');
+  // "wait Time" → "Wait Time"
+  l = l.replace(/\bwait Time\b/g, 'Wait Time');
+  // "Forkiift" → "Forklift"
+  l = l.replace(/\bForkiift\b/g, 'Forklift');
+
+  // Collapse repeated spaces
+  l = l.replace(/\s{2,}/g, ' ').trim();
+  return l;
 }
 
 async function doOCR(imageData) {
@@ -1119,41 +1427,134 @@ async function doOCR(imageData) {
 }
 
 let ocrArchivedCells = new Set(); // "ri-ci" keys
+let ocrColFilters = [];           // per-column filter strings (lowercased)
+let ocrGlobalFilter = '';         // global search string (lowercased)
+let ocrSortCol = -1;              // currently-sorted column index (-1 = none)
+let ocrSortDir = null;            // 'asc' | 'desc' | null
 
 function filterOCRTable(query) {
+  ocrGlobalFilter = (query || '').toLowerCase().trim();
+  applyOCRTableFilters();
+}
+
+function setOCRColFilter(ci, value) {
+  ocrColFilters[ci] = (value || '').toLowerCase().trim();
+  applyOCRTableFilters();
+}
+
+function sortOCRTable(ci) {
+  // Cycle: none → asc → desc → none (back to original DOM order)
+  if (ocrSortCol !== ci) {
+    ocrSortCol = ci;
+    ocrSortDir = 'asc';
+  } else if (ocrSortDir === 'asc') {
+    ocrSortDir = 'desc';
+  } else if (ocrSortDir === 'desc') {
+    ocrSortCol = -1;
+    ocrSortDir = null;
+  } else {
+    ocrSortDir = 'asc';
+  }
+
+  const wrap = document.getElementById('ocrTableWrap');
+  const tbody = wrap.querySelector('tbody');
+  if (!tbody) return;
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+
+  if (ocrSortDir === null) {
+    // Restore by original data-ri.
+    rows.sort((a, b) => parseInt(a.dataset.ri) - parseInt(b.dataset.ri));
+  } else {
+    const numRe = /-?\d+(?:[.,]\d+)?/;
+    const cellVal = (tr) => {
+      const td = tr.querySelectorAll('td')[ci];
+      return td ? td.textContent.trim() : '';
+    };
+    const dir = ocrSortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = cellVal(a);
+      const bv = cellVal(b);
+      // Empty values always sort to the bottom regardless of direction.
+      if (!av && !bv) return 0;
+      if (!av) return 1;
+      if (!bv) return -1;
+      const am = av.match(numRe);
+      const bm = bv.match(numRe);
+      if (am && bm) {
+        const an = parseFloat(am[0].replace(',', '.'));
+        const bn = parseFloat(bm[0].replace(',', '.'));
+        if (an !== bn) return (an - bn) * dir;
+      }
+      return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  }
+
+  rows.forEach(tr => tbody.appendChild(tr));
+  updateOCRSortIndicators();
+}
+
+function updateOCRSortIndicators() {
+  const wrap = document.getElementById('ocrTableWrap');
+  wrap.querySelectorAll('.ocr-sort-arrow').forEach(span => {
+    const ci = parseInt(span.dataset.ci);
+    if (ci === ocrSortCol && ocrSortDir === 'asc') span.textContent = ' ▲';
+    else if (ci === ocrSortCol && ocrSortDir === 'desc') span.textContent = ' ▼';
+    else span.textContent = '';
+  });
+  wrap.querySelectorAll('.ocr-sort-th').forEach(th => {
+    const ci = parseInt(th.dataset.ci);
+    th.classList.toggle('ocr-sort-active', ci === ocrSortCol && ocrSortDir !== null);
+  });
+}
+
+function applyOCRTableFilters() {
   const wrap = document.getElementById('ocrTableWrap');
   const rows = wrap.querySelectorAll('tbody tr');
-  const q = query.toLowerCase().trim();
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   rows.forEach(tr => {
-    if (!q) {
-      tr.classList.remove('ocr-row-hidden');
-      // Remove highlights
-      tr.querySelectorAll('.ocr-highlight').forEach(h => {
-        h.replaceWith(document.createTextNode(h.textContent));
-      });
-      return;
-    }
+    // Strip prior highlights so we can re-evaluate cleanly.
+    tr.querySelectorAll('.ocr-highlight').forEach(h => {
+      h.replaceWith(document.createTextNode(h.textContent));
+    });
+    tr.querySelectorAll('td').forEach(td => td.normalize());
 
     const cells = tr.querySelectorAll('td');
-    let match = false;
-    cells.forEach(td => {
-      const text = td.textContent;
-      // Remove old highlights
-      td.querySelectorAll('.ocr-highlight').forEach(h => {
-        h.replaceWith(document.createTextNode(h.textContent));
-      });
-      td.normalize();
 
-      if (text.toLowerCase().includes(q)) {
-        match = true;
-        // Add highlight
-        const regex = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
-        td.innerHTML = td.textContent.replace(regex, '<span class="ocr-highlight">$1</span>');
-        // Re-append badge if it was there
+    // Column filters: every active column filter must match its cell.
+    let colsMatch = true;
+    cells.forEach((td, ci) => {
+      const f = ocrColFilters[ci];
+      if (f && !td.textContent.toLowerCase().includes(f)) colsMatch = false;
+    });
+
+    // Global filter: at least one cell must contain the query.
+    let globalMatch = true;
+    if (ocrGlobalFilter) {
+      globalMatch = false;
+      cells.forEach(td => {
+        if (td.textContent.toLowerCase().includes(ocrGlobalFilter)) globalMatch = true;
+      });
+    }
+
+    const visible = colsMatch && globalMatch;
+    tr.classList.toggle('ocr-row-hidden', !visible);
+
+    if (!visible) return;
+
+    // Highlight matches per cell (global query + column-specific filter).
+    cells.forEach((td, ci) => {
+      const queries = [];
+      if (ocrGlobalFilter) queries.push(ocrGlobalFilter);
+      if (ocrColFilters[ci]) queries.push(ocrColFilters[ci]);
+      if (queries.length === 0) return;
+      const pattern = queries.map(escapeRe).join('|');
+      const regex = new RegExp('(' + pattern + ')', 'gi');
+      const text = td.textContent;
+      if (regex.test(text)) {
+        td.innerHTML = text.replace(regex, '<span class="ocr-highlight">$1</span>');
       }
     });
-    tr.classList.toggle('ocr-row-hidden', !match);
   });
 }
 
@@ -1183,12 +1584,26 @@ function switchOCRTab(tab) {
   document.getElementById(tab === 'table' ? 'ocrTabTable' : 'ocrTabRaw').classList.add('active');
 }
 
+function toggleOCRImagePanel() {
+  const layout = document.getElementById('ocrLayout');
+  const btn = document.getElementById('ocrToggleImageBtn');
+  if (!layout || !btn) return;
+  const hidden = layout.classList.toggle('ocr-image-hidden');
+  btn.textContent = hidden ? 'Show Image' : 'Hide Image';
+}
+
 function parseOCRToTable(text) {
   const lines = text.split('\n').filter(l => l.trim());
   if (lines.length === 0) return { headers: [], rows: [] };
 
-  // Detect columns: split each line by 2+ spaces or tabs
-  const parsed = lines.map(line => line.split(/\t|\s{2,}/).map(c => c.trim()).filter(c => c));
+  // Detect columns: split each line by 2+ spaces or tabs.
+  // If a line contains tabs, treat it as pre-structured and preserve empty cells (column alignment matters).
+  const parsed = lines.map(line => {
+    if (line.indexOf('\t') !== -1) {
+      return line.split('\t').map(c => c.trim());
+    }
+    return line.split(/\s{2,}/).map(c => c.trim()).filter(c => c);
+  });
 
   // Find the most common column count
   const colCounts = {};
@@ -1237,7 +1652,16 @@ function renderOCRTable(text) {
   }
 
   let html = '<table><thead><tr>';
-  headers.forEach(h => { html += '<th>' + escHtml(h) + '</th>'; });
+  headers.forEach((h, ci) => {
+    html += '<th class="ocr-sort-th" data-ci="' + ci + '" title="Click to sort">' +
+      '<span class="ocr-sort-label">' + escHtml(h) + '</span>' +
+      '<span class="ocr-sort-arrow" data-ci="' + ci + '"></span>' +
+      '</th>';
+  });
+  html += '</tr><tr class="ocr-filter-row">';
+  headers.forEach((h, ci) => {
+    html += '<th><input type="text" class="ocr-col-filter" data-ci="' + ci + '" placeholder="Filter ' + escHtml(h) + '..."></th>';
+  });
   html += '</tr></thead><tbody>';
 
   rows.forEach((row, ri) => {
@@ -1250,6 +1674,25 @@ function renderOCRTable(text) {
   });
   html += '</tbody></table>';
   wrap.innerHTML = html;
+
+  // Reset per-column filter & sort state on every fresh render, then wire inputs/headers.
+  ocrColFilters = [];
+  ocrSortCol = -1;
+  ocrSortDir = null;
+  wrap.querySelectorAll('.ocr-col-filter').forEach(inp => {
+    inp.addEventListener('input', (e) => {
+      const ci = parseInt(e.target.dataset.ci);
+      setOCRColFilter(ci, e.target.value);
+    });
+    // Don't let click-to-copy fire on the filter-row header cell.
+    inp.addEventListener('click', (e) => e.stopPropagation());
+  });
+  wrap.querySelectorAll('.ocr-sort-th').forEach(th => {
+    th.addEventListener('click', (e) => {
+      const ci = parseInt(th.dataset.ci);
+      sortOCRTable(ci);
+    });
+  });
 
   // Add click-to-copy and right-click archive handlers
   ocrArchivedCells = new Set();
