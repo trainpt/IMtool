@@ -184,6 +184,7 @@ a { color: var(--accent); text-decoration: none; }
 /* ═══════════════════════════════════════════
    Sidebar (dark, auto-hide)
    ═══════════════════════════════════════════ */
+.sidebar.sidebar-hidden { display: none !important; }
 .sidebar {
   width: var(--sidebar-w);
   background: var(--sidebar-bg);
@@ -1169,6 +1170,41 @@ a { color: var(--accent); text-decoration: none; }
 }
 
 .ocr-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ocr-engine-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ocr-engine-label { font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.ocr-engine-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-alt);
+}
+.ocr-engine-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ocr-engine-btn + .ocr-engine-btn { border-left: 1px solid var(--border); }
+.ocr-engine-btn:hover { color: var(--text); background: rgba(37, 99, 235, 0.06); }
+.ocr-engine-btn.ocr-engine-active {
+  background: var(--accent);
+  color: #fff;
+}
+.ocr-engine-btn.ocr-engine-active:hover { background: var(--accent-hover); }
 .ocr-crop-hint {
   font-size: 11px;
   color: var(--accent);
@@ -1243,6 +1279,192 @@ a { color: var(--accent); text-decoration: none; }
 
 .ocr-tab-content { display: none; flex: 1; overflow: hidden; }
 .ocr-tab-content.active { display: flex; flex-direction: column; }
+
+/* ─── Progress summary bar above the OCR table ─── */
+.ocr-progress-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--text);
+}
+.ocr-progress-summary-bar {
+  flex: 0 0 140px;
+  height: 8px;
+  background: var(--bg-muted);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ocr-progress-summary-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.25s ease, background 0.25s ease;
+}
+.ocr-progress-summary.ocr-progress-summary-complete .ocr-progress-summary-fill {
+  background: #16a34a;
+}
+.ocr-progress-summary-stats { font-weight: 500; }
+.ocr-progress-eta { color: var(--text-muted); font-size: 11px; }
+.ocr-progress-complete {
+  margin-left: auto;
+  background: #16a34a;
+  color: #fff;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* ─── Row action cell — holds the ✓ done toggle and × archive button per row ─── */
+.ocr-table-wrap th.ocr-row-archive-cell,
+.ocr-table-wrap td.ocr-row-archive-cell {
+  width: 56px;
+  min-width: 56px;
+  padding: 0;
+  text-align: center;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ocr-row-archive-btn,
+.ocr-row-done-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  vertical-align: middle;
+}
+.ocr-row-done-btn { margin-right: 2px; }
+.ocr-row-done-btn:hover {
+  opacity: 1;
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+}
+.ocr-row-done-btn.ocr-row-done-active {
+  opacity: 1;
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.14);
+}
+.ocr-row-archive-btn:hover {
+  opacity: 1;
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+}
+
+/* ─── Removed Items collapsible panel ─── */
+.ocr-removed-items-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+.ocr-removed-items-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.ocr-removed-items-header:hover { background: var(--bg-muted); }
+.ocr-removed-items-caret { font-size: 10px; color: var(--text-muted); }
+.ocr-removed-items-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.ocr-removed-row-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.ocr-removed-row-item:last-child { border-bottom: 0; }
+.ocr-removed-tag {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ocr-removed-tag-row { background: rgba(37, 99, 235, 0.12); color: var(--accent); }
+.ocr-removed-tag-col { background: rgba(217, 119, 6, 0.14); color: #b45309; }
+
+/* Visible "mark column done" checkmark and "archive column" × in column headers */
+.ocr-col-done-toggle,
+.ocr-col-archive-toggle {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0.5;
+  transition: color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+.ocr-col-done-toggle:hover {
+  opacity: 1;
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+}
+.ocr-col-done-toggle.ocr-col-done-active {
+  opacity: 1;
+  color: #16a34a;
+  font-weight: 700;
+}
+.ocr-col-archive-toggle:hover {
+  opacity: 1;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+}
+.ocr-sort-th.ocr-col-done { background: rgba(22, 163, 74, 0.06); }
+
+.ocr-removed-row-preview {
+  flex: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocr-restore-row-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--accent);
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ocr-restore-row-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 
 .ocr-table-wrap {
   flex: 1;
