@@ -2159,6 +2159,34 @@ window.trkLoadSheetData = function(headers, rows, name) {
   $('trk-setup').style.display = ''; $('trk-main').style.display = 'none';
 };
 
+// Load one or more sessions directly into the tracker (bypasses setup screen).
+// items: array of { key?, name, headers, rows, rids?, touched?, flags?, notes?,
+//                   colOrder?, hiddenCols?, colWidths? }
+window.trkLoadDirect = function(orgName, items) {
+  if (!items || !items.length) return;
+  items.forEach(item => {
+    const key = item.key || makeSheetKey(item.name || 'Sheet');
+    trkSheets[key] = {
+      name: item.name || key,
+      headers: item.headers || [],
+      rows: trkTagRows((item.rows || []).map(r => r.map(c => String(c))), item.rids),
+      colOrder: item.colOrder || (item.headers || []).map((_, i) => i),
+      hiddenCols: new Set(item.hiddenCols || []),
+      colWidths: item.colWidths || {},
+      orgName: orgName || ''
+    };
+    if (item.touched) Object.assign(trkTouched, item.touched);
+    if (item.flags)   Object.assign(trkFlags,   item.flags);
+    if (item.notes)   Object.assign(trkNotes,   item.notes);
+  });
+  trkSaveSheetsMeta();
+  trkSave();
+  const firstKey = items[0].key || makeSheetKey(items[0].name || 'Sheet');
+  trkSwitchToSheet(trkSheets[firstKey] ? firstKey : Object.keys(trkSheets)[0]);
+  $('trk-setup').style.display = 'none';
+  $('trk-main').style.display = 'flex';
+};
+
 let trkRestored = false;
 window.trkInit = function() {
   trkPopulateSavedSessions();

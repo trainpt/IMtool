@@ -98,7 +98,7 @@
           <p>Upload or paste a screenshot to extract text. Works entirely in your browser.</p>
         </div>
         <div class="ocr-layout" id="ocrLayout">
-          <div class="ocr-input-panel">
+          <div class="ocr-input-panel" id="ocrInputPanel">
             <div class="ocr-dropzone" id="ocrDropzone">
               <div class="ocr-dropzone-content" id="ocrDropContent">
                 <div class="ocr-drop-icon">&#128247;</div>
@@ -132,6 +132,7 @@
             </div>
           </div>
           <div class="ocr-output-panel" id="ocrOutputPanel">
+            <div class="ocr-resize-handle" id="ocrResizeHandle"></div>
             <div class="ocr-output-header">
               <div class="ocr-output-tabs">
                 <button class="ocr-tab active" onclick="switchOCRTab('table')">Table</button>
@@ -140,8 +141,8 @@
               <div class="ocr-search">
                 <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
               </div>
-              <button class="ocr-copy-btn" id="ocrToggleImageBtn" onclick="toggleOCRImagePanel()" title="Hide the image cropping panel for a wider view of the extracted data">Hide Image</button>
               <button class="ocr-copy-btn" id="ocrToggleEmptyBtn" onclick="toggleHideEmptyOCRCols()" title="Hide columns whose data cells are all empty">Hide Empty Cols</button>
+              <button class="ocr-panel-close-btn" onclick="closeOCRPanel()" title="Close panel">&#x2715;</button>
               <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
               <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
             </div>
@@ -160,10 +161,23 @@
 
     <!-- ─── Page: Org Data ─── -->
     <div class="page" id="page-orgdata">
-      <div class="orgdata-main">
-        <div class="page-toolbar" id="orgdataToolbar"></div>
-        <div class="table-wrap" id="orgdataContent">
-          <p class="empty-state">Select an organization and section from the sidebar.</p>
+      <div class="orgdata-layout">
+        <!-- Left nav panel -->
+        <div class="orgdata-sidenav">
+          <div class="orgdata-org-picker">
+            <label class="orgdata-org-label">Organization</label>
+            <select id="orgDataSelect" class="input-field" style="width:100%;"></select>
+          </div>
+          <div id="orgDataNav"></div>
+        </div>
+        <!-- Right content panel -->
+        <div class="orgdata-panel">
+          <div class="page-toolbar" id="orgdataToolbar"></div>
+          <div class="table-wrap" id="orgdataContent">
+            <p class="empty-state">Select an organization and section.</p>
+          </div>
+          <!-- Full tracker is transplanted here when a data item is selected -->
+          <div id="orgdata-tracker-host" style="display:contents;"></div>
         </div>
       </div>
     </div>
@@ -685,6 +699,13 @@ document.getElementById('topbarTabs').addEventListener('click', e => {
 });
 
 function switchPage(pageName) {
+  // Move trk-main back to its home page before switching away from orgdata
+  if (pageName !== 'orgdata' && typeof odUnmountTracker === 'function') {
+    odUnmountTracker();
+    const c = document.getElementById('orgdataContent');
+    if (c) c.style.display = '';
+  }
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.topbar-tab').forEach(t => t.classList.remove('active'));
   const page = document.getElementById('page-' + pageName);
@@ -698,7 +719,6 @@ function switchPage(pageName) {
 
   // Tool-specific init
   if (pageName === 'merge' && typeof initMergePage === 'function') initMergePage();
-  if (pageName === 'orgdata' && typeof initOrgDataPage === 'function') initOrgDataPage();
   if (pageName === 'ocr') hideStatsBar();
   if (pageName === 'review') { hideStatsBar(); populateSheetSelects(); if (typeof rvInit === 'function') rvInit(); }
   if (pageName === 'coleditor') { hideStatsBar(); populateSheetSelects(); }
@@ -715,7 +735,7 @@ function buildSidebar(pageName) {
     if (typeof renderMergeSidebar === 'function') renderMergeSidebar();
 
   } else if (pageName === 'orgdata') {
-    dyn.innerHTML = '<div style="padding:8px 12px;"><select id="orgDataSelect" class="input-field" style="width:100%;"></select></div><div id="orgDataNav"></div>';
+    dyn.innerHTML = '';
     if (typeof initOrgDataPage === 'function') initOrgDataPage();
 
   } else if (pageName === 'review' || pageName === 'coleditor' || pageName === 'tracker') {
@@ -1100,6 +1120,7 @@ async function doMultiColumnOCR(imageData) {
     copyBtn.style.display = '';
     document.getElementById('ocrSaveBtn').style.display = '';
     document.getElementById('ocrExtractBtn').disabled = false;
+    openOCRPanel();
   };
 
   try {
@@ -1355,6 +1376,9 @@ async function doMultiColumnOCR(imageData) {
     const headers = headerCells.map((parts, i) => {
       let h = parts.join(' ').trim();
       h = h.replace(/[+↓↑▲▼^<>*~"'`]/g, ' ');
+      // Tesseract often reads the ▼ sort-arrow glyph as lowercase 'v' — strip it when it is
+      // a lone leading token (single letter followed by a space) before the real header word.
+      h = h.replace(/^[vV]\s+(?=\S)/, '');
       h = h.replace(/\s{2,}/g, ' ').trim();
       // Specific PickTrace header corrections. Order matters: very specific patterns first
       // to avoid overlap (e.g. JOB CATEGORY must match before any catch-all "JOB ..." pattern).
@@ -1377,6 +1401,11 @@ async function doMultiColumnOCR(imageData) {
         [/^[Aa]$/, 'DURATION TYPE'],
         // JOB — most ambiguous patterns LAST (single-word, may collide if put earlier)
         [/^(?:Jos|J0[8BSs]?|J0B|JoB|108|JOB|J08)$/i, 'JOB'],
+        // Jobs management page columns
+        [/^[Il]nf[o0]$/i, 'INFO'],
+        [/^(?:Pay|PAY)\s+(?:Type|TYPE)$/i, 'PAY TYPE'],
+        [/^(?:Piece|PIECE)\s+(?:Type|TYPE)$/i, 'PIECE TYPE'],
+        [/^(?:Duration|DURATION)$/i, 'DURATION'],
       ];
       for (const [re, fix] of corrections) if (re.test(h)) { h = fix; break; }
       return h || ('Col ' + (i + 1));
@@ -1407,6 +1436,161 @@ async function doMultiColumnOCR(imageData) {
       return rowDataMarker.test(joined);
     });
 
+    // Drop pagination footer rows: "Page 1 of 1 Entries 500 Next" etc.
+    // These words scatter across column buckets by X position and can pass the sparse filter.
+    const _pgRowRe = /\bpage\b.*\bof\b|\bentries?\b|\bnext\s*$|\bprev(?:ious)?\s*$|\bshowing\b/i;
+    dataRows = dataRows.filter(r => {
+      const joined = r.filter(c => c && c.trim()).join(' ');
+      return !_pgRowRe.test(joined);
+    });
+
+    // ===== Merged/phantom column correction =====
+    // On laptop-sized screenshots the X-projection can miss narrow column separators or
+    // have the sort-indicator word "v" fill the gap between ID and Job, producing:
+    //   "ID v Job" | "Info Duration" | PAY TYPE | Col 4 | PIECE TYPE | Col 6
+    // instead of: ID | JOB | INFO | DURATION | PAY TYPE | PIECE TYPE.
+
+    // Step 1: Remove phantom columns — auto-named "Col N" headers that are nearly empty.
+    {
+      for (let ci = headers.length - 1; ci >= 0; ci--) {
+        if (/^Col\s+\d+$/i.test(headers[ci] || '')) {
+          const filled = dataRows.filter(r => r[ci] && r[ci].trim()).length;
+          if (dataRows.length === 0 || filled / dataRows.length < 0.20) {
+            headers.splice(ci, 1);
+            dataRows.forEach(r => r.splice(ci, 1));
+          }
+        }
+      }
+    }
+
+    // Steps 2-4: Content-driven column repair for the PickTrace Jobs table.
+    //
+    // The X-projection regularly produces wrong boundaries for this table:
+    //  • "v" sort-indicator word fills the ID↔Job gap → merged "ID v Job" column
+    //  • Semicolon-space in "PHASE=1117; ATTEST=Y" triggers a false gap → split Info value
+    //  • Narrow Info↔Duration gap merges those two columns
+    //  • Long bilingual job names wrap onto the second line and land in the Info column
+    //
+    // Rather than fixing header names (which are already wrong by the time we get here),
+    // identify columns by DATA CONTENT and repair in a deterministic order.
+    {
+      const _anyInfoRe  = /(?:PHASE|CODE_TYPE|CODE|ATTEST)\s*=/i;  // appears anywhere in cell
+      const _startInfoRe = /^(?:PHASE|CODE_TYPE|CODE|ATTEST)\s*=/i; // at start of cell
+      const _trailNumRe  = /^(.*?)\s+(\d+)$/;                      // trailing integer
+
+      // ── A. Find the real Info column: most cells containing PHASE=/CODE_TYPE= anywhere ──
+      let infoIdx = -1, bestCnt = 0;
+      for (let ci = 0; ci < headers.length; ci++) {
+        const cnt = dataRows.filter(r => _anyInfoRe.test(r[ci] || '')).length;
+        if (cnt > bestCnt) { bestCnt = cnt; infoIdx = ci; }
+      }
+
+      if (infoIdx > 0 && bestCnt >= 2) {
+        // ── B. Merge any ATTEST=Y continuation column back into Info ──
+        // Happens when "PHASE=1117; ATTEST=Y" is OCR'd with a word gap at the semicolon-space,
+        // creating a false column boundary. The continuation column has low fill (≤ 20%) and
+        // its non-empty cells all start with "ATTEST=".
+        const nextIdx = infoIdx + 1;
+        if (nextIdx < headers.length) {
+          const nextNE = dataRows.filter(r => r[nextIdx] && r[nextIdx].trim());
+          const isContinuation = nextNE.length
+            ? nextNE.filter(r => /^ATTEST\s*=/i.test(r[nextIdx]) || /\s+\d+$/.test(r[nextIdx])).length / nextNE.length
+            : 0;
+          if (isContinuation >= 0.80 && nextNE.length / dataRows.length <= 0.60) {
+            dataRows.forEach(r => {
+              const v = (r[nextIdx] || '').trim();
+              if (!v) return;
+              r[infoIdx] = ((r[infoIdx] || '').trimEnd() + ' ' + v).trim();
+              r[nextIdx] = '';
+            });
+            headers.splice(nextIdx, 1);
+            dataRows.forEach(r => r.splice(nextIdx, 1));
+          }
+        }
+
+        const jobIdx = infoIdx - 1;
+
+        // ── C. Move wrapped Job-name overflow out of the Info column ──
+        // Long bilingual job names wrap onto the second line at the same X position as Info,
+        // so e.g. "Pest Control" lands in the Info cell as "Pest Control PHASE=1102 0".
+        dataRows.forEach(r => {
+          const v = (r[infoIdx] || '').trim();
+          if (!v || _startInfoRe.test(v)) return;
+          const m = v.match(/^(.*?)\s*((?:PHASE|CODE_TYPE|CODE|ATTEST)\s*=.*)$/i);
+          if (m) {
+            const overflow = m[1].trim();
+            if (overflow) r[jobIdx] = ((r[jobIdx] || '').trimEnd() + ' ' + overflow).trim();
+            r[infoIdx] = m[2].trim();
+          } else {
+            r[jobIdx] = ((r[jobIdx] || '').trimEnd() + ' ' + v).trim();
+            r[infoIdx] = '';
+          }
+        });
+
+        // ── D. Split trailing Duration integer out of the Info column ──
+        // "PHASE=1101 0" → INFO="PHASE=1101", DURATION="0"
+        // Only do this if there isn't already a DURATION column immediately after Info.
+        const alreadyHasDur = (infoIdx + 1 < headers.length)
+          && /^duration$/i.test(headers[infoIdx + 1])
+          && dataRows.some(r => r[infoIdx + 1] && r[infoIdx + 1].trim());
+        if (!alreadyHasDur) {
+          const durVals = dataRows.map(r => {
+            const v = (r[infoIdx] || '').trim();
+            if (/^\d+$/.test(v)) return ['', v];
+            const m = v.match(_trailNumRe);
+            return m && parseInt(m[2]) <= 999 ? [m[1].trim(), m[2]] : [v, ''];
+          });
+          headers[infoIdx] = 'INFO';
+          headers.splice(infoIdx + 1, 0, 'DURATION');
+          dataRows.forEach((r, ri) => {
+            r[infoIdx] = durVals[ri][0];
+            r.splice(infoIdx + 1, 0, durVals[ri][1]);
+          });
+        } else {
+          headers[infoIdx] = 'INFO';
+        }
+
+        // ── E. Split merged "ID + Job" column (the column to the left of Info) ──
+        // On laptop the sort-indicator word "v" and the narrow ID↔Job gap causes them to merge:
+        // "1 1101 Riego - Irrigation" → ID="1", JOB="1101 Riego - Irrigation".
+        const idJobIdx = infoIdx - 1; // re-derive after possible ATTEST merge
+        if (idJobIdx >= 0) {
+          const _idJobRe = /^(\d{1,3})\s+(.+)$/;
+          const ne = dataRows.filter(r => r[idJobIdx] && r[idJobIdx].trim());
+          const matches = ne.map(r => r[idJobIdx].match(_idJobRe)).filter(Boolean);
+          if (ne.length >= 5 && matches.length / ne.length >= 0.60) {
+            const leads = matches.map(m => parseInt(m[1]));
+            const maxLead = Math.max(...leads);
+            const uniqueLeads = new Set(leads);
+            if (maxLead <= 300 && uniqueLeads.size >= Math.min(5, matches.length * 0.6)) {
+              const split = dataRows.map(r => {
+                const v = (r[idJobIdx] || '').trim();
+                if (!v) return ['', v];
+                const m = v.match(_idJobRe);
+                return m ? [m[1], m[2]] : ['', v];
+              });
+              headers[idJobIdx] = 'ID';
+              headers.splice(idJobIdx + 1, 0, 'JOB');
+              dataRows.forEach((r, ri) => {
+                r[idJobIdx] = split[ri][0];
+                r.splice(idJobIdx + 1, 0, split[ri][1]);
+              });
+            }
+          }
+        }
+
+        // ── F. Remove empty artifact INFO / DURATION columns created by earlier passes ──
+        for (let ci = headers.length - 1; ci >= 0; ci--) {
+          if (!/^(info|duration)$/i.test(headers[ci] || '')) continue;
+          const filled = dataRows.filter(r => r[ci] && r[ci].trim()).length;
+          if (filled === 0) {
+            headers.splice(ci, 1);
+            dataRows.forEach(r => r.splice(ci, 1));
+          }
+        }
+      }
+    }
+
     // Normalize the "Collect Pieces"-style column: any short non-dash cell becomes ✓.
     // Tesseract reads the checkmark glyph as many variants (v, V, w, Y, /, J, *, etc.) so we
     // accept any 1-2 char cell that isn't a dash-only "no value" placeholder as a checkmark.
@@ -1430,9 +1614,10 @@ async function doMultiColumnOCR(imageData) {
     renderOCRTable(tsv);
 
     fill.style.width = '100%';
-    ptext.textContent = 'Done! Detected ' + keepCols.length + ' columns, ' + dataRows.length + ' rows.';
+    ptext.textContent = 'Done! Detected ' + headers.length + ' columns, ' + dataRows.length + ' rows.';
     copyBtn.style.display = '';
     document.getElementById('ocrSaveBtn').style.display = '';
+    openOCRPanel();
   } catch (err) {
     ptext.textContent = 'Error: ' + err.message;
   }
@@ -1646,6 +1831,7 @@ async function doOCR(imageData) {
     ptext.textContent = 'Done!';
     copyBtn.style.display = '';
     document.getElementById('ocrSaveBtn').style.display = '';
+    openOCRPanel();
   } catch (err) {
     ptext.textContent = 'Error: ' + err.message;
   }
@@ -1907,13 +2093,78 @@ function switchOCRTab(tab) {
   document.getElementById(tab === 'table' ? 'ocrTabTable' : 'ocrTabRaw').classList.add('active');
 }
 
+let ocrPanelW = 460; // current panel width in px, persists across open/close
+
+function applyOCRPanelWidth(w) {
+  const panel = document.getElementById('ocrOutputPanel');
+  const inputPanel = document.getElementById('ocrInputPanel');
+  const layout = document.getElementById('ocrLayout');
+  if (!panel) return;
+  panel.style.width = w + 'px';
+  if (inputPanel && layout && layout.classList.contains('ocr-panel-open')) {
+    inputPanel.style.marginRight = (w + 18) + 'px';
+  }
+}
+
+function openOCRPanel() {
+  const layout = document.getElementById('ocrLayout');
+  const inputPanel = document.getElementById('ocrInputPanel');
+  if (!layout) return;
+  // Apply the persisted width before adding class so CSS transition starts from correct state.
+  applyOCRPanelWidth(ocrPanelW);
+  layout.classList.add('ocr-panel-open');
+  if (inputPanel) inputPanel.style.marginRight = (ocrPanelW + 18) + 'px';
+}
+
+function closeOCRPanel() {
+  const layout = document.getElementById('ocrLayout');
+  const inputPanel = document.getElementById('ocrInputPanel');
+  if (!layout) return;
+  layout.classList.remove('ocr-panel-open');
+  // Clear inline margin so the CSS (margin-right: 0) takes effect via transition.
+  if (inputPanel) inputPanel.style.marginRight = '';
+}
+
 function toggleOCRImagePanel() {
   const layout = document.getElementById('ocrLayout');
-  const btn = document.getElementById('ocrToggleImageBtn');
-  if (!layout || !btn) return;
-  const hidden = layout.classList.toggle('ocr-image-hidden');
-  btn.textContent = hidden ? 'Show Image' : 'Hide Image';
+  if (!layout) return;
+  if (layout.classList.contains('ocr-panel-open')) closeOCRPanel();
+  else openOCRPanel();
 }
+
+(function initOCRResize() {
+  const handle = document.getElementById('ocrResizeHandle');
+  if (!handle) return;
+  handle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const layout = document.getElementById('ocrLayout');
+    const startX = e.clientX;
+    const startW = ocrPanelW;
+    handle.classList.add('ocr-resizing');
+    layout.classList.add('ocr-layout-resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = (ev) => {
+      const layoutW = layout.getBoundingClientRect().width;
+      // Dragging left (negative dx) widens the panel.
+      const dx = startX - ev.clientX;
+      const newW = Math.max(260, Math.min(layoutW * 0.75, startW + dx));
+      ocrPanelW = newW;
+      applyOCRPanelWidth(newW);
+    };
+    const onUp = () => {
+      handle.classList.remove('ocr-resizing');
+      layout.classList.remove('ocr-layout-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}());
 
 function toggleHideEmptyOCRCols() {
   ocrHideEmptyCols = !ocrHideEmptyCols;
@@ -2137,7 +2388,13 @@ function renderOCRTableFromState() {
       const menu = document.getElementById('ctxMenu');
       const canMoveLeft = orderIdx > 0;
       const canMoveRight = orderIdx < ocrColOrder.length - 1;
-      let html = '<div data-action="delete">Delete Column</div>';
+      const colAllDone = [...wrap.querySelectorAll('td[data-oci="' + oci + '"]')]
+        .filter(c => c.textContent.trim())
+        .every(c => ocrTableDone[parseInt(c.dataset.ri)]?.has(oci));
+      let html = colAllDone
+        ? '<div data-action="unmarkCol">Unmark Column</div>'
+        : '<div data-action="markCol">Mark Column Done</div>';
+      html += '<div data-action="delete">Delete Column</div>';
       if (canMoveLeft) html += '<div data-action="left">Move Left</div>';
       if (canMoveRight) html += '<div data-action="right">Move Right</div>';
       if (canMoveLeft) html += '<div data-action="mergeLeft">Merge with Left</div>';
@@ -2154,6 +2411,8 @@ function renderOCRTableFromState() {
         else if (action === 'right') moveOCRColumn(orderIdx, 1);
         else if (action === 'mergeLeft') mergeOCRColumns(orderIdx, -1);
         else if (action === 'mergeRight') mergeOCRColumns(orderIdx, 1);
+        else if (action === 'markCol') markOCRColDone(oci, true);
+        else if (action === 'unmarkCol') markOCRColDone(oci, false);
       };
     });
   });
@@ -2218,10 +2477,23 @@ function renderOCRTableFromState() {
       const oci = parseInt(td.dataset.oci);
       const key = ri + '-' + oci;
       const isArchived = ocrArchivedCells.has(key);
+      const rowDone = ocrTableDone[ri] && td.parentElement &&
+        [...td.parentElement.querySelectorAll('td')].filter(c => c.textContent.trim())
+          .every(c => ocrTableDone[ri]?.has(parseInt(c.dataset.oci)));
+      const colDone = [...document.getElementById('ocrTableWrap').querySelectorAll('td[data-oci="' + oci + '"]')]
+        .filter(c => c.textContent.trim())
+        .every(c => ocrTableDone[parseInt(c.dataset.ri)]?.has(oci));
       const menu = document.getElementById('ctxMenu');
-      menu.innerHTML = isArchived
+      let html = isArchived
         ? '<div data-action="unarchive">Restore Cell</div>'
         : '<div data-action="archive">Archive Cell</div>';
+      html += rowDone
+        ? '<div data-action="unmarkRow">Unmark Row</div>'
+        : '<div data-action="markRow">Mark Row Done</div>';
+      html += colDone
+        ? '<div data-action="unmarkCol">Unmark Column</div>'
+        : '<div data-action="markCol">Mark Column Done</div>';
+      menu.innerHTML = html;
       menu.style.display = 'block';
       menu.style.left = e.clientX + 'px';
       menu.style.top = e.clientY + 'px';
@@ -2230,6 +2502,10 @@ function renderOCRTableFromState() {
         menu.style.display = 'none';
         if (action === 'archive') archiveOCRCell(ri, oci);
         else if (action === 'unarchive') unarchiveOCRCell(ri, oci);
+        else if (action === 'markRow') markOCRRowDone(ri, true);
+        else if (action === 'unmarkRow') markOCRRowDone(ri, false);
+        else if (action === 'markCol') markOCRColDone(oci, true);
+        else if (action === 'unmarkCol') markOCRColDone(oci, false);
       };
     });
   });
@@ -2259,6 +2535,46 @@ function checkOCRRowDone(ri, totalCols) {
     const badge = tr.querySelector('.ocr-badge');
     if (badge) badge.remove();
   }
+}
+
+function markOCRRowDone(ri, done) {
+  const wrap = document.getElementById('ocrTableWrap');
+  const tr = wrap.querySelector('tr[data-ri="' + ri + '"]');
+  if (!tr) return;
+  tr.querySelectorAll('td').forEach(td => {
+    const oci = parseInt(td.dataset.oci);
+    if (done) {
+      if (!td.textContent.trim()) return;
+      td.classList.add('ocr-cell-done');
+      if (!ocrTableDone[ri]) ocrTableDone[ri] = new Set();
+      ocrTableDone[ri].add(oci);
+    } else {
+      td.classList.remove('ocr-cell-done');
+      if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
+    }
+  });
+  checkOCRRowDone(ri, tr.querySelectorAll('td').length);
+}
+
+function markOCRColDone(oci, done) {
+  const wrap = document.getElementById('ocrTableWrap');
+  wrap.querySelectorAll('td[data-oci="' + oci + '"]').forEach(td => {
+    const ri = parseInt(td.dataset.ri);
+    if (done) {
+      if (!td.textContent.trim()) return;
+      td.classList.add('ocr-cell-done');
+      if (!ocrTableDone[ri]) ocrTableDone[ri] = new Set();
+      ocrTableDone[ri].add(oci);
+    } else {
+      td.classList.remove('ocr-cell-done');
+      if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
+    }
+  });
+  // Recheck row-done status for every affected row
+  wrap.querySelectorAll('tbody tr').forEach(tr => {
+    const ri = parseInt(tr.dataset.ri);
+    if (!isNaN(ri)) checkOCRRowDone(ri, tr.querySelectorAll('td').length);
+  });
 }
 
 function fixDuplicateFarmCodes(lines) {
@@ -2449,6 +2765,7 @@ function clearOCR() {
   document.getElementById('ocrSaveBtn').style.display = 'none';
   document.getElementById('ocrTableWrap').innerHTML = '<p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>';
   ocrTableDone = {};
+  closeOCRPanel();
 }
 
 // ═══ Save to Org (OCR bridge) ═══
@@ -2500,7 +2817,10 @@ document.getElementById('saveToOrgConfirm')?.addEventListener('click', () => {
 
   const wrap = document.getElementById('ocrTableWrap');
   const headers = [];
-  wrap.querySelectorAll('th').forEach(th => headers.push(th.textContent));
+  wrap.querySelectorAll('thead tr:first-child th').forEach(th => {
+    const label = th.querySelector('.ocr-sort-label');
+    headers.push(label ? label.textContent.trim() : th.textContent.replace(/\u283f|\u25b2|\u25bc/g, '').trim());
+  });
   const rows = [], doneCells = [], archived = [];
   wrap.querySelectorAll('tbody tr').forEach(tr => {
     const row = [], rd = [], ra = [];
@@ -2542,32 +2862,57 @@ function renderOrgDataNav() {
   if (!org) { nav.innerHTML = ''; document.getElementById('orgdataContent').innerHTML = '<p class="empty-state">Select an organization.</p>'; hideStatsBar(); return; }
 
   const store = getStore();
-  const orgData = store.orgs[org]; const ocrSaves = store.ocrSaves[org] || [];
+  const orgData = store.orgs[org];
+  const ocrSaves = store.ocrSaves[org] || [];
   const ranches = orgData ? Object.keys(orgData.ranches || {}).sort() : [];
   const sheets = Object.keys(store.sheets || {}).filter(n => store.sheets[n].orgName === org).sort();
+  const trkSessions = store.trackerSaves?.[org] ? Object.keys(store.trackerSaves[org]).sort() : [];
+
+  function navSection(id, label, count, items, emptyLabel) {
+    const open = localStorage.getItem('od_' + id) !== 'closed';
+    let h = '<div class="orgdata-nav-group">';
+    h += '<div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'' + id + '\')">';
+    h += '<span class="arrow' + (open ? ' open' : '') + '" id="odArrow_' + id + '">&#9654;</span> ';
+    h += label + ' <span class="count">' + count + '</span></div>';
+    h += '<div class="orgdata-nav-list' + (open ? ' open' : '') + '" id="odList_' + id + '">';
+    if (items.length) { h += items; } else { h += '<div class="sb-item" style="opacity:0.4;cursor:default;"><span class="name">' + emptyLabel + '</span></div>'; }
+    h += '</div></div>';
+    return h;
+  }
 
   let html = '';
-  // Sites
-  html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'sites\')"><span class="arrow' + (localStorage.getItem('od_sites')!=='closed'?' open':'') + '" id="odArrow_sites">&#9654;</span> Sites <span class="count">' + ranches.length + '</span></div>';
-  html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_sites')!=='closed'?' open':'') + '" id="odList_sites">';
-  html += '<div class="sb-item' + (orgDataView==='sites'?' active':'') + '" onclick="showOrgData(\'sites\')"><span class="name">All Sites</span><span class="count">' + ranches.length + '</span></div>';
-  ranches.forEach(r => { html += '<div class="sb-item' + (orgDataView==='r-'+r?' active':'') + '" onclick="showOrgData(\'r-' + escJs(r) + '\')" title="' + escHtml(r) + '"><span class="name">' + escHtml(r) + '</span><span class="count">' + (orgData.ranches[r].rows?.length||0) + '</span></div>'; });
-  html += '</div></div>';
-  // Jobs
-  html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'jobs\')"><span class="arrow' + (localStorage.getItem('od_jobs')!=='closed'?' open':'') + '" id="odArrow_jobs">&#9654;</span> Jobs <span class="count">' + ocrSaves.length + '</span></div>';
-  html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_jobs')!=='closed'?' open':'') + '" id="odList_jobs">';
-  ocrSaves.forEach((s, i) => { html += '<div class="sb-item' + (orgDataView==='ocr-'+i?' active':'') + '" onclick="showOrgData(\'ocr-'+i+'\')" title="' + escHtml(s.name) + '"><span class="name">' + escHtml(s.name) + '</span><span class="count">' + s.rows.length + '</span></div>'; });
-  if (!ocrSaves.length) html += '<div class="sb-item" style="opacity:0.4;cursor:default;"><span class="name">None</span></div>';
-  html += '</div></div>';
+
+  // Sites (merge tool)
+  const siteItems = '<div class="sb-item' + (orgDataView==='sites'?' active':'') + '" onclick="showOrgData(\'sites\')"><span class="name">All Sites</span><span class="count">' + ranches.length + '</span></div>' +
+    ranches.map(r => '<div class="sb-item' + (orgDataView==='r-'+r?' active':'') + '" onclick="showOrgData(\'r-' + escJs(r) + '\')" title="' + escHtml(r) + '"><span class="name">' + escHtml(r) + '</span><span class="count">' + (orgData.ranches[r].rows?.length||0) + '</span></div>').join('');
+  html += navSection('sites', 'Sites', ranches.length, ranches.length ? siteItems : '', 'None');
+
+  // Jobs (OCR image-to-text saves)
+  const jobItems = ocrSaves.map((s, i) => '<div class="sb-item' + (orgDataView==='ocr-'+i?' active':'') + '" onclick="showOrgData(\'ocr-'+i+'\')" title="' + escHtml(s.name) + '"><span class="name">' + escHtml(s.name) + '</span><span class="count">' + s.rows.length + '</span></div>').join('');
+  html += navSection('jobs', 'Jobs (Image→Text)', ocrSaves.length, jobItems, 'None');
+
+  // Tracker sessions
+  const trkItems = trkSessions.map(k => {
+    const s = store.trackerSaves[org][k];
+    const rowCount = (s.rows || []).length;
+    return '<div class="sb-item' + (orgDataView==='trk-'+k?' active':'') + '" onclick="showOrgData(\'trk-' + escJs(k) + '\')" title="' + escHtml(s.name||k) + '"><span class="name">' + escHtml(s.name||k) + '</span><span class="count">' + rowCount + '</span></div>';
+  }).join('');
+  html += navSection('tracker', 'Tracker', trkSessions.length, trkItems, 'None');
+
   // Imported sheets
-  if (sheets.length) {
-    html += '<div class="orgdata-nav-group"><div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'ods\')"><span class="arrow' + (localStorage.getItem('od_ods')!=='closed'?' open':'') + '" id="odArrow_ods">&#9654;</span> Sheets <span class="count">' + sheets.length + '</span></div>';
-    html += '<div class="orgdata-nav-list' + (localStorage.getItem('od_ods')!=='closed'?' open':'') + '" id="odList_ods">';
-    sheets.forEach(n => { html += '<div class="sb-item' + (orgDataView==='s-'+n?' active':'') + '" onclick="showOrgData(\'s-' + escJs(n) + '\')" title="' + escHtml(n) + '"><span class="name">' + escHtml(n) + '</span><span class="count">' + (store.sheets[n].rowCount||0) + '</span></div>'; });
-    html += '</div></div>';
-  }
+  const sheetItems = sheets.map(n => '<div class="sb-item' + (orgDataView==='s-'+n?' active':'') + '" onclick="showOrgData(\'s-' + escJs(n) + '\')" title="' + escHtml(n) + '"><span class="name">' + escHtml(n) + '</span><span class="count">' + (store.sheets[n].rowCount||0) + '</span></div>').join('');
+  html += navSection('ods', 'Sheets', sheets.length, sheetItems, 'None');
+
   nav.innerHTML = html;
-  if (!orgDataView) orgDataView = 'sites';
+
+  // Pick a sensible default view for this org
+  if (!orgDataView) {
+    if (ocrSaves.length) orgDataView = 'ocr-0';
+    else if (trkSessions.length) orgDataView = 'trk-' + trkSessions[0];
+    else if (ranches.length) orgDataView = 'sites';
+    else if (sheets.length) orgDataView = 's-' + sheets[0];
+    else orgDataView = 'sites';
+  }
   showOrgData(orgDataView);
 }
 
@@ -2577,87 +2922,114 @@ function toggleOrgdataSection(id) {
   localStorage.setItem('od_'+id, l?.classList.contains('open')?'open':'closed');
 }
 
+// Move trk-main into the Org Data panel so the full tracker renders there.
+// Stores the original parent so we can move it back when leaving Org Data.
+let _trkMainOrigParent = null;
+
+function odMountTracker() {
+  const trkMain = document.getElementById('trk-main');
+  const panel   = document.getElementById('orgdata-tracker-host');
+  if (!trkMain || !panel) return;
+  if (trkMain.parentElement === panel) return;       // already mounted
+  _trkMainOrigParent = trkMain.parentElement;
+  panel.appendChild(trkMain);
+  trkMain.style.display = 'flex';
+}
+
+function odUnmountTracker() {
+  const trkMain = document.getElementById('trk-main');
+  if (!trkMain || !_trkMainOrigParent) return;
+  if (trkMain.parentElement === _trkMainOrigParent) return; // already back
+  _trkMainOrigParent.appendChild(trkMain);
+  trkMain.style.display = 'none';
+  _trkMainOrigParent = null;
+}
+
 function showOrgData(view) {
   orgDataView = view;
   const org = document.getElementById('orgDataSelect')?.value;
   if (!org) return;
   const store = getStore();
-  const content = document.getElementById('orgdataContent');
-  const toolbar = document.getElementById('orgdataToolbar');
 
-  // Update nav active
+  // Update nav active state
   document.querySelectorAll('#orgDataNav .sb-item').forEach(el => el.classList.remove('active'));
+  const activeEl = document.querySelector('#orgDataNav .sb-item[onclick*=\'' + view.replace(/'/g,"\\'") + '\']');
+  if (activeEl) activeEl.classList.add('active');
 
-  let html = '';
+  // Sites summary view — no tracker, just a simple overview table
   if (view === 'sites') {
-    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
+    odUnmountTracker();
+    const content = document.getElementById('orgdataContent');
+    const toolbar = document.getElementById('orgdataToolbar');
+    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span>';
     const orgData = store.orgs[org];
-    if (orgData) {
-      html += '<table class="data-table" id="odTable"><thead><tr><th>Site</th><th>Locations</th><th>Complete</th></tr></thead><tbody>';
+    let html = '';
+    if (orgData && Object.keys(orgData.ranches||{}).length) {
+      html = '<table class="data-table" id="odTable"><thead><tr><th>Site</th><th>Rows</th><th>Complete</th></tr></thead><tbody>';
       Object.keys(orgData.ranches||{}).sort().forEach(r => {
         const ranch = orgData.ranches[r]; const t = ranch.rows.length; let d = 0;
         ranch.rows.forEach((row,ri) => { const req = row.reduce((c,v,ci)=>{if(v!==''&&!SKIP_FOR_DONE.has(ci))c.push(ci);return c;},[]); const dn = new Set((ranch.progress||{})[ri]||[]); if(req.every(ci=>dn.has(ci)))d++; });
-        html += '<tr' + (d===t&&t>0?' class="row-done"':'') + ' style="cursor:pointer" onclick="showOrgData(\'r-'+escJs(r)+'\');renderOrgDataNav()"><td>' + escHtml(r) + '</td><td>' + t + '</td><td>' + (t>0?Math.round(d/t*100):0) + '%</td></tr>';
+        html += '<tr style="cursor:pointer" onclick="showOrgData(\'r-'+escJs(r)+'\')"><td>' + escHtml(r) + '</td><td>' + t + '</td><td>' + (t>0?Math.round(d/t*100):0) + '%</td></tr>';
       });
       html += '</tbody></table>';
     }
-  } else if (view.startsWith('r-')) {
+    content.innerHTML = html || '<p class="empty-state">No sites for this org.</p>';
+    return;
+  }
+
+  // All other views load data into the full embedded tracker
+  odMountTracker();
+
+  // Hide the plain content area while tracker is mounted
+  document.getElementById('orgdataContent').style.display = 'none';
+  document.getElementById('orgdataToolbar').innerHTML = '';
+
+  let items = null;
+
+  if (view.startsWith('r-')) {
     const rName = view.substring(2);
-    toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(rName) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
     const ranch = store.orgs[org]?.ranches?.[rName];
-    if (ranch?.rows.length) {
-      html += '<table class="data-table" id="odTable"><thead><tr>' + HEADERS.map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
-      ranch.rows.forEach((row, ri) => {
-        const req = row.reduce((c,v,ci)=>{if(v!==''&&!SKIP_FOR_DONE.has(ci))c.push(ci);return c;},[]); const dn = new Set((ranch.progress||{})[ri]||[]);
-        html += '<tr' + (req.every(ci=>dn.has(ci))?' class="row-done"':'') + '>';
-        row.forEach((cell, ci) => { html += '<td' + (dn.has(ci)?' class="cell-highlighted"':'') + '>' + escHtml(cell) + '</td>'; });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
+    if (ranch?.rows?.length) {
+      items = [{ name: rName, headers: HEADERS, rows: ranch.rows,
+        key: 'od_r_' + rName.replace(/[^a-z0-9]/gi,'_').toLowerCase() }];
     }
   } else if (view.startsWith('ocr-')) {
     const idx = parseInt(view.substring(4));
     const item = (store.ocrSaves[org]||[])[idx];
     if (item) {
-      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(item.name) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
-      html += '<table class="data-table" id="odTable"><thead><tr>' + (item.headers||[]).map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
+      // Convert OCR doneCells format to trkTouched-compatible keys
+      const key = 'od_ocr_' + idx + '_' + (item.name||'').replace(/[^a-z0-9]/gi,'_').toLowerCase();
+      const touched = {};
       (item.rows||[]).forEach((row, ri) => {
-        const rd = (item.doneCells?.[ri])||[], ra = (item.archived?.[ri])||[];
-        html += '<tr' + (rd.length>=row.filter(c=>c.trim()).length&&row.filter(c=>c.trim()).length>0?' class="row-done"':'') + '>';
-        row.forEach((c,ci) => { let cls = ra.includes(ci)?' class="cell-archived"':rd.includes(ci)?' class="cell-highlighted"':''; html += '<td'+cls+'>' + escHtml(c) + '</td>'; });
-        html += '</tr>';
+        (item.doneCells?.[ri]||[]).forEach(ci => { touched['trk-' + key + '-' + ri + '-' + ci] = true; });
       });
-      html += '</tbody></table>';
+      items = [{ name: item.name, headers: item.headers||[], rows: item.rows||[], key, touched }];
     }
   } else if (view.startsWith('s-')) {
     const sName = view.substring(2);
     const sheet = store.sheets[sName];
     if (sheet) {
-      toolbar.innerHTML = '<span class="breadcrumb">' + escHtml(sName) + '</span><input class="input-field" placeholder="Filter..." style="width:160px;margin-left:auto;" oninput="filterOrgdataTable(this.value)">';
-      html += '<table class="data-table" id="odTable"><thead><tr>' + (sheet.headers||[]).map(h => '<th>' + escHtml(h) + '</th>').join('') + '</tr></thead><tbody>';
-      (sheet.rows||[]).forEach(row => { html += '<tr>' + row.map(c => '<td>' + escHtml(String(c)) + '</td>').join('') + '</tr>'; });
-      html += '</tbody></table>';
+      items = [{ name: sName, headers: sheet.headers||[], rows: sheet.rows||[],
+        key: 'od_s_' + sName.replace(/[^a-z0-9]/gi,'_').toLowerCase() }];
+    }
+  } else if (view.startsWith('trk-')) {
+    const key = view.substring(4);
+    const session = store.trackerSaves?.[org]?.[key];
+    if (session) {
+      items = [{ key, name: session.name||key, headers: session.headers||[],
+        rows: session.rows||[], rids: session.rids,
+        colOrder: session.colOrder, hiddenCols: session.hiddenCols,
+        colWidths: session.colWidths, touched: session.touched,
+        flags: session.flags, notes: session.notes }];
     }
   }
-  content.innerHTML = html || '<p class="empty-state">No data.</p>';
 
-  // Add click-to-copy + sort
-  const table = document.getElementById('odTable');
-  if (table) {
-    table.querySelectorAll('td').forEach(td => td.addEventListener('click', () => {
-      const t = td.textContent.trim(); if (!t) return;
-      navigator.clipboard.writeText(t);
-      const p = table.querySelector('.cell-clicked'); if (p) p.classList.remove('cell-clicked');
-      td.classList.add('cell-clicked');
-    }));
-    table.querySelectorAll('th').forEach((th,ci) => { th.dataset.sortDir = ''; th.addEventListener('click', () => {
-      const tbody = table.querySelector('tbody'); const rows = Array.from(tbody.querySelectorAll('tr'));
-      const dir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
-      table.querySelectorAll('th').forEach(h => { h.dataset.sortDir = ''; h.classList.remove('sort-active'); });
-      th.dataset.sortDir = dir; th.classList.add('sort-active');
-      rows.sort((a,b) => { const av = (a.children[ci]?.textContent||'').trim(), bv = (b.children[ci]?.textContent||'').trim(); const an = parseFloat(av), bn = parseFloat(bv); if(!isNaN(an)&&!isNaN(bn)) return dir==='asc'?an-bn:bn-an; return dir==='asc'?av.localeCompare(bv):bv.localeCompare(av); });
-      rows.forEach(r => tbody.appendChild(r));
-    }); });
+  if (items && typeof trkLoadDirect === 'function') {
+    trkLoadDirect(org, items);
+  } else if (!items) {
+    odUnmountTracker();
+    document.getElementById('orgdataContent').style.display = '';
+    document.getElementById('orgdataContent').innerHTML = '<p class="empty-state">No data.</p>';
   }
 }
 
