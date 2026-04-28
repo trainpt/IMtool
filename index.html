@@ -141,6 +141,7 @@
                 <input type="text" id="ocrSearchInput" placeholder="Search..." oninput="filterOCRTable(this.value)">
               </div>
               <button class="ocr-copy-btn" id="ocrToggleImageBtn" onclick="toggleOCRImagePanel()" title="Hide the image cropping panel for a wider view of the extracted data">Hide Image</button>
+              <button class="ocr-copy-btn" id="ocrToggleEmptyBtn" onclick="toggleHideEmptyOCRCols()" title="Hide columns whose data cells are all empty">Hide Empty Cols</button>
               <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
               <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
             </div>
@@ -1124,23 +1125,43 @@ async function doMultiColumnOCR(imageData) {
     const stripW = ocrCrop ? ocrCrop.w : Math.max(...allWords.map(w => w.bbox.x1)) + 5;
     const minX = Math.min(...allWords.map(w => w.bbox.x0));
 
-    // Strip checkbox artifacts (e.g. "[J", "OJ", "0", "[O", "[m]") that the OCR generates from rendered checkboxes.
-    // Any short token in the leftmost x-band that contains brackets or is mostly non-alphanumeric.
+    // Strip checkbox artifacts (e.g. "[J", "OJ", "[m]") that the OCR generates from rendered checkboxes.
+    // We deliberately do NOT drop single-character tokens (like a stray "J" or "O"), because
+    // Tesseract sometimes splits real words like "Jos" into "J" + "os" — dropping the "J"
+    // mangles the header. Any surviving single-char checkbox is handled by the
+    // narrow-leftmost-column drop heuristic during column detection.
     const isCheckboxArtifact = (w) => {
       const t = (w.text || '').trim();
       if (!t) return true;
       const nearLeft = w.bbox.x0 - minX < stripW * 0.06;
       if (!nearLeft) return false;
       if (t.length > 5) return false;
-      // contains bracket/paren chars
+      // contains bracket/paren chars — definitely checkbox-like
       if (/[\[\]\(\)]/.test(t)) return true;
-      // pure non-alpha symbols
+      // pure non-alpha symbols (no letters or digits)
       if (/^[^A-Za-z0-9]{1,4}$/.test(t)) return true;
-      // single/short tokens that look like checkbox glyph misreads (O, J, 0, l, I, |, m...)
-      if (/^[OJ0lI|mn]{1,3}$/.test(t)) return true;
+      // multi-character tokens from the checkbox-misread set ("OJ", "[O", "lJ", etc.)
+      if (/^[OJ0lI|mn]{2,4}$/.test(t)) return true;
+      // single pipe character
+      if (t === '|') return true;
       return false;
     };
-    const words = allWords.filter(w => !isCheckboxArtifact(w));
+    // Strip filter/search placeholder text rendered in the source UI ("Search...", "Filter...").
+    const filterPlaceholderRe = /^(search|filter|find)[.…]{0,3}$/i;
+    // Strip junk separator words: pipe/colon/semicolon/equals/underscore-only tokens that
+    // come from grid lines, scrollbar arrows, and decorative punctuation.
+    // Includes em-dash (—) and en-dash (–) — those are "no value" placeholders, not real data.
+    // The plain hyphen "-" is intentionally NOT stripped here, because it appears legitimately
+    // between words in job names like "1101 Riego - Irrigation". Cells whose entire content
+    // is just dashes are still emptied later by the cell-level dashOnly normalizer.
+    const junkSeparatorRe = /^[|:;=_~`'"\\\/<>—–]+$/;
+    const words = allWords.filter(w => {
+      if (isCheckboxArtifact(w)) return false;
+      const t = (w.text || '').trim();
+      if (filterPlaceholderRe.test(t)) return false;
+      if (junkSeparatorRe.test(t)) return false;
+      return true;
+    });
     if (words.length < 6) { fallback(result.data.text); return; }
 
     // --- Column detection via X-projection of word occupancy ---
@@ -1239,25 +1260,125 @@ async function doMultiColumnOCR(imageData) {
     // CASE-SENSITIVE: header words like "PRODUCTIVE", "STATIC", "DURATION TYPE" are uppercase;
     // data row text is Title Case ("Productive time", "Static", "Hourly work"). So we match
     // Title-Case keywords plus universally data-only tokens ($, "N min", em-dash).
-    const dataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bNon-Productive\b|\bBreak\b|\bLunch\b|\bPicking\b|\bPruning\b|\bHourly\b|\bwork\b/;
+    const dataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bNon-Productive\b|\bBreak\b|\bLunch\b|\bPicking\b|\bPruning\b|\bHourly\b|\bwork\b|\bUnpaid\b|\bNA\b|\bPHASE\b|\bCODE\b|\bPiecework\b/;
     let headerEnd = 0;
     for (let i = 0; i < rows.length; i++) {
       const txt = rows[i].words.map(w => w.text).join(' ');
       if (dataMarker.test(txt)) { headerEnd = i; break; }
+      // Stop advancing on near-empty rows (single-word noise like "EE" from scrollbars
+      // or pagination artifacts) so they don't get promoted to header rows.
+      if (i > 0 && rows[i].words.length < 2) { headerEnd = i; break; }
       if (i >= 4) { headerEnd = 1; break; } // safety: never assume more than 4 header rows
     }
     if (headerEnd < 1) headerEnd = 1;
+
+    // --- Fallback column detection: if X-projection gave too few columns relative to header
+    // word count, derive columns from header word positions instead. This handles tables with
+    // many empty data cells (Rate, Piece Rate, etc.) where word coverage is sparse. ---
+    {
+      const headerWords = [];
+      for (let i = 0; i < headerEnd; i++) headerWords.push(...rows[i].words);
+      headerWords.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      if (headerWords.length >= 3) {
+        // Adaptive gap threshold via bimodal split detection.
+        // Within-column gaps (e.g. "Pay" + "Type") cluster small; between-column gaps cluster
+        // large. We look for the biggest *ratio* jump in the sorted gap list — that's the
+        // natural boundary between the two clusters.
+        const headerGaps = [];
+        for (let i = 1; i < headerWords.length; i++) {
+          const g = headerWords[i].bbox.x0 - headerWords[i - 1].bbox.x1;
+          if (g > 0) headerGaps.push(g);
+        }
+        const sortedGaps = headerGaps.slice().sort((a, b) => a - b);
+        let gapThresh = 14;
+        if (sortedGaps.length >= 2) {
+          let maxRatio = 1, splitIdx = -1;
+          for (let i = 1; i < sortedGaps.length; i++) {
+            const r = sortedGaps[i] / Math.max(sortedGaps[i - 1], 1);
+            if (r > maxRatio) { maxRatio = r; splitIdx = i; }
+          }
+          if (maxRatio >= 2 && splitIdx > 0) {
+            // Clear bimodal break — threshold = midpoint of the jump.
+            gapThresh = (sortedGaps[splitIdx - 1] + sortedGaps[splitIdx]) / 2;
+          } else {
+            // No clear bimodal split — every word is its own column.
+            gapThresh = Math.max(sortedGaps[0] * 0.5, 4);
+          }
+        } else if (sortedGaps.length === 1) {
+          gapThresh = sortedGaps[0] * 0.8;
+        }
+        gapThresh = Math.max(gapThresh, 4);
+        const groups = [];
+        let g = null;
+        headerWords.forEach(w => {
+          if (!g) g = { x0: w.bbox.x0, x1: w.bbox.x1 };
+          else if (w.bbox.x0 - g.x1 < gapThresh) g.x1 = w.bbox.x1;
+          else { groups.push(g); g = { x0: w.bbox.x0, x1: w.bbox.x1 }; }
+        });
+        if (g) groups.push(g);
+        // Use header-derived columns when they give us more granularity.
+        if (groups.length > keepCols.length && groups.length >= 3) {
+          // Boundary between col N and col N+1 = LEFT edge of col N+1's header word.
+          // Headers and data are typically left-aligned within their columns, so a wide
+          // column with a short header (e.g. "Jos" inside the wide Job column) needs the
+          // boundary to extend right to where the next column's header actually starts —
+          // not the midpoint of the visual gap (which under-allocates space to the wide column).
+          keepCols = groups.map((gr, i) => {
+            const left = i === 0 ? 0 : groups[i].x0;
+            const right = i === groups.length - 1 ? occ.length : groups[i + 1].x0;
+            return { x0: left, x1: right };
+          });
+          // Re-apply leftmost-checkbox drop on new column set.
+          const c0 = keepCols[0];
+          const c0Width = c0.x1 - c0.x0;
+          const c0Words = words.filter(w => {
+            const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+            return cx >= c0.x0 && cx <= c0.x1;
+          });
+          const avgLen = c0Words.length
+            ? c0Words.reduce((s, w) => s + (w.text || '').trim().length, 0) / c0Words.length
+            : 0;
+          if (keepCols.length >= 3 && (c0Width < stripW * 0.06 || (c0Width < stripW * 0.1 && avgLen <= 4))) {
+            keepCols = keepCols.slice(1);
+          }
+        }
+      }
+    }
 
     const headerCells = keepCols.map(() => []);
     for (let i = 0; i < headerEnd; i++) {
       const c = cellsForRow(rows[i]);
       c.forEach((v, j) => { if (v) headerCells[j].push(v); });
     }
-    // Strip sort-arrow glyphs (Tesseract reads ↓/↑ as "+", "^", etc.) from header text.
+    // Strip sort-arrow glyphs (Tesseract reads ↓/↑ as "+", "^", etc.) from header text,
+    // then apply specific corrections for known PickTrace column names that OCR mangles.
     const headers = headerCells.map((parts, i) => {
       let h = parts.join(' ').trim();
-      h = h.replace(/[+↓↑▲▼^<>*~]/g, ' ');
+      h = h.replace(/[+↓↑▲▼^<>*~"'`]/g, ' ');
       h = h.replace(/\s{2,}/g, ' ').trim();
+      // Specific PickTrace header corrections. Order matters: very specific patterns first
+      // to avoid overlap (e.g. JOB CATEGORY must match before any catch-all "JOB ..." pattern).
+      const corrections = [
+        // Multi-word, unambiguous headers FIRST
+        [/^J(?:OB|0B|oB)\s+CATEGORY$/i, 'JOB CATEGORY'],
+        [/^HOURLY\s+RATE$/i, 'HOURLY RATE'],
+        [/^PAY\s*STYLE$/i, 'PAY STYLE'],
+        [/^PAYSTYLE$/i, 'PAY STYLE'],
+        [/^MIN\w*\s+WAGE$/i, 'MINIMUM WAGE'],
+        [/^PRODUCTIVE$/i, 'PRODUCTIVE'],
+        [/^(?:DURATION|DURA\w*)\s+(?:DURA\w*|TYPE|T\w*|TY\w*)$/i, 'DURATION TYPE'],
+        [/^(?:COLLECT|COLECT)\s+(?:PIECES|fe|f|s|S|T|CES|ICES)$/i, 'COLLECT PIECES'],
+        [/^(?:CREST|CICES|ICES|PIECES)$/i, 'COLLECT PIECES'],
+        // JOB DURATION — must contain a digit/0/period middle so it never matches JOB CATEGORY
+        [/^(?:JOB|J0B|JoB|J08|108)\s+(?:0[BO0]|03|08|13|00)\s*(?:Ca\w*|D\w*|CON\w*)?$/i, 'JOB DURATION'],
+        [/^(?:0[BO0]|03|08|13|00)\s+\.?(?:Ca\w*|CON\w*|D\w*)$/i, 'JOB DURATION'],
+        [/^(?:0[BO0]|03|08|13|00)$/i, 'JOB DURATION'],
+        // Single "A" in this slot is a misread of "DURATION TYPE"
+        [/^[Aa]$/, 'DURATION TYPE'],
+        // JOB — most ambiguous patterns LAST (single-word, may collide if put earlier)
+        [/^(?:Jos|J0[8BSs]?|J0B|JoB|108|JOB|J08)$/i, 'JOB'],
+      ];
+      for (const [re, fix] of corrections) if (re.test(h)) { h = fix; break; }
       return h || ('Col ' + (i + 1));
     });
 
@@ -1265,10 +1386,20 @@ async function doMultiColumnOCR(imageData) {
       .map(cellsForRow)
       .filter(r => r.some(c => c && c.length));
 
-    // Drop sparse junk rows (e.g. "mir", "1 >") — must fill at least half the columns
-    // OR have a strong data signature ($, "N min", em-dash, "Productive"/"Static").
+    // Normalize: any cell whose entire trimmed content is just dashes/separators becomes empty.
+    // Also strips lines/leftover punctuation so they don't count as filled in the sparse filter.
+    // Real values like "NPT- Travel Time" are unaffected because they contain alphanumerics.
+    const dashOnly = /^[\s—–\-_|:;\\\/<>.]+$/;
+    dataRows.forEach(r => {
+      for (let i = 0; i < r.length; i++) {
+        if (dashOnly.test(r[i] || '')) r[i] = '';
+      }
+    });
+
+    // Drop sparse junk rows (e.g. "mir", "1 >", "EE ——— >") — must fill at least half the
+    // columns OR have a strong data signature ($, "N min", em-dash, "Productive"/"Static"/etc.).
     const minCellsRequired = Math.max(2, Math.ceil(keepCols.length / 2));
-    const rowDataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bHourly\b|\bLunch\b|\bBreak\b/;
+    const rowDataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bHourly\b|\bLunch\b|\bBreak\b|\bUnpaid\b|\bPiecework\b|\bNA\b|\bPHASE\b|\bCODE\b/;
     dataRows = dataRows.filter(r => {
       const filled = r.filter(c => c && c.trim().length).length;
       if (filled >= minCellsRequired) return true;
@@ -1276,23 +1407,16 @@ async function doMultiColumnOCR(imageData) {
       return rowDataMarker.test(joined);
     });
 
-    // Normalize: any cell whose entire trimmed content is just dashes (—, –, -) becomes empty.
-    // (Em-dash, en-dash, hyphen, underscore — all are "no value" placeholders in this UI.)
-    // This applies to every cell — real values like "NPT- Travel Time" are unaffected because
-    // they contain non-dash characters.
-    const dashOnly = /^[\s—–\-_]+$/;
-    dataRows.forEach(r => {
-      for (let i = 0; i < r.length; i++) {
-        if (dashOnly.test(r[i] || '')) r[i] = '';
-      }
-    });
-
-    // Normalize the "Collect Pieces"-style column: convert checkmark glyphs to ✓.
+    // Normalize the "Collect Pieces"-style column: any short non-dash cell becomes ✓.
+    // Tesseract reads the checkmark glyph as many variants (v, V, w, Y, /, J, *, etc.) so we
+    // accept any 1-2 char cell that isn't a dash-only "no value" placeholder as a checkmark.
     headers.forEach((h, idx) => {
       if (/collect|piece/i.test(h)) {
         dataRows.forEach(r => {
           const v = (r[idx] || '').trim();
-          if (/^[v✓✔]+$/i.test(v) || /check/i.test(v)) {
+          if (!v) return;
+          if (/^[—–\-_]+$/.test(v)) { r[idx] = ''; return; }
+          if (/^[v✓✔VYwJ\/*xX√√]+$/.test(v) || /check/i.test(v) || v.length <= 2) {
             r[idx] = '✓';
           }
         });
@@ -1326,17 +1450,73 @@ function cleanOCRCell(text) {
 
   l = l.replace(/!/g, 'l');
 
-  // --- Descender split fixes (Tesseract reads g/y descenders as a separate "9" or letter token) ---
+  // --- Token-based two-word dedup. Tesseract often reads each word twice with different
+  //     segmentations, producing patterns like "Forklift Forklift", "Drivin Driving",
+  //     "Esper Espera", "Bloc Block", "Prod roductive", "Mayord domo", "wort work".
+  //     A regex /g replace consumes pairs greedily from the left and misses overlapping
+  //     pairs ("min min Block Block" → consuming "X min" hides the "min min" pair), so we
+  //     scan tokens and merge each new token with the previous one if eligible. ---
+  const dedupPair = (w1, w2) => {
+    if (!/^\w{2,}$/.test(w1) || !/^\w{2,}$/.test(w2)) return null;
+    const lw1 = w1.toLowerCase();
+    const lw2 = w2.toLowerCase();
+    if (lw1 === lw2) return w1;
+    // Overlap merge: last N chars of w1 == first N chars of w2 (N>=3) → concatenate
+    for (let n = Math.min(lw1.length, lw2.length) - 1; n >= 3; n--) {
+      if (lw1.slice(-n) === lw2.slice(0, n)) return w1 + w2.slice(n);
+    }
+    // Suffix/prefix containment: drop the shorter one
+    if (lw1.length >= 3 && lw2.length >= 2 && lw2.length < lw1.length) {
+      if (lw1.endsWith(lw2) || lw1.startsWith(lw2)) return w1;
+    }
+    if (lw2.length >= 3 && lw1.length >= 2 && lw1.length < lw2.length) {
+      if (lw2.endsWith(lw1) || lw2.startsWith(lw1)) return w2;
+    }
+    return null;
+  };
+  {
+    const tokens = l.split(/\s+/).filter(t => t.length);
+    const out = [];
+    for (const tok of tokens) {
+      if (out.length > 0) {
+        const merged = dedupPair(out[out.length - 1], tok);
+        if (merged !== null) {
+          out[out.length - 1] = merged;
+          continue;
+        }
+      }
+      out.push(tok);
+    }
+    l = out.join(' ');
+  }
+
+  // Drop a single-letter filler word stuck between two real words ("Por r Hora" → "Por Hora",
+  // "Bus g Driving" → "Bus Driving"). Whitelist meaningful single chars (a, A, I, i).
+  l = l.replace(/\b(\w{3,})\s+([a-zA-Z])\s+(\w{3,})\b/g, (m, w1, c, w3) => {
+    if (/^[aAIi]$/.test(c)) return m;
+    return w1 + ' ' + w3;
+  });
+
+  // Trailing single digit/letter after -ing/-es/-ed words ("Changes 9", "Shining 9").
+  l = l.replace(/\b(\w+(?:ing|es|ed))\s+[9gq0]\b/g, '$1');
+
+  // --- Targeted descender / split fixes (still needed for Tesseract patterns the dedup misses) ---
   // "Prunin 9" → "Pruning", "Pickin g" → "Picking", "Trainin 9" → "Training"
   l = l.replace(/\b([A-Za-z]+in)\s+[9gq]\b/g, '$1g');
   // "Pruning, 9" or "Prunin, 9" with stray comma
   l = l.replace(/\b([A-Za-z]+in),?\s+[9gq]\b/g, '$1g');
-  // "Droppin g" → "Dropping" (already covered above), but also "Dropping pping" duplicates
-  l = l.replace(/\b(\w+ing)\s+\1ing\b/gi, '$1ing');
-  // "Hourly ly" → "Hourly", "lg 9" → "lg" residue, "ly Harvest" leading
+  // "Hour ly" / "Hourl ly" / "Hourly ly" → "Hourly"
   l = l.replace(/\bHourly\s+ly\b/g, 'Hourly');
+  l = l.replace(/\bHourl\s+ly\b/g, 'Hourly');
+  l = l.replace(/\bHour\s+ly\b/g, 'Hourly');
+  // Standalone "Hour" → "Hourly" (Tesseract truncated the cell)
+  if (l === 'Hour') l = 'Hourly';
   l = l.replace(/^ly\s+/, '');
   l = l.replace(/\blg\s+\d\b/g, '');
+  // "Mayordomo yo" — descender of 'y' in Mayordomo OCR'd as separate token
+  l = l.replace(/\bMayordomo\s+yo\b/g, 'Mayordomo');
+  // Non-productive with trailing 2-3 char junk ("oi", "pr", "or", "pi", "p", "ro")
+  l = l.replace(/\bNon-productive\s+(?:oi|pr|or|pi|ro|p)\s+time\b/gi, 'Non-productive time');
   // "pi y" "pI" descender residue trailing
   l = l.replace(/\s+p[iI]?\s*$/, '');
   l = l.replace(/\s+y\s*$/, '');
@@ -1345,9 +1525,55 @@ function cleanOCRCell(text) {
   // "Break real" / "Brea " misreads (Break gets re-read partially)
   l = l.replace(/\bBreak\s+real\b/g, 'Break');
   l = l.replace(/\bBrea\b/g, 'Break');
+  // "Break ent." → "Break Payment" (Payment garbled to "ent.")
+  l = l.replace(/\bBreak\s+ent\.?\b/g, 'Break Payment');
   // "Non-prod lon-productive" duplicates
   l = l.replace(/\bNon-prod\s+lon-productive\b/g, 'Non-productive');
   l = l.replace(/\bs\s+tatic\b/g, 'Static');
+  // Trailing/internal stray punctuation: "NPT Misc. Payment %" → "NPT Misc. Payment"
+  l = l.replace(/\s+%+\s*$/, '');
+
+  // "$1690" → "$16.90" — Tesseract drops the decimal in dollar values. When we see $ followed
+  // by 4 digits and no decimal, insert one before the last 2 digits (cents format).
+  l = l.replace(/\$(\d{4})\b(?!\.)/g, (_, d) => '$' + d.slice(0, 2) + '.' + d.slice(2));
+  // "Forkift" → "Forklift" (l dropped). "Forkiift" already handled below.
+  l = l.replace(/\bForkift\b/g, 'Forklift');
+  // "Uwia" → "Lluvia" (Spanish "Ll" misread)
+  l = l.replace(/\bUwia\b/g, 'Lluvia');
+  // "lnc" → "Lunch" (truncated)
+  if (l === 'lnc') l = 'Lunch';
+
+  // --- Concat / dedup across punctuation: Tesseract sometimes injects ":", ".", "," between
+  //     fragments of the same word, which the whitespace-only dedup can't see through. ---
+  // Generic: "X[:,.] Y" where one is a prefix of the other → keep the longer.
+  l = l.replace(/\b(\w{3,})[:.,]\s+(\w{4,})\b/g, (m, w1, w2) => {
+    const lw1 = w1.toLowerCase();
+    const lw2 = w2.toLowerCase();
+    if (lw1 === lw2) return w2;
+    if (lw1.length < lw2.length && lw2.startsWith(lw1)) return w2;
+    if (lw2.length < lw1.length && lw1.startsWith(lw2)) return w1;
+    return m;
+  });
+  // "Chang: es" / "Chang es" → "Changes" (split mid-word; not a prefix/suffix relation)
+  l = l.replace(/\bChang[:.,]?\s+es\b/g, 'Changes');
+  // "Non-prodt lon-productive" → "Non-productive" (dash-spanning duplicate fragments)
+  l = l.replace(/\bNon-?prodt?\s+lon-?productive\b/gi, 'Non-productive');
+  // "Bloc" alone (not followed by 'k') is a misread of "Block" in this context.
+  l = l.replace(/\bBloc\b(?!k)/g, 'Block');
+  // "Hourly url" — "url" is a garbled re-read of the "rly" tail; drop it.
+  l = l.replace(/\bHourly\s+url\b/g, 'Hourly');
+  // "wort work" — "wort" is a partial re-read of "work" with wrong middle char.
+  l = l.replace(/\bwort\s+work\b/gi, 'work');
+  // "Mayord jomo" → "Mayordomo" (descender 'd' tail re-read as new token starting with 'j').
+  l = l.replace(/\bMayord\s+(?:jomo|domo)\b/g, 'Mayordomo');
+  // "ntrenamiento" → "Entrenamiento" (missing leading E)
+  l = l.replace(/\bntrenamiento\b/g, 'Entrenamiento');
+  // "Drivin" alone (not followed by 'g') → "Driving"
+  l = l.replace(/\bDrivin\b(?!g)/g, 'Driving');
+  // "in" stuck between "Min" and "Safety"/"Training"  — single-char filter doesn't catch 2-char
+  l = l.replace(/\bMin\s+in\b/g, 'Min');
+  // "raining" tail after "Training" already handled by dedup; "Training raining" → "Training"
+  // is caught by the suffix rule.
 
   // --- Common job-name OCR misreads (NPT family) ---
   // "NeT" → "NPT" (P misread as e). Apply before splitting sticky codes.
@@ -1558,22 +1784,119 @@ function applyOCRTableFilters() {
   });
 }
 
-function archiveOCRCell(ri, ci) {
-  const key = ri + '-' + ci;
+// Dismiss the context menu when clicking anywhere outside it.
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('ctxMenu');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+
+function deleteOCRColumn(displayIdx) {
+  if (displayIdx < 0 || displayIdx >= ocrColOrder.length) return;
+  ocrColOrder.splice(displayIdx, 1);
+  renderOCRTableFromState();
+  // Sync the raw text view to the new column layout.
+  syncOCROutputFromState();
+}
+
+function mergeOCRColumns(displayIdx, dir) {
+  const otherIdx = displayIdx + dir;
+  if (otherIdx < 0 || otherIdx >= ocrColOrder.length) return;
+  // Determine left and right (in display order) so we always keep left, drop right.
+  const leftDisp = Math.min(displayIdx, otherIdx);
+  const rightDisp = Math.max(displayIdx, otherIdx);
+  const leftOci = ocrColOrder[leftDisp];
+  const rightOci = ocrColOrder[rightDisp];
+  // Merge header text.
+  const lh = (ocrHeadersAll[leftOci] || '').trim();
+  const rh = (ocrHeadersAll[rightOci] || '').trim();
+  ocrHeadersAll[leftOci] = (lh + (lh && rh ? ' ' : '') + rh);
+  // Merge cell content for every row (preserving non-empty values).
+  ocrRowsAll.forEach(r => {
+    const lv = (r[leftOci] || '').trim();
+    const rv = (r[rightOci] || '').trim();
+    r[leftOci] = lv + (lv && rv ? ' ' : '') + rv;
+  });
+  // Remove the right column from display order.
+  ocrColOrder.splice(rightDisp, 1);
+  renderOCRTableFromState();
+  syncOCROutputFromState();
+}
+
+function moveOCRColumn(displayIdx, dir) {
+  const newIdx = displayIdx + dir;
+  if (displayIdx < 0 || displayIdx >= ocrColOrder.length) return;
+  if (newIdx < 0 || newIdx >= ocrColOrder.length) return;
+  const tmp = ocrColOrder[displayIdx];
+  ocrColOrder[displayIdx] = ocrColOrder[newIdx];
+  ocrColOrder[newIdx] = tmp;
+  renderOCRTableFromState();
+  syncOCROutputFromState();
+}
+
+// Turn an element into an editable text field. Calls onSave() when committed.
+// Commit on Enter or blur; cancel on Escape.
+function makeOCREditable(el, onSave) {
+  if (el.isContentEditable) return;
+  const original = el.textContent;
+  el.contentEditable = 'true';
+  el.classList.add('ocr-editing');
+
+  const finish = (commit) => {
+    el.contentEditable = 'false';
+    el.classList.remove('ocr-editing');
+    if (!commit) el.textContent = original;
+    else if (onSave) onSave();
+    el.removeEventListener('keydown', onKey);
+    el.removeEventListener('blur', onBlur);
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  const onBlur = () => finish(true);
+
+  // Defer focus + selection until after the current event finishes, otherwise the dblclick
+  // event's default selection logic and any pending click handlers can steal focus.
+  setTimeout(() => {
+    el.focus();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_) { /* ignore selection errors */ }
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('blur', onBlur);
+  }, 0);
+}
+
+function syncOCROutputFromState() {
+  const headers = ocrColOrder.map(i => ocrHeadersAll[i]);
+  const rows = ocrRowsAll.map(r => ocrColOrder.map(i => r[i] || ''));
+  const tsv = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
+  const out = document.getElementById('ocrOutput');
+  if (out) out.value = tsv;
+}
+
+function archiveOCRCell(ri, oci) {
+  const key = ri + '-' + oci;
   ocrArchivedCells.add(key);
   const wrap = document.getElementById('ocrTableWrap');
-  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-ci="' + ci + '"]');
+  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-oci="' + oci + '"]');
   if (td) {
     td.classList.add('ocr-cell-archived');
     td.classList.remove('ocr-cell-done', 'ocr-cell-clicked');
   }
 }
 
-function unarchiveOCRCell(ri, ci) {
-  const key = ri + '-' + ci;
+function unarchiveOCRCell(ri, oci) {
+  const key = ri + '-' + oci;
   ocrArchivedCells.delete(key);
   const wrap = document.getElementById('ocrTableWrap');
-  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-ci="' + ci + '"]');
+  const td = wrap.querySelector('td[data-ri="' + ri + '"][data-oci="' + oci + '"]');
   if (td) td.classList.remove('ocr-cell-archived');
 }
 
@@ -1590,6 +1913,14 @@ function toggleOCRImagePanel() {
   if (!layout || !btn) return;
   const hidden = layout.classList.toggle('ocr-image-hidden');
   btn.textContent = hidden ? 'Show Image' : 'Hide Image';
+}
+
+function toggleHideEmptyOCRCols() {
+  ocrHideEmptyCols = !ocrHideEmptyCols;
+  const btn = document.getElementById('ocrToggleEmptyBtn');
+  if (btn) btn.textContent = ocrHideEmptyCols ? 'Show Empty Cols' : 'Hide Empty Cols';
+  if (btn) btn.classList.toggle('ocr-toggle-active', ocrHideEmptyCols);
+  renderOCRTableFromState();
 }
 
 function parseOCRToTable(text) {
@@ -1640,21 +1971,45 @@ function parseOCRToTable(text) {
 }
 
 let ocrTableDone = {};
+let ocrHeadersAll = [];   // master header list (all columns, original order)
+let ocrRowsAll = [];      // master row list (cells in original column order)
+let ocrColOrder = [];     // current display order: array of original column indices
+let ocrHideEmptyCols = false;  // hide columns whose data cells are all empty
 
 function renderOCRTable(text) {
-  const wrap = document.getElementById('ocrTableWrap');
   const { headers, rows } = parseOCRToTable(text);
-  ocrTableDone = {};
+  ocrHeadersAll = headers;
+  ocrRowsAll = rows;
+  ocrColOrder = headers.map((_, i) => i);
+  ocrTableDone = {};         // { ri: Set<originalCi> }  — keyed by ORIGINAL column index
+  ocrArchivedCells = new Set(); // "ri-originalCi" keys
+  renderOCRTableFromState();
+}
 
-  if (rows.length === 0) {
+function renderOCRTableFromState() {
+  const wrap = document.getElementById('ocrTableWrap');
+  // If "Hide Empty Cols" is on, filter the display order to skip columns whose data
+  // cells are ALL empty/whitespace. Master state (ocrColOrder) is unchanged so toggling
+  // back restores them.
+  const visibleOrder = ocrHideEmptyCols
+    ? ocrColOrder.filter(oci => ocrRowsAll.some(r => (r[oci] || '').trim().length > 0))
+    : ocrColOrder.slice();
+  const headers = visibleOrder.map(i => ocrHeadersAll[i]);
+  const rows = ocrRowsAll.map(r => visibleOrder.map(i => r[i] || ''));
+
+  if (rows.length === 0 || headers.length === 0) {
     wrap.innerHTML = '<p class="ocr-placeholder">No table data detected.</p>';
     return;
   }
 
   let html = '<table><thead><tr>';
   headers.forEach((h, ci) => {
-    html += '<th class="ocr-sort-th" data-ci="' + ci + '" title="Click to sort">' +
-      '<span class="ocr-sort-label">' + escHtml(h) + '</span>' +
+    const oci = visibleOrder[ci];
+    // The label span is draggable=false so double-clicking it edits the text instead of
+    // initiating a drag. The drag handle (small ⠿ icon) is what actually starts a reorder drag.
+    html += '<th class="ocr-sort-th" data-ci="' + ci + '" data-oci="' + oci + '" title="Click to sort &middot; Drag handle to reorder &middot; Double-click to edit &middot; Right-click for options">' +
+      '<span class="ocr-drag-handle" draggable="true" title="Drag to reorder">⠿</span>' +
+      '<span class="ocr-sort-label" draggable="false">' + escHtml(h) + '</span>' +
       '<span class="ocr-sort-arrow" data-ci="' + ci + '"></span>' +
       '</th>';
   });
@@ -1665,15 +2020,35 @@ function renderOCRTable(text) {
   html += '</tr></thead><tbody>';
 
   rows.forEach((row, ri) => {
-    ocrTableDone[ri] = new Set();
+    if (!ocrTableDone[ri]) ocrTableDone[ri] = new Set();
     html += '<tr data-ri="' + ri + '">';
     row.forEach((cell, ci) => {
-      html += '<td data-ri="' + ri + '" data-ci="' + ci + '">' + escHtml(cell) + '</td>';
+      const originalCi = visibleOrder[ci];
+      html += '<td data-ri="' + ri + '" data-ci="' + ci + '" data-oci="' + originalCi + '">' + escHtml(cell) + '</td>';
     });
     html += '</tr>';
   });
   html += '</tbody></table>';
   wrap.innerHTML = html;
+
+  // Re-apply preserved done / archived state by ORIGINAL column index, so reordering or
+  // deleting columns doesn't lose the user's progress.
+  wrap.querySelectorAll('td').forEach(td => {
+    const ri = parseInt(td.dataset.ri);
+    const oci = parseInt(td.dataset.oci);
+    if (ocrTableDone[ri] && ocrTableDone[ri].has(oci)) {
+      td.classList.add('ocr-cell-done');
+    }
+    if (ocrArchivedCells.has(ri + '-' + oci)) {
+      td.classList.add('ocr-cell-archived');
+    }
+  });
+  // Re-apply row-done class for rows whose all-non-empty cells are done.
+  wrap.querySelectorAll('tbody tr').forEach(tr => {
+    const ri = parseInt(tr.dataset.ri);
+    const cellCount = tr.querySelectorAll('td').length;
+    checkOCRRowDone(ri, cellCount);
+  });
 
   // Reset per-column filter & sort state on every fresh render, then wire inputs/headers.
   ocrColFilters = [];
@@ -1688,20 +2063,112 @@ function renderOCRTable(text) {
     inp.addEventListener('click', (e) => e.stopPropagation());
   });
   wrap.querySelectorAll('.ocr-sort-th').forEach(th => {
+    // Click → sort. We suppress this if a drag just happened (handled via flag).
+    let dragHappened = false;
     th.addEventListener('click', (e) => {
+      if (dragHappened) { dragHappened = false; return; }
+      // Don't sort if user is editing the header text.
+      if (th.querySelector('.ocr-sort-label')?.isContentEditable) return;
       const ci = parseInt(th.dataset.ci);
       sortOCRTable(ci);
     });
+
+    // Double-click on the label → inline edit the header text.
+    th.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const label = th.querySelector('.ocr-sort-label');
+      if (!label) return;
+      const originalCi = parseInt(th.dataset.oci);
+      makeOCREditable(label, () => {
+        ocrHeadersAll[originalCi] = label.textContent;
+        syncOCROutputFromState();
+      });
+    });
+
+    // HTML5 drag-and-drop reorder. Drag is initiated on the small ⠿ handle, while the
+    // entire th is a valid drop target.
+    const handle = th.querySelector('.ocr-drag-handle');
+    if (handle) {
+      handle.addEventListener('dragstart', (e) => {
+        // Carry the ORIGINAL column index so reorder works regardless of which columns
+        // are currently hidden.
+        e.dataTransfer.setData('text/plain', th.dataset.oci);
+        e.dataTransfer.effectAllowed = 'move';
+        th.classList.add('ocr-dragging');
+      });
+      handle.addEventListener('dragend', () => {
+        th.classList.remove('ocr-dragging');
+        wrap.querySelectorAll('.ocr-drag-over').forEach(el => el.classList.remove('ocr-drag-over'));
+      });
+      // Prevent click on handle from triggering sort.
+      handle.addEventListener('click', (e) => e.stopPropagation());
+    }
+    th.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      th.classList.add('ocr-drag-over');
+    });
+    th.addEventListener('dragleave', () => th.classList.remove('ocr-drag-over'));
+    th.addEventListener('drop', (e) => {
+      e.preventDefault();
+      th.classList.remove('ocr-drag-over');
+      const fromOci = parseInt(e.dataTransfer.getData('text/plain'));
+      const toOci = parseInt(th.dataset.oci);
+      if (Number.isNaN(fromOci) || Number.isNaN(toOci) || fromOci === toOci) return;
+      const fromOrderIdx = ocrColOrder.indexOf(fromOci);
+      const toOrderIdx = ocrColOrder.indexOf(toOci);
+      if (fromOrderIdx === -1 || toOrderIdx === -1) return;
+      const moved = ocrColOrder.splice(fromOrderIdx, 1)[0];
+      ocrColOrder.splice(toOrderIdx, 0, moved);
+      dragHappened = true;
+      renderOCRTableFromState();
+      syncOCROutputFromState();
+    });
+
+    th.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Use the ORIGINAL column index so the right action runs even when "Hide Empty Cols"
+      // is on (display index → original index mapping changes when columns are hidden).
+      const oci = parseInt(th.dataset.oci);
+      const orderIdx = ocrColOrder.indexOf(oci);
+      if (orderIdx === -1) return;
+      const menu = document.getElementById('ctxMenu');
+      const canMoveLeft = orderIdx > 0;
+      const canMoveRight = orderIdx < ocrColOrder.length - 1;
+      let html = '<div data-action="delete">Delete Column</div>';
+      if (canMoveLeft) html += '<div data-action="left">Move Left</div>';
+      if (canMoveRight) html += '<div data-action="right">Move Right</div>';
+      if (canMoveLeft) html += '<div data-action="mergeLeft">Merge with Left</div>';
+      if (canMoveRight) html += '<div data-action="mergeRight">Merge with Right</div>';
+      menu.innerHTML = html;
+      menu.style.display = 'block';
+      menu.style.left = e.clientX + 'px';
+      menu.style.top = e.clientY + 'px';
+      menu.onclick = (ev) => {
+        const action = ev.target.dataset.action;
+        menu.style.display = 'none';
+        if (action === 'delete') deleteOCRColumn(orderIdx);
+        else if (action === 'left') moveOCRColumn(orderIdx, -1);
+        else if (action === 'right') moveOCRColumn(orderIdx, 1);
+        else if (action === 'mergeLeft') mergeOCRColumns(orderIdx, -1);
+        else if (action === 'mergeRight') mergeOCRColumns(orderIdx, 1);
+      };
+    });
   });
 
-  // Add click-to-copy and right-click archive handlers
-  ocrArchivedCells = new Set();
+  // Add click-to-copy and right-click archive handlers. State is keyed by ORIGINAL column
+  // index (data-oci) so reorder/delete preserves the user's progress.
   wrap.querySelectorAll('td').forEach(td => {
     let clickCount = 0;
     td.addEventListener('click', () => {
+      // Don't trigger copy while editing.
+      if (td.isContentEditable) return;
       const ri = parseInt(td.dataset.ri);
       const ci = parseInt(td.dataset.ci);
-      if (ocrArchivedCells.has(ri + '-' + ci)) return;
+      const oci = parseInt(td.dataset.oci);
+      if (ocrArchivedCells.has(ri + '-' + oci)) return;
       const cell = td.textContent;
       if (!cell.trim()) return;
       clickCount++;
@@ -1713,26 +2180,43 @@ function renderOCRTable(text) {
               if (prev) prev.classList.remove('ocr-cell-clicked');
               td.classList.add('ocr-cell-done');
               td.classList.add('ocr-cell-clicked');
-              ocrTableDone[ri].add(ci);
-              checkOCRRowDone(ri, rows[ri].length);
+              if (!ocrTableDone[ri]) ocrTableDone[ri] = new Set();
+              ocrTableDone[ri].add(oci);
+              const rowCellCount = td.parentElement.querySelectorAll('td').length;
+              checkOCRRowDone(ri, rowCellCount);
             });
           } else {
             td.classList.remove('ocr-cell-done');
             td.classList.remove('ocr-cell-clicked');
-            ocrTableDone[ri].delete(ci);
-            checkOCRRowDone(ri, rows[ri].length);
+            if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
+            const rowCellCount = td.parentElement.querySelectorAll('td').length;
+            checkOCRRowDone(ri, rowCellCount);
           }
           clickCount = 0;
         }, 200);
       }
     });
 
+    // Double-click → inline edit. Updates the master row store using the original column index.
+    td.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clickCount = 0; // cancel any pending single-click copy
+      const ri = parseInt(td.dataset.ri);
+      const oci = parseInt(td.dataset.oci);
+      makeOCREditable(td, () => {
+        if (!ocrRowsAll[ri]) ocrRowsAll[ri] = [];
+        ocrRowsAll[ri][oci] = td.textContent;
+        syncOCROutputFromState();
+      });
+    });
+
     // Right-click context menu
     td.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const ri = parseInt(td.dataset.ri);
-      const ci = parseInt(td.dataset.ci);
-      const key = ri + '-' + ci;
+      const oci = parseInt(td.dataset.oci);
+      const key = ri + '-' + oci;
       const isArchived = ocrArchivedCells.has(key);
       const menu = document.getElementById('ctxMenu');
       menu.innerHTML = isArchived
@@ -1744,8 +2228,8 @@ function renderOCRTable(text) {
       menu.onclick = (ev) => {
         const action = ev.target.dataset.action;
         menu.style.display = 'none';
-        if (action === 'archive') archiveOCRCell(ri, ci);
-        else if (action === 'unarchive') unarchiveOCRCell(ri, ci);
+        if (action === 'archive') archiveOCRCell(ri, oci);
+        else if (action === 'unarchive') unarchiveOCRCell(ri, oci);
       };
     });
   });
