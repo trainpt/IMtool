@@ -1238,6 +1238,32 @@ a { color: var(--accent); text-decoration: none; }
   cursor: pointer;
   user-select: none;
 }
+.ocr-table-wrap th.ocr-sort-th.ocr-dragging { opacity: 0.4; }
+.ocr-table-wrap th.ocr-sort-th.ocr-drag-over {
+  box-shadow: inset 3px 0 0 var(--accent, #3b82f6);
+}
+.ocr-table-wrap .ocr-drag-handle {
+  display: inline-block;
+  cursor: grab;
+  color: var(--text-3, #a1a1aa);
+  margin-right: 4px;
+  font-size: 11px;
+  user-select: none;
+}
+.ocr-table-wrap .ocr-drag-handle:hover { color: var(--accent, #3b82f6); }
+.ocr-table-wrap .ocr-drag-handle:active { cursor: grabbing; }
+.ocr-table-wrap .ocr-editing,
+.ocr-table-wrap td.ocr-editing,
+.ocr-table-wrap th .ocr-editing,
+.ocr-table-wrap .ocr-sort-label.ocr-editing {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: -2px;
+  background: #fff !important;
+  cursor: text !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+}
 .ocr-table-wrap th.ocr-sort-th:hover { background: var(--bg-muted); }
 .ocr-table-wrap th.ocr-sort-active { background: var(--accent-soft, #dbeafe); }
 .ocr-table-wrap .ocr-sort-arrow {
