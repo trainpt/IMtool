@@ -100,6 +100,7 @@ function getAllOrgNames() {
   const names = new Set();
   Object.keys(store.orgs || {}).forEach(n => names.add(n));
   Object.keys(store.ocrSaves || {}).forEach(n => names.add(n));
+  Object.keys(store.trackerSaves || {}).forEach(n => names.add(n));
   Object.values(store.sheets || {}).forEach(s => { if (s.orgName) names.add(s.orgName); });
   return [...names].sort();
 }
