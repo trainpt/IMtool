@@ -125,6 +125,13 @@
               <button class="ocr-btn ocr-btn-secondary" id="ocrReplaceBtn" style="display:none;" onclick="document.getElementById('ocrFileInput').click()">Replace Image</button>
               <button class="ocr-btn ocr-btn-secondary" onclick="clearOCR()">Clear</button>
             </div>
+            <div class="ocr-engine-toggle" title="Choose which extraction pipeline to use for Extract Columns">
+              <span class="ocr-engine-label">Engine:</span>
+              <div class="ocr-engine-segmented" role="radiogroup">
+                <button type="button" class="ocr-engine-btn" data-engine="desktop" onclick="setOCREngine('desktop')" title="Original desktop pipeline — best for high-resolution screenshots with clear column gaps">Desktop</button>
+                <button type="button" class="ocr-engine-btn" data-engine="laptop" onclick="setOCREngine('laptop')" title="Laptop pipeline — extra handling for narrow column gaps, sort-arrow glyphs, ATTEST=Y continuations, pagination footers">Laptop</button>
+              </div>
+            </div>
             <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom &middot; For <b>Extract Columns</b>, include the header row in your crop</div>
             <div class="ocr-progress" id="ocrProgress" style="display:none;">
               <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
@@ -147,8 +154,21 @@
               <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
             </div>
             <div class="ocr-tab-content active" id="ocrTabTable">
+              <div class="ocr-progress-summary" id="ocrProgressSummary" style="display:none;">
+                <div class="ocr-progress-summary-bar"><div class="ocr-progress-summary-fill" id="ocrProgressSummaryFill"></div></div>
+                <span class="ocr-progress-summary-stats" id="ocrProgressSummaryStats">0 of 0 cells (0%)</span>
+                <span class="ocr-progress-eta" id="ocrProgressETA"></span>
+                <span class="ocr-progress-complete" id="ocrProgressComplete" style="display:none;">Complete</span>
+              </div>
               <div class="ocr-table-wrap" id="ocrTableWrap">
                 <p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>
+              </div>
+              <div class="ocr-removed-items-panel" id="ocrRemovedItemsPanel" style="display:none;">
+                <div class="ocr-removed-items-header" id="ocrRemovedItemsHeader" onclick="toggleOCRRemovedItems()">
+                  <span class="ocr-removed-items-caret" id="ocrRemovedItemsCaret">&#9654;</span>
+                  <span>Removed Items (<span id="ocrRemovedItemsCount">0</span>)</span>
+                </div>
+                <div class="ocr-removed-items-list" id="ocrRemovedItemsList" style="display:none;"></div>
               </div>
             </div>
             <div class="ocr-tab-content" id="ocrTabRaw">
@@ -162,14 +182,8 @@
     <!-- ─── Page: Org Data ─── -->
     <div class="page" id="page-orgdata">
       <div class="orgdata-layout">
-        <!-- Left nav panel -->
-        <div class="orgdata-sidenav">
-          <div class="orgdata-org-picker">
-            <label class="orgdata-org-label">Organization</label>
-            <select id="orgDataSelect" class="input-field" style="width:100%;"></select>
-          </div>
-          <div id="orgDataNav"></div>
-        </div>
+        <!-- The in-page sidenav was replaced by sidebar content rendered from buildSidebar('orgdata').
+             The orgDataSelect / orgDataNav elements live in the global sidebar now. -->
         <!-- Right content panel -->
         <div class="orgdata-panel">
           <div class="page-toolbar" id="orgdataToolbar"></div>
@@ -356,6 +370,10 @@
             <span class="text-muted small">Or upload directly:</span>
             <input type="file" id="trk-file-upload" accept=".xlsx,.xls,.csv" class="input-file">
             <span id="trk-file-name" class="text-muted"></span>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-muted);cursor:pointer;" title="When ON (default), rows with a yellow cell fill are dropped as example rows. Turn OFF when your real data is yellow-highlighted.">
+              <input type="checkbox" id="trkSkipYellowToggle" checked>
+              <span>Skip yellow-highlighted rows as examples</span>
+            </label>
           </div>
           <div id="trk-name-wrap" style="margin-top:12px;">
             <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
@@ -613,6 +631,10 @@
         <p class="text-muted small">.xlsx, .xls, .csv</p>
       </div>
       <input type="file" id="importFileInput" accept=".xlsx,.xls,.csv" hidden>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-muted);cursor:pointer;" title="When ON (default), rows with a yellow cell fill are dropped as example rows. Turn OFF when your real data is yellow-highlighted.">
+        <input type="checkbox" id="importSkipYellowToggle" checked>
+        <span>Skip yellow-highlighted rows as examples</span>
+      </label>
     </div>
     <div id="importStep2" style="display:none;">
       <div id="importFileName" class="text-muted small"></div>
@@ -719,7 +741,7 @@ function switchPage(pageName) {
 
   // Tool-specific init
   if (pageName === 'merge' && typeof initMergePage === 'function') initMergePage();
-  if (pageName === 'ocr') hideStatsBar();
+  if (pageName === 'ocr') { hideStatsBar(); updateOCREngineButtons(); restoreOCRSession(); }
   if (pageName === 'review') { hideStatsBar(); populateSheetSelects(); if (typeof rvInit === 'function') rvInit(); }
   if (pageName === 'coleditor') { hideStatsBar(); populateSheetSelects(); }
   if (pageName === 'tracker') { hideStatsBar(); populateSheetSelects(); if (typeof trkInit === 'function') trkInit(); }
@@ -728,6 +750,11 @@ function switchPage(pageName) {
 
 function buildSidebar(pageName) {
   const dyn = document.getElementById('sidebarDynamic');
+  // Reset the global-sidebar visibility on every page switch — the orgdata branch
+  // re-applies the hidden state for itself; every other page wants the sidebar shown.
+  const sidebar = document.getElementById('sidebar');
+  sidebar.classList.remove('sidebar-hidden');
+  sidebar.style.removeProperty('display');
 
   if (pageName === 'merge') {
     dyn.innerHTML = '<div class="sidebar-label">Projects</div><div id="mergeOrgList"></div><div id="mergeArchive"></div>' +
@@ -735,7 +762,16 @@ function buildSidebar(pageName) {
     if (typeof renderMergeSidebar === 'function') renderMergeSidebar();
 
   } else if (pageName === 'orgdata') {
-    dyn.innerHTML = '';
+    // Render the orgdata controls (org picker + section nav) into the global sidebar so
+    // the in-page .orgdata-sidenav can be hidden — that empty in-page sidenav is the
+    // "blank sidebar" you've been seeing. The corresponding HTML in the page is left as
+    // markup and hidden via CSS so we don't break anything else.
+    dyn.innerHTML =
+      '<div class="orgdata-org-picker">' +
+        '<label class="orgdata-org-label">Organization</label>' +
+        '<select id="orgDataSelect" class="input-field" style="width:100%;"></select>' +
+      '</div>' +
+      '<div id="orgDataNav"></div>';
     if (typeof initOrgDataPage === 'function') initOrgDataPage();
 
   } else if (pageName === 'review' || pageName === 'coleditor' || pageName === 'tracker') {
@@ -1094,7 +1130,67 @@ async function runColumnOCR() {
   c.width = ocrCrop.w;
   c.height = colH;
   c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, colH, 0, 0, ocrCrop.w, colH);
-  await doMultiColumnOCR(c.toDataURL('image/png'));
+  const engine = getOCREngine();
+  if (engine === 'desktop') {
+    await doMultiColumnOCR_desktop(c.toDataURL('image/png'));
+  } else {
+    await doMultiColumnOCR(c.toDataURL('image/png'));
+  }
+}
+
+// ─── Engine selector for columnar OCR ───
+// 'desktop' calls the original desktop-ocr pipeline (works best on high-resolution
+// screenshots with clear column gaps). 'laptop' calls the laptop-ocr pipeline
+// (handles narrow gaps, sort-arrow glyphs, ATTEST=Y continuations, pagination footers).
+// Stored per-machine in localStorage so each device remembers its choice.
+function getOCREngine() {
+  const stored = localStorage.getItem('ocrEngine');
+  if (stored === 'desktop' || stored === 'laptop') return stored;
+  // First-run auto-detect: large screen → desktop; otherwise → laptop.
+  const w = window.screen.width || window.innerWidth || 0;
+  return w >= 1600 ? 'desktop' : 'laptop';
+}
+function setOCREngine(engine) {
+  if (engine !== 'desktop' && engine !== 'laptop') return;
+  localStorage.setItem('ocrEngine', engine);
+  updateOCREngineButtons();
+}
+function updateOCREngineButtons() {
+  const cur = getOCREngine();
+  document.querySelectorAll('.ocr-engine-btn').forEach(btn => {
+    btn.classList.toggle('ocr-engine-active', btn.dataset.engine === cur);
+  });
+}
+
+// Upscale an image data URL for Tesseract. Tesseract recognizes small text far better
+// when the input is scaled up so each glyph is at least ~25px tall. We use INTEGER
+// factors with imageSmoothingEnabled=false (nearest-neighbor) so glyphs become crisp
+// blocks of pixels — bilinear smoothing creates anti-aliased ghost edges that
+// Tesseract reads as duplicate characters ("Hourly fourly worl work" effect).
+async function upscaleForOCR(dataUrl, targetMinHeight) {
+  targetMinHeight = targetMinHeight || 1600;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      // Pick the smallest integer factor (1, 2, or 3) that gets the image to the target.
+      let factor = 1;
+      if (img.height * 3 < targetMinHeight) factor = 3;
+      else if (img.height * 2 < targetMinHeight) factor = 3;
+      else if (img.height < targetMinHeight) factor = 2;
+      // Memory cap — don't go above 3× even if the source is very small.
+      factor = Math.min(3, factor);
+      if (factor === 1) { resolve(dataUrl); return; }
+      const c = document.createElement('canvas');
+      c.width = img.width * factor;
+      c.height = img.height * factor;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 async function doMultiColumnOCR(imageData) {
@@ -1110,6 +1206,9 @@ async function doMultiColumnOCR(imageData) {
   output.value = '';
   copyBtn.style.display = 'none';
   document.getElementById('ocrExtractBtn').disabled = true;
+  // Upscale the cropped image before OCR so small text gets recognized cleanly.
+  // All bbox reasoning below uses the upscaled image internally — coords stay consistent.
+  imageData = await upscaleForOCR(imageData);
 
   const fallback = (text) => {
     const cleaned = cleanOCRText(text);
@@ -1386,21 +1485,38 @@ async function doMultiColumnOCR(imageData) {
         // Multi-word, unambiguous headers FIRST
         [/^J(?:OB|0B|oB)\s+CATEGORY$/i, 'JOB CATEGORY'],
         [/^HOURLY\s+RATE$/i, 'HOURLY RATE'],
+        [/^HOURLYRATE$/i, 'HOURLY RATE'],
         [/^PAY\s*STYLE$/i, 'PAY STYLE'],
         [/^PAYSTYLE$/i, 'PAY STYLE'],
         [/^MIN\w*\s+WAGE$/i, 'MINIMUM WAGE'],
+        [/^MIN[MIUN]+UM?\s*WAGE$/i, 'MINIMUM WAGE'],
+        [/^MIN\w*WAGE$/i, 'MINIMUM WAGE'],
         [/^PRODUCTIVE$/i, 'PRODUCTIVE'],
         [/^(?:DURATION|DURA\w*)\s+(?:DURA\w*|TYPE|T\w*|TY\w*)$/i, 'DURATION TYPE'],
         [/^(?:COLLECT|COLECT)\s+(?:PIECES|fe|f|s|S|T|CES|ICES)$/i, 'COLLECT PIECES'],
-        [/^(?:CREST|CICES|ICES|PIECES)$/i, 'COLLECT PIECES'],
+        [/^(?:CREST|CICES|ICES|PIECES|CoE\.?|CoF\.?|Co[EF]|Cl[il]e|Cl[il]ce|Cl[il]ces|Cle|Clce)$/i, 'COLLECT PIECES'],
         // JOB DURATION — must contain a digit/0/period middle so it never matches JOB CATEGORY
         [/^(?:JOB|J0B|JoB|J08|108)\s+(?:0[BO0]|03|08|13|00)\s*(?:Ca\w*|D\w*|CON\w*)?$/i, 'JOB DURATION'],
         [/^(?:0[BO0]|03|08|13|00)\s+\.?(?:Ca\w*|CON\w*|D\w*)$/i, 'JOB DURATION'],
         [/^(?:0[BO0]|03|08|13|00)$/i, 'JOB DURATION'],
-        // Single "A" in this slot is a misread of "DURATION TYPE"
+        // Sort-arrow ↑ on JOB DURATION reads as 308 / 308. / 30B / 20B / 200 / 200B / 2008 / 0B / OB / polaron.
+        [/^3\s*0\s*[8B]\.?$/i, 'JOB DURATION'],
+        [/^J?(?:OB|0B)\s*30?\s*[8B]\.?$/i, 'JOB DURATION'],
+        [/^[023]0?[8B]\.?$/i, 'JOB DURATION'],
+        [/^[023]00[8B]?\.?$/i, 'JOB DURATION'],
+        [/^pola?ron$/i, 'JOB DURATION'],
+        [/^p[o0]l[a@][rR][o0]n$/i, 'JOB DURATION'],
+        // PREMIUM JOB / JOB TRANSLATION / DESCRIPTION variants
+        [/^PREM\w*\s+J\w*$/i, 'PREMIUM JOB'],
+        [/^J\w*\s+TRANS\w*$/i, 'JOB TRANSLATION'],
+        [/^DESCRIP\w*$/i, 'DESCRIPTION'],
+        // Single "A" or stand-alone "Type" in this slot is a misread of "DURATION TYPE"
         [/^[Aa]$/, 'DURATION TYPE'],
+        [/^(?:Type|TYPE|Tvpe|TYP[Ee])$/i, 'DURATION TYPE'],
         // JOB — most ambiguous patterns LAST (single-word, may collide if put earlier)
         [/^(?:Jos|J0[8BSs]?|J0B|JoB|108|JOB|J08)$/i, 'JOB'],
+        [/^(?:oe|0e|OE|0E|Oe)$/i, 'JOB'],
+        [/^JOB\.$/i, 'JOB DURATION'],
         // Jobs management page columns
         [/^[Il]nf[o0]$/i, 'INFO'],
         [/^(?:Pay|PAY)\s+(?:Type|TYPE)$/i, 'PAY TYPE'],
@@ -1508,14 +1624,36 @@ async function doMultiColumnOCR(imageData) {
           }
         }
 
+        // ── B2. Shift stray PHASE/CODE/ATTEST values into the Info column ──
+        // On rows like "Automatic Missed Meal Penalty | CODE_TYPE=ADM | … | 60 | Unpaid",
+        // the CODE_TYPE value sits at an X position the projection sometimes assigns to Rate
+        // (the column just before Info) instead of Info itself. The PickTrace UI also renders
+        // narrow Info cells with a CSS ellipsis baked into the screenshot, so cell values can
+        // be truncated like "CODE_TY...", "PHASE=1...", "ATTEST=Y" — match the prefix only.
+        const _strayInfoRe = /^(?:PHASE|CODE|ATTEST)/i;
+        dataRows.forEach(r => {
+          if ((r[infoIdx] || '').trim()) return;
+          for (let ci = 0; ci < headers.length; ci++) {
+            if (ci === infoIdx) continue;
+            const v = (r[ci] || '').trim();
+            if (v && _strayInfoRe.test(v)) {
+              r[infoIdx] = v;
+              r[ci] = '';
+              break;
+            }
+          }
+        });
+
         const jobIdx = infoIdx - 1;
 
         // ── C. Move wrapped Job-name overflow out of the Info column ──
         // Long bilingual job names wrap onto the second line at the same X position as Info,
         // so e.g. "Pest Control" lands in the Info cell as "Pest Control PHASE=1102 0".
+        // The guard also skips truncated-ellipsis values (e.g. "CODE_TY...", "PHASE=1...")
+        // moved here by step B2 — those are legitimate Info content, not Job overflow.
         dataRows.forEach(r => {
           const v = (r[infoIdx] || '').trim();
-          if (!v || _startInfoRe.test(v)) return;
+          if (!v || _startInfoRe.test(v) || _strayInfoRe.test(v)) return;
           const m = v.match(/^(.*?)\s*((?:PHASE|CODE_TYPE|CODE|ATTEST)\s*=.*)$/i);
           if (m) {
             const overflow = m[1].trim();
@@ -1587,6 +1725,94 @@ async function doMultiColumnOCR(imageData) {
             headers.splice(ci, 1);
             dataRows.forEach(r => r.splice(ci, 1));
           }
+        }
+      }
+    }
+
+    // ── Wage / Rate column "$0" / "50" repair ──
+    headers.forEach((h, idx) => {
+      if (!/wage|rate/i.test(h)) return;
+      dataRows.forEach(r => {
+        const v = (r[idx] || '').trim();
+        if (v === '50' || v === '5O') r[idx] = '$0';
+      });
+    });
+
+    // ── Strip stray "M" prefix on Non-productive cells: "MNon-productive" → "Non-productive" ──
+    dataRows.forEach(r => {
+      r.forEach((v, ci) => {
+        if (typeof v !== 'string') return;
+        r[ci] = v.replace(/\bM(?=Non-productive)/g, '');
+      });
+    });
+
+    // ── Split a merged PAY STYLE + MINIMUM WAGE column ──
+    // When the X-projection collapses these two narrow adjacent columns, the header
+    // looks like "PAYSTYLE MINIMUM WAGE" or "PAY STYLE MINIMUM WAGE", and each data cell
+    // holds "Hourly $0" / "Piece $16.90". Split into two columns at the $ boundary.
+    {
+      const mergedIdx = headers.findIndex(h => /pay\s*style\s+min/i.test(h) || /style\s+min/i.test(h));
+      if (mergedIdx >= 0) {
+        const splitVals = dataRows.map(r => {
+          const v = (r[mergedIdx] || '').trim();
+          if (!v) return ['', ''];
+          const m = v.match(/^(.+?)\s+(\$\s*\d+(?:\.\d+)?)$/);
+          if (m) return [m[1].trim(), m[2].replace(/\s+/g, '')];
+          const parts = v.split(/\s+/);
+          if (parts.length >= 2) return [parts.slice(0, -1).join(' '), parts[parts.length - 1]];
+          return [v, ''];
+        });
+        headers[mergedIdx] = 'PAY STYLE';
+        headers.splice(mergedIdx + 1, 0, 'MINIMUM WAGE');
+        dataRows.forEach((r, ri) => {
+          r[mergedIdx] = splitVals[ri][0];
+          r.splice(mergedIdx + 1, 0, splitVals[ri][1]);
+        });
+      }
+    }
+
+    // ── Split a merged MINIMUM WAGE + PREMIUM JOB header ──
+    // The X-projection sometimes glues these two columns into "MINIMUMWAGE PREMIUM JOB".
+    // The data cell typically holds the MINIMUM WAGE value only ($0 / $16.90); PREMIUM JOB
+    // is empty for every row in the screenshot we've seen, so we keep the existing data
+    // under MINIMUM WAGE and insert an empty PREMIUM JOB column to its right.
+    {
+      const mergedIdx = headers.findIndex(h => /min\w*\s*wage\s+premium\s+job/i.test(h));
+      if (mergedIdx >= 0) {
+        headers[mergedIdx] = 'MINIMUM WAGE';
+        headers.splice(mergedIdx + 1, 0, 'PREMIUM JOB');
+        dataRows.forEach(r => r.splice(mergedIdx + 1, 0, ''));
+      }
+    }
+
+    // ── Drop a phantom DURATION column that absorbed DURATION TYPE values ──
+    // When DURATION TYPE is empty across all rows and a "DURATION" column immediately
+    // follows it with the values (Static, etc.), rename DURATION → DURATION TYPE and
+    // delete the now-redundant empty DURATION TYPE column.
+    {
+      const dtIdx = headers.findIndex(h => /^duration\s+type$/i.test(h));
+      const dIdx  = headers.findIndex(h => /^duration$/i.test(h));
+      if (dtIdx >= 0 && dIdx === dtIdx + 1) {
+        const dtFilled = dataRows.filter(r => r[dtIdx] && r[dtIdx].trim()).length;
+        const dFilled  = dataRows.filter(r => r[dIdx]  && r[dIdx].trim()).length;
+        if (dtFilled === 0 && dFilled > 0) {
+          headers[dtIdx] = 'DURATION TYPE';
+          headers.splice(dIdx, 1);
+          dataRows.forEach(r => {
+            r[dtIdx] = r[dIdx];
+            r.splice(dIdx, 1);
+          });
+        }
+      }
+    }
+
+    // ── Remove auto-named "Col N" phantom columns that are mostly empty ──
+    for (let ci = headers.length - 1; ci >= 0; ci--) {
+      if (/^Col\s+\d+$/i.test(headers[ci] || '')) {
+        const filled = dataRows.filter(r => r[ci] && r[ci].trim()).length;
+        if (dataRows.length === 0 || filled / dataRows.length < 0.20) {
+          headers.splice(ci, 1);
+          dataRows.forEach(r => r.splice(ci, 1));
         }
       }
     }
@@ -1788,6 +2014,62 @@ function cleanOCRCell(text) {
   // "Forkiift" → "Forklift"
   l = l.replace(/\bForkiift\b/g, 'Forklift');
 
+  // ── Generic OCR repairs added for Picktrace Jobs page ──
+  // Letter + ":" + space + lowercase fragment that's a common word suffix → join.
+  // E.g. "Reporting Time P: ay" → "Reporting Time Pay", "P: aid" → "Paid".
+  l = l.replace(/\b([A-Z])\s*:\s+(ay|aid|art|ayment|izcando|izcador)\b/g, (_, p, suffix) => p + suffix);
+  // "Hourl" with no trailing y, "Hourl ty" with extra fragment → "Hourly".
+  l = l.replace(/\bHourl\s+ty\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bHourl\s+ty\b/gi, 'Hourly');
+  l = l.replace(/\bHourl\b(?!y)/g, 'Hourly');
+  // Doubled "Hourly work" reads when image rendering ghosts: "Hourly fourly worl work",
+  // "Hourly iourly work", "H iourly wor 3", "Hourly wor rk" all collapse to "Hourly work".
+  l = l.replace(/\b(?:H|Ho|Hou|Hour|Hourly)\s*[fijl]?ourl\w*\s*(?:wor[lk]?\w*\s*)?(?:work|wor\s*rk|3)\b/gi, 'Hourly work');
+  l = l.replace(/\bHourly\s+fourly\s+worl?\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bHourly\s+iourly\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bH\s+iourly\s+wor\s+3\b/gi, 'Hourly work');
+  l = l.replace(/\bHourly\s+wor\s+rk\b/gi, 'Hourly work');
+  // Garbled "Hourly" in the PAY STYLE column (single-word cells).
+  l = l.replace(/\b(?:Ho?\s+fourl|H\s+fourl|Ho?\s+our|H\s+our|Hour\s+jourly)\b/gi, 'Hourly');
+  // "shin ing" → "Shining" (mid-word split).
+  l = l.replace(/\bshin\s+ing\b/gi, 'Shining');
+  // "Break t" trailing letter → "Break".
+  l = l.replace(/\bBreak\s+t\b/g, 'Break');
+  // Doubled-text dedup: "Word fragment" where fragment is the tail or a near-copy of Word.
+  // Examples: "Mayordor Mayordomo" → "Mayordomo", "Forklift orklift" → "Forklift",
+  // "Bus ss" → "Bus", "Por Hora - -" → "Por Hora -", "Block Cha inges" → "Block Changes",
+  // "en trenamiento" → "Entrenamiento", "Forklift orklift Driving" → "Forklift Driving".
+  l = l.replace(/\bMayordor\s+Mayordomo\b/g, 'Mayordomo');
+  l = l.replace(/\bForklift\s+orklift\b/gi, 'Forklift');
+  l = l.replace(/\bBus\s+ss\b/g, 'Bus');
+  l = l.replace(/\b-\s+-\s+/g, '- ');
+  l = l.replace(/\bBlock\s+Cha\s+inges\b/gi, 'Block Changes');
+  l = l.replace(/\ben\s+trenamiento\b/gi, 'Entrenamiento');
+  // "St tatic" / "st tatic" → "Static" (mid-word split).
+  l = l.replace(/\b[Ss]t\s+tatic\b/g, 'Static');
+  // Mangled "Non-productive time" variants.
+  l = l.replace(/\bNe?\s+lon-productive\s+(?:dl|di)\s+time\s*i?\b/gi, 'Non-productive time');
+  l = l.replace(/\bN\s+lon-productive\s+\w+\s+time\b/gi, 'Non-productive time');
+  l = l.replace(/\bNon-productive\s+[A-Za-z]{1,2}\s+time\b/gi, 'Non-productive time');
+  l = l.replace(/\bNe?\s+lon-?productive\s+time\s*i?\b/gi, 'Non-productive time');
+  // Specific Picktrace job-name char misreads.
+  l = l.replace(/\bPizeando\b/g, 'Pizcando');
+  l = l.replace(/\bPizeador\b/g, 'Pizcador');
+  l = l.replace(/\bUuvia\b/g, 'Lluvia');
+  l = l.replace(/\bneh\b/g, 'Lunch');
+  l = l.replace(/\bMala\b/g, 'Malla');
+  // Currency repairs: "$16.90 16.", "$16.90 x", "$22.00 x", "$ 16.90", "s 16.90", "S 0", "so".
+  l = l.replace(/\$\s*(\d+\.\d{2})\s+\d+\.?\b/g, '$$$1');           // $16.90 16. → $16.90
+  l = l.replace(/\$\s*(\d+\.\d{2})\s+[xX]\b/g, '$$$1');             // $16.90 x → $16.90
+  l = l.replace(/\$\s+(\d+\.\d{2})\b/g, '$$$1');                    // $ 16.90 → $16.90
+  l = l.replace(/\b[sS]\s+(\d+\.\d{2})\b/g, '$$$1');                // s 16.90 → $16.90
+  l = l.replace(/\b[sS]\s+0\b/g, '$0');                              // S 0 → $0
+  l = l.replace(/\bso\b/g, '$0');                                    // so → $0
+  // "15min" without space → "15 min".
+  l = l.replace(/\b(\d+)min\b/gi, '$1 min');
+  // Trailing "." or ":" on common job-name suffixes that should not have them.
+  l = l.replace(/\bBlock\s+Changes[.,:](?=\s|$)/g, 'Block Changes');
+
   // Collapse repeated spaces
   l = l.replace(/\s{2,}/g, ' ').trim();
   return l;
@@ -1806,6 +2088,7 @@ async function doOCR(imageData) {
   output.value = '';
   copyBtn.style.display = 'none';
   document.getElementById('ocrExtractBtn').disabled = true;
+  imageData = await upscaleForOCR(imageData);
 
   try {
     const result = await Tesseract.recognize(imageData, 'eng', {
@@ -1839,6 +2122,13 @@ async function doOCR(imageData) {
 }
 
 let ocrArchivedCells = new Set(); // "ri-ci" keys
+let ocrArchivedRows = new Set();  // ri values — archived rows go to the Removed Items panel
+let ocrArchivedColumns = new Set(); // original column indices (oci) — archived columns go to Removed Items
+let ocrSessionStart = null;       // ms timestamp of when first cell was marked done in current session
+let ocrETATimestamps = [];        // rolling [{t, count}] used to estimate remaining time
+let ocrRemovedItemsExpanded = false;
+const OCR_SESSION_KEY = 'ocrCurrentSession';
+let _ocrSaveTimer = null;         // debounce handle for saveOCRSession
 let ocrColFilters = [];           // per-column filter strings (lowercased)
 let ocrGlobalFilter = '';         // global search string (lowercased)
 let ocrSortCol = -1;              // currently-sorted column index (-1 = none)
@@ -1931,21 +2221,26 @@ function applyOCRTableFilters() {
     });
     tr.querySelectorAll('td').forEach(td => td.normalize());
 
-    const cells = tr.querySelectorAll('td');
+    // Iterate data cells only — the leftmost archive × cell has no data-ci and
+    // would offset the filter index by 1 if included.
+    const cells = tr.querySelectorAll('td:not(.ocr-row-archive-cell)');
 
-    // Column filters: every active column filter must match its cell.
+    // Column filters: every active column filter must match its cell. Use the cell's
+    // own data-ci attribute rather than the iteration index so the mapping is robust.
     let colsMatch = true;
-    cells.forEach((td, ci) => {
+    cells.forEach(td => {
+      const ci = parseInt(td.dataset.ci);
+      if (isNaN(ci)) return;
       const f = ocrColFilters[ci];
-      if (f && !td.textContent.toLowerCase().includes(f)) colsMatch = false;
+      if (f && !ocrCellText(td).toLowerCase().includes(f)) colsMatch = false;
     });
 
-    // Global filter: at least one cell must contain the query.
+    // Global filter: at least one data cell must contain the query.
     let globalMatch = true;
     if (ocrGlobalFilter) {
       globalMatch = false;
       cells.forEach(td => {
-        if (td.textContent.toLowerCase().includes(ocrGlobalFilter)) globalMatch = true;
+        if (ocrCellText(td).toLowerCase().includes(ocrGlobalFilter)) globalMatch = true;
       });
     }
 
@@ -1955,10 +2250,11 @@ function applyOCRTableFilters() {
     if (!visible) return;
 
     // Highlight matches per cell (global query + column-specific filter).
-    cells.forEach((td, ci) => {
+    cells.forEach(td => {
+      const ci = parseInt(td.dataset.ci);
       const queries = [];
       if (ocrGlobalFilter) queries.push(ocrGlobalFilter);
-      if (ocrColFilters[ci]) queries.push(ocrColFilters[ci]);
+      if (!isNaN(ci) && ocrColFilters[ci]) queries.push(ocrColFilters[ci]);
       if (queries.length === 0) return;
       const pattern = queries.map(escapeRe).join('|');
       const regex = new RegExp('(' + pattern + ')', 'gi');
@@ -1980,10 +2276,25 @@ document.addEventListener('click', (e) => {
 
 function deleteOCRColumn(displayIdx) {
   if (displayIdx < 0 || displayIdx >= ocrColOrder.length) return;
+  // Move the column out of the display order and into the archived set so the data is
+  // preserved and can be restored from the Removed Items panel.
+  const oci = ocrColOrder[displayIdx];
   ocrColOrder.splice(displayIdx, 1);
+  ocrArchivedColumns.add(oci);
   renderOCRTableFromState();
-  // Sync the raw text view to the new column layout.
   syncOCROutputFromState();
+  saveOCRSession();
+}
+
+function unarchiveOCRColumn(oci) {
+  if (!ocrArchivedColumns.has(oci)) return;
+  ocrArchivedColumns.delete(oci);
+  // Re-insert the column at its original index position, clamped to the current length.
+  const target = Math.min(oci, ocrColOrder.length);
+  if (!ocrColOrder.includes(oci)) ocrColOrder.splice(target, 0, oci);
+  renderOCRTableFromState();
+  syncOCROutputFromState();
+  saveOCRSession();
 }
 
 function mergeOCRColumns(displayIdx, dir) {
@@ -2076,6 +2387,9 @@ function archiveOCRCell(ri, oci) {
     td.classList.add('ocr-cell-archived');
     td.classList.remove('ocr-cell-done', 'ocr-cell-clicked');
   }
+  if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
+  saveOCRSession();
+  updateOCRProgressUI();
 }
 
 function unarchiveOCRCell(ri, oci) {
@@ -2084,6 +2398,207 @@ function unarchiveOCRCell(ri, oci) {
   const wrap = document.getElementById('ocrTableWrap');
   const td = wrap.querySelector('td[data-ri="' + ri + '"][data-oci="' + oci + '"]');
   if (td) td.classList.remove('ocr-cell-archived');
+  saveOCRSession();
+  updateOCRProgressUI();
+}
+
+// Returns the cell's real text value, excluding any "✓ Done" badge child appended
+// by checkOCRRowDone. Use this anywhere a cell's user-facing text matters
+// (clipboard copy, inline edit save-back, filter/search match, emptiness check).
+function ocrCellText(td) {
+  if (!td) return '';
+  let s = '';
+  td.childNodes.forEach(n => {
+    if (n.nodeType === 1 && n.classList && n.classList.contains('ocr-badge')) return;
+    s += n.textContent || '';
+  });
+  return s;
+}
+
+// ─── Row archive / Removed Items panel ───
+function archiveOCRRow(ri) {
+  ocrArchivedRows.add(ri);
+  renderOCRTableFromState();
+  saveOCRSession();
+}
+function unarchiveOCRRow(ri) {
+  ocrArchivedRows.delete(ri);
+  renderOCRTableFromState();
+  saveOCRSession();
+}
+function toggleOCRRemovedItems() {
+  ocrRemovedItemsExpanded = !ocrRemovedItemsExpanded;
+  const list = document.getElementById('ocrRemovedItemsList');
+  const caret = document.getElementById('ocrRemovedItemsCaret');
+  if (list) list.style.display = ocrRemovedItemsExpanded ? '' : 'none';
+  if (caret) caret.innerHTML = ocrRemovedItemsExpanded ? '&#9660;' : '&#9654;';
+}
+function renderOCRRemovedItems() {
+  const panel = document.getElementById('ocrRemovedItemsPanel');
+  const list = document.getElementById('ocrRemovedItemsList');
+  const countEl = document.getElementById('ocrRemovedItemsCount');
+  if (!panel || !list || !countEl) return;
+  const archivedRows = [...ocrArchivedRows].filter(ri => ocrRowsAll[ri]).sort((a, b) => a - b);
+  const archivedCols = [...ocrArchivedColumns].filter(oci => oci < ocrHeadersAll.length).sort((a, b) => a - b);
+  const total = archivedRows.length + archivedCols.length;
+  countEl.textContent = total;
+  if (total === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  let html = '';
+  archivedCols.forEach(oci => {
+    const headerName = ocrHeadersAll[oci] || '(unnamed)';
+    const sample = ocrRowsAll.map(r => r[oci] || '').filter(v => v.trim()).slice(0, 3).join(' · ');
+    html += '<div class="ocr-removed-row-item">' +
+      '<span class="ocr-removed-tag ocr-removed-tag-col">Column</span>' +
+      '<span class="ocr-removed-row-preview"><b>' + escHtml(headerName) + '</b>' + (sample ? ' &middot; ' + escHtml(sample) : '') + '</span>' +
+      '<button class="ocr-restore-row-btn" onclick="unarchiveOCRColumn(' + oci + ')" title="Restore this column to the table">Restore</button>' +
+      '</div>';
+  });
+  archivedRows.forEach(ri => {
+    const row = ocrRowsAll[ri] || [];
+    const preview = ocrColOrder.map(oci => row[oci] || '').filter(v => v.trim()).slice(0, 4).join(' · ')
+      || ocrHeadersAll.map((_, i) => row[i] || '').filter(v => v.trim()).slice(0, 4).join(' · ');
+    html += '<div class="ocr-removed-row-item">' +
+      '<span class="ocr-removed-tag ocr-removed-tag-row">Row</span>' +
+      '<span class="ocr-removed-row-preview">' + escHtml(preview || '(empty row)') + '</span>' +
+      '<button class="ocr-restore-row-btn" onclick="unarchiveOCRRow(' + ri + ')" title="Restore this row to the table">Restore</button>' +
+      '</div>';
+  });
+  list.innerHTML = html;
+  list.style.display = ocrRemovedItemsExpanded ? '' : 'none';
+}
+
+// ─── Progress / ETA / autosave ───
+function getOCRProgress() {
+  const visibleOrder = ocrHideEmptyCols
+    ? ocrColOrder.filter(oci => ocrRowsAll.some(r => (r[oci] || '').trim().length > 0))
+    : ocrColOrder.slice();
+  let total = 0, done = 0;
+  ocrRowsAll.forEach((row, ri) => {
+    if (ocrArchivedRows.has(ri)) return;
+    visibleOrder.forEach(oci => {
+      const v = (row[oci] || '').trim();
+      if (!v) return;
+      if (ocrArchivedCells.has(ri + '-' + oci)) return;
+      total++;
+      if (ocrTableDone[ri] && ocrTableDone[ri].has(oci)) done++;
+    });
+  });
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  return { done, total, pct };
+}
+function recordOCRDoneTimestamp() {
+  if (!ocrSessionStart) ocrSessionStart = Date.now();
+  const { done } = getOCRProgress();
+  const t = Date.now();
+  ocrETATimestamps.push({ t, count: done });
+  // Keep the rolling window to the last 30 entries within the last 10 minutes.
+  const cutoff = t - 10 * 60 * 1000;
+  while (ocrETATimestamps.length > 30 || (ocrETATimestamps.length && ocrETATimestamps[0].t < cutoff)) {
+    ocrETATimestamps.shift();
+  }
+}
+function formatOCRETA(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return '';
+  if (seconds < 60) return '~' + Math.round(seconds) + 's left';
+  if (seconds < 3600) return '~' + Math.round(seconds / 60) + 'm left';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return '~' + h + 'h ' + m + 'm left';
+}
+function getOCRETA() {
+  if (ocrETATimestamps.length < 2) return '';
+  const { done, total } = getOCRProgress();
+  const remaining = total - done;
+  if (remaining <= 0) return '';
+  const first = ocrETATimestamps[0];
+  const last = ocrETATimestamps[ocrETATimestamps.length - 1];
+  const elapsed = (last.t - first.t) / 1000;
+  const completed = last.count - first.count;
+  if (elapsed <= 0 || completed <= 0) return '';
+  return formatOCRETA(remaining / (completed / elapsed));
+}
+function updateOCRProgressUI() {
+  const summary = document.getElementById('ocrProgressSummary');
+  if (!summary) return;
+  const hasTable = ocrRowsAll.length > 0 && ocrColOrder.length > 0;
+  if (!hasTable) { summary.style.display = 'none'; return; }
+  summary.style.display = '';
+  const { done, total, pct } = getOCRProgress();
+  const fill = document.getElementById('ocrProgressSummaryFill');
+  const stats = document.getElementById('ocrProgressSummaryStats');
+  const etaEl = document.getElementById('ocrProgressETA');
+  const completeEl = document.getElementById('ocrProgressComplete');
+  if (fill) fill.style.width = pct + '%';
+  if (stats) stats.textContent = done + ' of ' + total + ' cells (' + pct + '%)';
+  if (etaEl) etaEl.textContent = pct < 100 ? getOCRETA() : '';
+  if (completeEl) completeEl.style.display = (pct >= 100 && total > 0) ? '' : 'none';
+  if (summary) summary.classList.toggle('ocr-progress-summary-complete', pct >= 100 && total > 0);
+}
+
+function saveOCRSession() {
+  // Debounce by 300ms so rapid clicks don't thrash localStorage.
+  if (_ocrSaveTimer) clearTimeout(_ocrSaveTimer);
+  _ocrSaveTimer = setTimeout(_saveOCRSessionNow, 300);
+}
+function _saveOCRSessionNow() {
+  _ocrSaveTimer = null;
+  if (!ocrRowsAll || ocrRowsAll.length === 0) return;
+  const payload = {
+    headers: ocrHeadersAll,
+    rowsAll: ocrRowsAll,
+    colOrder: ocrColOrder,
+    tableDone: Object.fromEntries(Object.entries(ocrTableDone).map(([k, v]) => [k, [...v]])),
+    archivedCells: [...ocrArchivedCells],
+    archivedRows: [...ocrArchivedRows],
+    archivedColumns: [...ocrArchivedColumns],
+    sessionStart: ocrSessionStart,
+    etaTimestamps: ocrETATimestamps,
+    hideEmptyCols: ocrHideEmptyCols,
+    savedAt: Date.now()
+  };
+  try { localStorage.setItem(OCR_SESSION_KEY, JSON.stringify(payload)); }
+  catch (e) { /* quota exceeded — ignore silently */ }
+}
+function clearOCRSession() {
+  ocrArchivedRows = new Set();
+  ocrArchivedColumns = new Set();
+  ocrSessionStart = null;
+  ocrETATimestamps = [];
+  if (_ocrSaveTimer) { clearTimeout(_ocrSaveTimer); _ocrSaveTimer = null; }
+  try { localStorage.removeItem(OCR_SESSION_KEY); } catch (e) {}
+}
+function restoreOCRSession() {
+  // Silent auto-resume: only restore if there is no live table currently rendered.
+  if (ocrRowsAll && ocrRowsAll.length > 0) return;
+  let raw;
+  try { raw = localStorage.getItem(OCR_SESSION_KEY); } catch (e) { return; }
+  if (!raw) return;
+  let p;
+  try { p = JSON.parse(raw); } catch (e) { return; }
+  if (!p || !Array.isArray(p.rowsAll) || p.rowsAll.length === 0) return;
+  ocrHeadersAll = p.headers || [];
+  ocrRowsAll = p.rowsAll || [];
+  ocrColOrder = p.colOrder || [];
+  ocrTableDone = {};
+  if (p.tableDone) {
+    Object.entries(p.tableDone).forEach(([k, v]) => { ocrTableDone[k] = new Set(v); });
+  }
+  ocrArchivedCells = new Set(p.archivedCells || []);
+  ocrArchivedRows = new Set(p.archivedRows || []);
+  ocrArchivedColumns = new Set(p.archivedColumns || []);
+  ocrSessionStart = p.sessionStart || null;
+  ocrETATimestamps = p.etaTimestamps || [];
+  ocrHideEmptyCols = !!p.hideEmptyCols;
+  // Re-derive the raw textarea from state and re-render the table.
+  syncOCROutputFromState();
+  renderOCRTableFromState();
+  // Reveal the output-side controls so the user can interact immediately.
+  const copyBtn = document.getElementById('ocrCopyBtn');
+  if (copyBtn) copyBtn.style.display = '';
+  const saveBtn = document.getElementById('ocrSaveBtn');
+  if (saveBtn) saveBtn.style.display = '';
+  if (typeof openOCRPanel === 'function') openOCRPanel();
 }
 
 function switchOCRTab(tab) {
@@ -2234,7 +2749,12 @@ function renderOCRTable(text) {
   ocrColOrder = headers.map((_, i) => i);
   ocrTableDone = {};         // { ri: Set<originalCi> }  — keyed by ORIGINAL column index
   ocrArchivedCells = new Set(); // "ri-originalCi" keys
+  ocrArchivedRows = new Set();
+  ocrArchivedColumns = new Set();
+  ocrSessionStart = null;
+  ocrETATimestamps = [];
   renderOCRTableFromState();
+  saveOCRSession();
 }
 
 function renderOCRTableFromState() {
@@ -2250,29 +2770,56 @@ function renderOCRTableFromState() {
 
   if (rows.length === 0 || headers.length === 0) {
     wrap.innerHTML = '<p class="ocr-placeholder">No table data detected.</p>';
+    renderOCRRemovedItems();
+    updateOCRProgressUI();
     return;
   }
 
   let html = '<table><thead><tr>';
+  html += '<th class="ocr-row-archive-cell"></th>';
   headers.forEach((h, ci) => {
     const oci = visibleOrder[ci];
     // The label span is draggable=false so double-clicking it edits the text instead of
     // initiating a drag. The drag handle (small ⠿ icon) is what actually starts a reorder drag.
-    html += '<th class="ocr-sort-th" data-ci="' + ci + '" data-oci="' + oci + '" title="Click to sort &middot; Drag handle to reorder &middot; Double-click to edit &middot; Right-click for options">' +
+    // Compute whether the entire column is currently marked done (for the visible checkmark toggle).
+    const colAllDone = ocrRowsAll.length > 0 && ocrRowsAll.every((r, ri) => {
+      if (ocrArchivedRows.has(ri)) return true;
+      const v = (r[oci] || '').trim();
+      if (!v) return true;
+      return ocrTableDone[ri] && ocrTableDone[ri].has(oci);
+    });
+    html += '<th class="ocr-sort-th' + (colAllDone ? ' ocr-col-done' : '') + '" data-ci="' + ci + '" data-oci="' + oci + '" title="Click to sort &middot; Drag handle to reorder &middot; Double-click to edit">' +
       '<span class="ocr-drag-handle" draggable="true" title="Drag to reorder">⠿</span>' +
+      '<span class="ocr-col-done-toggle' + (colAllDone ? ' ocr-col-done-active' : '') + '" data-oci="' + oci + '" title="' + (colAllDone ? 'Click to unmark column' : 'Click to mark column done') + '">&#10003;</span>' +
+      '<span class="ocr-col-archive-toggle" data-oci="' + oci + '" title="Archive this column to Removed Items">&#x2715;</span>' +
       '<span class="ocr-sort-label" draggable="false">' + escHtml(h) + '</span>' +
       '<span class="ocr-sort-arrow" data-ci="' + ci + '"></span>' +
       '</th>';
   });
   html += '</tr><tr class="ocr-filter-row">';
+  html += '<th class="ocr-row-archive-cell"></th>';
   headers.forEach((h, ci) => {
     html += '<th><input type="text" class="ocr-col-filter" data-ci="' + ci + '" placeholder="Filter ' + escHtml(h) + '..."></th>';
   });
   html += '</tr></thead><tbody>';
 
   rows.forEach((row, ri) => {
+    if (ocrArchivedRows.has(ri)) return; // archived rows live in the Removed Items panel
     if (!ocrTableDone[ri]) ocrTableDone[ri] = new Set();
+    // Row-done state — used to seed the visible row ✓ button.
+    let rowNonEmpty = 0, rowDoneCount = 0;
+    visibleOrder.forEach(oci => {
+      const v = (ocrRowsAll[ri] && ocrRowsAll[ri][oci] || '').trim();
+      if (!v) return;
+      rowNonEmpty++;
+      if (ocrTableDone[ri].has(oci)) rowDoneCount++;
+    });
+    const rowDone = rowNonEmpty > 0 && rowDoneCount === rowNonEmpty;
     html += '<tr data-ri="' + ri + '">';
+    html += '<td class="ocr-row-archive-cell">' +
+      '<button type="button" class="ocr-row-done-btn' + (rowDone ? ' ocr-row-done-active' : '') + '" data-ri="' + ri + '" title="' + (rowDone ? 'Click to unmark row' : 'Click to mark row done') + '">&#10003;</button>' +
+      '<button type="button" class="ocr-row-archive-btn" data-ri="' + ri + '" title="Archive this row — moves it to Removed Items">&#x2715;</button>' +
+      '</td>';
     row.forEach((cell, ci) => {
       const originalCi = visibleOrder[ci];
       html += '<td data-ri="' + ri + '" data-ci="' + ci + '" data-oci="' + originalCi + '">' + escHtml(cell) + '</td>';
@@ -2281,6 +2828,25 @@ function renderOCRTableFromState() {
   });
   html += '</tbody></table>';
   wrap.innerHTML = html;
+  // Wire row archive × buttons (avoid inline onclick to keep the markup clean).
+  wrap.querySelectorAll('.ocr-row-archive-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const ri = parseInt(btn.dataset.ri);
+      if (!isNaN(ri)) archiveOCRRow(ri);
+    });
+  });
+  wrap.querySelectorAll('.ocr-row-done-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const ri = parseInt(btn.dataset.ri);
+      if (isNaN(ri)) return;
+      const isDone = btn.classList.contains('ocr-row-done-active');
+      markOCRRowDone(ri, !isDone);
+    });
+  });
+  renderOCRRemovedItems();
+  updateOCRProgressUI();
 
   // Re-apply preserved done / archived state by ORIGINAL column index, so reordering or
   // deleting columns doesn't lose the user's progress.
@@ -2314,6 +2880,28 @@ function renderOCRTableFromState() {
     inp.addEventListener('click', (e) => e.stopPropagation());
   });
   wrap.querySelectorAll('.ocr-sort-th').forEach(th => {
+    // Wire the visible mark-column-done checkmark toggle so it doesn't trigger sort.
+    const doneToggle = th.querySelector('.ocr-col-done-toggle');
+    if (doneToggle) {
+      doneToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const oci = parseInt(doneToggle.dataset.oci);
+        if (isNaN(oci)) return;
+        const isDone = th.classList.contains('ocr-col-done');
+        markOCRColDone(oci, !isDone);
+      });
+    }
+    // Wire the visible column-archive × button so it doesn't trigger sort.
+    const archiveToggle = th.querySelector('.ocr-col-archive-toggle');
+    if (archiveToggle) {
+      archiveToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const oci = parseInt(archiveToggle.dataset.oci);
+        if (isNaN(oci)) return;
+        const displayIdx = ocrColOrder.indexOf(oci);
+        if (displayIdx >= 0) deleteOCRColumn(displayIdx);
+      });
+    }
     // Click → sort. We suppress this if a drag just happened (handled via flag).
     let dragHappened = false;
     th.addEventListener('click', (e) => {
@@ -2388,17 +2976,12 @@ function renderOCRTableFromState() {
       const menu = document.getElementById('ctxMenu');
       const canMoveLeft = orderIdx > 0;
       const canMoveRight = orderIdx < ocrColOrder.length - 1;
-      const colAllDone = [...wrap.querySelectorAll('td[data-oci="' + oci + '"]')]
-        .filter(c => c.textContent.trim())
-        .every(c => ocrTableDone[parseInt(c.dataset.ri)]?.has(oci));
-      let html = colAllDone
-        ? '<div data-action="unmarkCol">Unmark Column</div>'
-        : '<div data-action="markCol">Mark Column Done</div>';
-      html += '<div data-action="delete">Delete Column</div>';
+      let html = '';
       if (canMoveLeft) html += '<div data-action="left">Move Left</div>';
       if (canMoveRight) html += '<div data-action="right">Move Right</div>';
       if (canMoveLeft) html += '<div data-action="mergeLeft">Merge with Left</div>';
       if (canMoveRight) html += '<div data-action="mergeRight">Merge with Right</div>';
+      if (!html) return; // no actions available — don't show an empty menu
       menu.innerHTML = html;
       menu.style.display = 'block';
       menu.style.left = e.clientX + 'px';
@@ -2406,13 +2989,10 @@ function renderOCRTableFromState() {
       menu.onclick = (ev) => {
         const action = ev.target.dataset.action;
         menu.style.display = 'none';
-        if (action === 'delete') deleteOCRColumn(orderIdx);
-        else if (action === 'left') moveOCRColumn(orderIdx, -1);
+        if (action === 'left') moveOCRColumn(orderIdx, -1);
         else if (action === 'right') moveOCRColumn(orderIdx, 1);
         else if (action === 'mergeLeft') mergeOCRColumns(orderIdx, -1);
         else if (action === 'mergeRight') mergeOCRColumns(orderIdx, 1);
-        else if (action === 'markCol') markOCRColDone(oci, true);
-        else if (action === 'unmarkCol') markOCRColDone(oci, false);
       };
     });
   });
@@ -2420,6 +3000,7 @@ function renderOCRTableFromState() {
   // Add click-to-copy and right-click archive handlers. State is keyed by ORIGINAL column
   // index (data-oci) so reorder/delete preserves the user's progress.
   wrap.querySelectorAll('td').forEach(td => {
+    if (td.classList.contains('ocr-row-archive-cell')) return; // archive × cell handled separately
     let clickCount = 0;
     td.addEventListener('click', () => {
       // Don't trigger copy while editing.
@@ -2428,7 +3009,7 @@ function renderOCRTableFromState() {
       const ci = parseInt(td.dataset.ci);
       const oci = parseInt(td.dataset.oci);
       if (ocrArchivedCells.has(ri + '-' + oci)) return;
-      const cell = td.textContent;
+      const cell = ocrCellText(td);
       if (!cell.trim()) return;
       clickCount++;
       if (clickCount === 1) {
@@ -2443,6 +3024,9 @@ function renderOCRTableFromState() {
               ocrTableDone[ri].add(oci);
               const rowCellCount = td.parentElement.querySelectorAll('td').length;
               checkOCRRowDone(ri, rowCellCount);
+              recordOCRDoneTimestamp();
+              updateOCRProgressUI();
+              saveOCRSession();
             });
           } else {
             td.classList.remove('ocr-cell-done');
@@ -2450,6 +3034,8 @@ function renderOCRTableFromState() {
             if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
             const rowCellCount = td.parentElement.querySelectorAll('td').length;
             checkOCRRowDone(ri, rowCellCount);
+            updateOCRProgressUI();
+            saveOCRSession();
           }
           clickCount = 0;
         }, 200);
@@ -2465,49 +3051,11 @@ function renderOCRTableFromState() {
       const oci = parseInt(td.dataset.oci);
       makeOCREditable(td, () => {
         if (!ocrRowsAll[ri]) ocrRowsAll[ri] = [];
-        ocrRowsAll[ri][oci] = td.textContent;
+        ocrRowsAll[ri][oci] = ocrCellText(td);
         syncOCROutputFromState();
       });
     });
 
-    // Right-click context menu
-    td.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      const ri = parseInt(td.dataset.ri);
-      const oci = parseInt(td.dataset.oci);
-      const key = ri + '-' + oci;
-      const isArchived = ocrArchivedCells.has(key);
-      const rowDone = ocrTableDone[ri] && td.parentElement &&
-        [...td.parentElement.querySelectorAll('td')].filter(c => c.textContent.trim())
-          .every(c => ocrTableDone[ri]?.has(parseInt(c.dataset.oci)));
-      const colDone = [...document.getElementById('ocrTableWrap').querySelectorAll('td[data-oci="' + oci + '"]')]
-        .filter(c => c.textContent.trim())
-        .every(c => ocrTableDone[parseInt(c.dataset.ri)]?.has(oci));
-      const menu = document.getElementById('ctxMenu');
-      let html = isArchived
-        ? '<div data-action="unarchive">Restore Cell</div>'
-        : '<div data-action="archive">Archive Cell</div>';
-      html += rowDone
-        ? '<div data-action="unmarkRow">Unmark Row</div>'
-        : '<div data-action="markRow">Mark Row Done</div>';
-      html += colDone
-        ? '<div data-action="unmarkCol">Unmark Column</div>'
-        : '<div data-action="markCol">Mark Column Done</div>';
-      menu.innerHTML = html;
-      menu.style.display = 'block';
-      menu.style.left = e.clientX + 'px';
-      menu.style.top = e.clientY + 'px';
-      menu.onclick = (ev) => {
-        const action = ev.target.dataset.action;
-        menu.style.display = 'none';
-        if (action === 'archive') archiveOCRCell(ri, oci);
-        else if (action === 'unarchive') unarchiveOCRCell(ri, oci);
-        else if (action === 'markRow') markOCRRowDone(ri, true);
-        else if (action === 'unmarkRow') markOCRRowDone(ri, false);
-        else if (action === 'markCol') markOCRColDone(oci, true);
-        else if (action === 'unmarkCol') markOCRColDone(oci, false);
-      };
-    });
   });
 }
 
@@ -2516,19 +3064,24 @@ function checkOCRRowDone(ri, totalCols) {
   const tr = wrap.querySelector('tr[data-ri="' + ri + '"]');
   if (!tr) return;
   const doneCols = ocrTableDone[ri] ? ocrTableDone[ri].size : 0;
-  const nonEmpty = tr.querySelectorAll('td').length;
+  // Only count actual data cells \u2014 exclude the leftmost row-action cell that holds \u2713/\u00d7 buttons.
+  const dataCells = tr.querySelectorAll('td:not(.ocr-row-archive-cell)');
+  const nonEmpty = dataCells.length;
   let emptyCount = 0;
-  tr.querySelectorAll('td').forEach(td => { if (!td.textContent.trim()) emptyCount++; });
+  dataCells.forEach(td => { if (!td.textContent.trim()) emptyCount++; });
   const needed = nonEmpty - emptyCount;
 
   if (doneCols >= needed && needed > 0) {
     tr.classList.add('ocr-row-done');
     if (!tr.querySelector('.ocr-badge')) {
-      const firstTd = tr.querySelector('td');
-      const badge = document.createElement('span');
-      badge.className = 'ocr-badge';
-      badge.textContent = '\u2713 Done';
-      firstTd.appendChild(badge);
+      // Anchor the badge to the first DATA cell, not the action-button cell.
+      const firstDataTd = tr.querySelector('td:not(.ocr-row-archive-cell)');
+      if (firstDataTd) {
+        const badge = document.createElement('span');
+        badge.className = 'ocr-badge';
+        badge.textContent = '\u2713 Done';
+        firstDataTd.appendChild(badge);
+      }
     }
   } else {
     tr.classList.remove('ocr-row-done');
@@ -2543,6 +3096,7 @@ function markOCRRowDone(ri, done) {
   if (!tr) return;
   tr.querySelectorAll('td').forEach(td => {
     const oci = parseInt(td.dataset.oci);
+    if (isNaN(oci)) return; // skip the row-archive × cell
     if (done) {
       if (!td.textContent.trim()) return;
       td.classList.add('ocr-cell-done');
@@ -2554,6 +3108,15 @@ function markOCRRowDone(ri, done) {
     }
   });
   checkOCRRowDone(ri, tr.querySelectorAll('td').length);
+  // Sync the row ✓ button visual state and tooltip so a second click toggles correctly.
+  const doneBtn = tr.querySelector('.ocr-row-done-btn');
+  if (doneBtn) {
+    doneBtn.classList.toggle('ocr-row-done-active', !!done);
+    doneBtn.title = done ? 'Click to unmark row' : 'Click to mark row done';
+  }
+  if (done) recordOCRDoneTimestamp();
+  updateOCRProgressUI();
+  saveOCRSession();
 }
 
 function markOCRColDone(oci, done) {
@@ -2570,11 +3133,32 @@ function markOCRColDone(oci, done) {
       if (ocrTableDone[ri]) ocrTableDone[ri].delete(oci);
     }
   });
-  // Recheck row-done status for every affected row
+  // Recheck row-done status for every affected row, and refresh the row ✓ buttons too
+  // so per-row state stays in sync with the column-wide change.
   wrap.querySelectorAll('tbody tr').forEach(tr => {
     const ri = parseInt(tr.dataset.ri);
-    if (!isNaN(ri)) checkOCRRowDone(ri, tr.querySelectorAll('td').length);
+    if (isNaN(ri)) return;
+    checkOCRRowDone(ri, tr.querySelectorAll('td').length);
+    const rowBtn = tr.querySelector('.ocr-row-done-btn');
+    if (rowBtn) {
+      const isFullyDone = tr.classList.contains('ocr-row-done');
+      rowBtn.classList.toggle('ocr-row-done-active', isFullyDone);
+      rowBtn.title = isFullyDone ? 'Click to unmark row' : 'Click to mark row done';
+    }
   });
+  // Sync the column header's done indicator (th class + ✓ toggle visual + tooltip).
+  const th = wrap.querySelector('.ocr-sort-th[data-oci="' + oci + '"]');
+  if (th) {
+    th.classList.toggle('ocr-col-done', !!done);
+    const colToggle = th.querySelector('.ocr-col-done-toggle');
+    if (colToggle) {
+      colToggle.classList.toggle('ocr-col-done-active', !!done);
+      colToggle.title = done ? 'Click to unmark column' : 'Click to mark column done';
+    }
+  }
+  if (done) recordOCRDoneTimestamp();
+  updateOCRProgressUI();
+  saveOCRSession();
 }
 
 function fixDuplicateFarmCodes(lines) {
@@ -2730,6 +3314,846 @@ function cleanOCRText(raw) {
     .join('\n');
 }
 
+
+// ─── Desktop OCR Engine (alternate extraction pipeline) ───
+// These four functions are the original desktop-ocr branch versions of the
+// columnar extraction pipeline, preserved for screenshots taken on this
+// desktop where laptop's added edge-case handling degrades results.
+// Selected at runtime via the Engine toggle in the OCR header.
+
+async function doMultiColumnOCR_desktop(imageData) {
+  const progress = document.getElementById('ocrProgress');
+  const fill = document.getElementById('ocrProgressFill');
+  const ptext = document.getElementById('ocrProgressText');
+  const output = document.getElementById('ocrOutput');
+  const copyBtn = document.getElementById('ocrCopyBtn');
+
+  progress.style.display = '';
+  fill.style.width = '0%';
+  ptext.textContent = 'Initializing OCR engine...';
+  output.value = '';
+  copyBtn.style.display = 'none';
+  document.getElementById('ocrExtractBtn').disabled = true;
+  imageData = await upscaleForOCR(imageData);
+
+  const fallback = (text) => {
+    const cleaned = cleanOCRText_desktop(text);
+    output.value = cleaned;
+    renderOCRTable(cleaned);
+    fill.style.width = '100%';
+    ptext.textContent = 'Done (fallback to single-column).';
+    copyBtn.style.display = '';
+    document.getElementById('ocrSaveBtn').style.display = '';
+    document.getElementById('ocrExtractBtn').disabled = false;
+    openOCRPanel();
+  };
+
+  try {
+    const result = await Tesseract.recognize(imageData, 'eng', {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          fill.style.width = pct + '%';
+          ptext.textContent = 'Extracting text... ' + pct + '%';
+        } else {
+          ptext.textContent = m.status || 'Processing...';
+        }
+      }
+    });
+
+    const allWords = (result.data.words || [])
+      .filter(w => w && w.bbox && w.text && w.text.trim());
+    if (allWords.length < 6) {
+      fallback(result.data.text);
+      return;
+    }
+
+    const stripW = ocrCrop ? ocrCrop.w : Math.max(...allWords.map(w => w.bbox.x1)) + 5;
+    const minX = Math.min(...allWords.map(w => w.bbox.x0));
+
+    // Strip checkbox artifacts (e.g. "[J", "OJ", "[m]") that the OCR generates from rendered checkboxes.
+    // We deliberately do NOT drop single-character tokens (like a stray "J" or "O"), because
+    // Tesseract sometimes splits real words like "Jos" into "J" + "os" — dropping the "J"
+    // mangles the header. Any surviving single-char checkbox is handled by the
+    // narrow-leftmost-column drop heuristic during column detection.
+    const isCheckboxArtifact = (w) => {
+      const t = (w.text || '').trim();
+      if (!t) return true;
+      const nearLeft = w.bbox.x0 - minX < stripW * 0.06;
+      if (!nearLeft) return false;
+      if (t.length > 5) return false;
+      // contains bracket/paren chars — definitely checkbox-like
+      if (/[\[\]\(\)]/.test(t)) return true;
+      // pure non-alpha symbols (no letters or digits)
+      if (/^[^A-Za-z0-9]{1,4}$/.test(t)) return true;
+      // multi-character tokens from the checkbox-misread set ("OJ", "[O", "lJ", etc.)
+      if (/^[OJ0lI|mn]{2,4}$/.test(t)) return true;
+      // single pipe character
+      if (t === '|') return true;
+      return false;
+    };
+    // Strip filter/search placeholder text rendered in the source UI ("Search...", "Filter...").
+    const filterPlaceholderRe = /^(search|filter|find)[.…]{0,3}$/i;
+    // Strip junk separator words: pipe/colon/semicolon/equals/underscore-only tokens that
+    // come from grid lines, scrollbar arrows, and decorative punctuation.
+    // Includes em-dash (—) and en-dash (–) — those are "no value" placeholders, not real data.
+    // The plain hyphen "-" is intentionally NOT stripped here, because it appears legitimately
+    // between words in job names like "1101 Riego - Irrigation". Cells whose entire content
+    // is just dashes are still emptied later by the cell-level dashOnly normalizer.
+    const junkSeparatorRe = /^[|:;=_~`'"\\\/<>—–]+$/;
+    const words = allWords.filter(w => {
+      if (isCheckboxArtifact(w)) return false;
+      const t = (w.text || '').trim();
+      if (filterPlaceholderRe.test(t)) return false;
+      if (junkSeparatorRe.test(t)) return false;
+      return true;
+    });
+    if (words.length < 6) { fallback(result.data.text); return; }
+
+    // --- Column detection via X-projection of word occupancy ---
+    const occ = new Uint8Array(Math.ceil(stripW) + 2);
+    words.forEach(w => {
+      const x0 = Math.max(0, Math.floor(w.bbox.x0));
+      const x1 = Math.min(occ.length - 1, Math.ceil(w.bbox.x1));
+      for (let x = x0; x <= x1; x++) occ[x] = 1;
+    });
+    const minGap = Math.max(12, Math.floor(stripW * 0.012));
+    const gaps = [];
+    let gs = null;
+    for (let x = 0; x < occ.length; x++) {
+      if (!occ[x]) {
+        if (gs === null) gs = x;
+      } else {
+        if (gs !== null && x - gs >= minGap) gaps.push({ x0: gs, x1: x });
+        gs = null;
+      }
+    }
+    const cols = [];
+    let prev = 0;
+    gaps.forEach(g => {
+      if (g.x0 > prev) cols.push({ x0: prev, x1: g.x0 });
+      prev = g.x1;
+    });
+    if (occ.length > prev) cols.push({ x0: prev, x1: occ.length });
+    // Drop columns that contain no word centers.
+    let keepCols = cols.filter(c => words.some(w => {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      return cx >= c.x0 && cx <= c.x1;
+    }));
+    // Drop leftmost narrow column (checkbox column). It's narrow AND its words are short/junky.
+    if (keepCols.length >= 2) {
+      const c0 = keepCols[0];
+      const c0Width = c0.x1 - c0.x0;
+      const c0Words = words.filter(w => {
+        const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+        return cx >= c0.x0 && cx <= c0.x1;
+      });
+      const avgLen = c0Words.length
+        ? c0Words.reduce((s, w) => s + (w.text || '').trim().length, 0) / c0Words.length
+        : 0;
+      if (c0Width < stripW * 0.06 || (c0Width < stripW * 0.1 && avgLen <= 4)) {
+        keepCols = keepCols.slice(1);
+      }
+    }
+    if (keepCols.length < 2) { fallback(result.data.text); return; }
+
+    // --- Row clustering by Y-overlap (handles descenders/wrapped lines that Tesseract splits) ---
+    words.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    const meanH = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
+    const rowTol = Math.max(meanH * 0.55, 6);
+    const rows = [];
+    words.forEach(w => {
+      const yc = (w.bbox.y0 + w.bbox.y1) / 2;
+      let row = null;
+      for (let r of rows) {
+        if (Math.abs(yc - r.yc) <= rowTol) { row = r; break; }
+      }
+      if (!row) {
+        row = { y0: w.bbox.y0, y1: w.bbox.y1, yc, words: [] };
+        rows.push(row);
+      }
+      row.words.push(w);
+      row.y0 = Math.min(row.y0, w.bbox.y0);
+      row.y1 = Math.max(row.y1, w.bbox.y1);
+      row.yc = (row.y0 + row.y1) / 2;
+    });
+    rows.sort((a, b) => a.yc - b.yc);
+
+    const assignToCol = (w) => {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      for (let i = 0; i < keepCols.length; i++) {
+        if (cx >= keepCols[i].x0 && cx <= keepCols[i].x1) return i;
+      }
+      // Otherwise nearest by edge distance
+      let best = 0, bestD = Infinity;
+      keepCols.forEach((c, i) => {
+        const cc = (c.x0 + c.x1) / 2;
+        const d = Math.abs(cc - cx);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      return best;
+    };
+
+    const cellsForRow = (row) => {
+      const cells = keepCols.map(() => []);
+      row.words.slice().sort((a, b) => a.bbox.x0 - b.bbox.x0).forEach(w => {
+        cells[assignToCol(w)].push((w.text || '').trim());
+      });
+      return cells.map(parts => cleanOCRCell_desktop(parts.join(' ')));
+    };
+
+    // --- Header detection: header rows are the leading rows that contain no data markers ---
+    // CASE-SENSITIVE: header words like "PRODUCTIVE", "STATIC", "DURATION TYPE" are uppercase;
+    // data row text is Title Case ("Productive time", "Static", "Hourly work"). So we match
+    // Title-Case keywords plus universally data-only tokens ($, "N min", em-dash).
+    const dataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bNon-Productive\b|\bBreak\b|\bLunch\b|\bPicking\b|\bPruning\b|\bHourly\b|\bwork\b|\bUnpaid\b|\bNA\b|\bPHASE\b|\bCODE\b|\bPiecework\b/;
+    let headerEnd = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const txt = rows[i].words.map(w => w.text).join(' ');
+      if (dataMarker.test(txt)) { headerEnd = i; break; }
+      // Stop advancing on near-empty rows (single-word noise like "EE" from scrollbars
+      // or pagination artifacts) so they don't get promoted to header rows.
+      if (i > 0 && rows[i].words.length < 2) { headerEnd = i; break; }
+      if (i >= 4) { headerEnd = 1; break; } // safety: never assume more than 4 header rows
+    }
+    if (headerEnd < 1) headerEnd = 1;
+
+    // --- Fallback column detection: if X-projection gave too few columns relative to header
+    // word count, derive columns from header word positions instead. This handles tables with
+    // many empty data cells (Rate, Piece Rate, etc.) where word coverage is sparse. ---
+    {
+      const headerWords = [];
+      for (let i = 0; i < headerEnd; i++) headerWords.push(...rows[i].words);
+      headerWords.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      if (headerWords.length >= 3) {
+        // Adaptive gap threshold via bimodal split detection.
+        // Within-column gaps (e.g. "Pay" + "Type") cluster small; between-column gaps cluster
+        // large. We look for the biggest *ratio* jump in the sorted gap list — that's the
+        // natural boundary between the two clusters.
+        const headerGaps = [];
+        for (let i = 1; i < headerWords.length; i++) {
+          const g = headerWords[i].bbox.x0 - headerWords[i - 1].bbox.x1;
+          if (g > 0) headerGaps.push(g);
+        }
+        const sortedGaps = headerGaps.slice().sort((a, b) => a - b);
+        let gapThresh = 14;
+        if (sortedGaps.length >= 2) {
+          let maxRatio = 1, splitIdx = -1;
+          for (let i = 1; i < sortedGaps.length; i++) {
+            const r = sortedGaps[i] / Math.max(sortedGaps[i - 1], 1);
+            if (r > maxRatio) { maxRatio = r; splitIdx = i; }
+          }
+          if (maxRatio >= 2 && splitIdx > 0) {
+            // Clear bimodal break — threshold = midpoint of the jump.
+            gapThresh = (sortedGaps[splitIdx - 1] + sortedGaps[splitIdx]) / 2;
+          } else {
+            // No clear bimodal split — every word is its own column.
+            gapThresh = Math.max(sortedGaps[0] * 0.5, 4);
+          }
+        } else if (sortedGaps.length === 1) {
+          gapThresh = sortedGaps[0] * 0.8;
+        }
+        gapThresh = Math.max(gapThresh, 4);
+        const groups = [];
+        let g = null;
+        headerWords.forEach(w => {
+          if (!g) g = { x0: w.bbox.x0, x1: w.bbox.x1 };
+          else if (w.bbox.x0 - g.x1 < gapThresh) g.x1 = w.bbox.x1;
+          else { groups.push(g); g = { x0: w.bbox.x0, x1: w.bbox.x1 }; }
+        });
+        if (g) groups.push(g);
+        // Use header-derived columns when they give us more granularity.
+        if (groups.length > keepCols.length && groups.length >= 3) {
+          // Boundary between col N and col N+1 = LEFT edge of col N+1's header word.
+          // Headers and data are typically left-aligned within their columns, so a wide
+          // column with a short header (e.g. "Jos" inside the wide Job column) needs the
+          // boundary to extend right to where the next column's header actually starts —
+          // not the midpoint of the visual gap (which under-allocates space to the wide column).
+          keepCols = groups.map((gr, i) => {
+            const left = i === 0 ? 0 : groups[i].x0;
+            const right = i === groups.length - 1 ? occ.length : groups[i + 1].x0;
+            return { x0: left, x1: right };
+          });
+          // Re-apply leftmost-checkbox drop on new column set.
+          const c0 = keepCols[0];
+          const c0Width = c0.x1 - c0.x0;
+          const c0Words = words.filter(w => {
+            const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+            return cx >= c0.x0 && cx <= c0.x1;
+          });
+          const avgLen = c0Words.length
+            ? c0Words.reduce((s, w) => s + (w.text || '').trim().length, 0) / c0Words.length
+            : 0;
+          if (keepCols.length >= 3 && (c0Width < stripW * 0.06 || (c0Width < stripW * 0.1 && avgLen <= 4))) {
+            keepCols = keepCols.slice(1);
+          }
+        }
+      }
+    }
+
+    const headerCells = keepCols.map(() => []);
+    for (let i = 0; i < headerEnd; i++) {
+      const c = cellsForRow(rows[i]);
+      c.forEach((v, j) => { if (v) headerCells[j].push(v); });
+    }
+    // Strip sort-arrow glyphs (Tesseract reads ↓/↑ as "+", "^", etc.) from header text,
+    // then apply specific corrections for known PickTrace column names that OCR mangles.
+    const headers = headerCells.map((parts, i) => {
+      let h = parts.join(' ').trim();
+      h = h.replace(/[+↓↑▲▼^<>*~"'`]/g, ' ');
+      h = h.replace(/\s{2,}/g, ' ').trim();
+      // Specific PickTrace header corrections. Order matters: very specific patterns first
+      // to avoid overlap (e.g. JOB CATEGORY must match before any catch-all "JOB ..." pattern).
+      const corrections = [
+        // Multi-word, unambiguous headers FIRST
+        [/^J(?:OB|0B|oB)\s+CATEGORY$/i, 'JOB CATEGORY'],
+        [/^HOURLY\s+RATE$/i, 'HOURLY RATE'],
+        [/^HOURLYRATE$/i, 'HOURLY RATE'],
+        [/^PAY\s*STYLE$/i, 'PAY STYLE'],
+        [/^PAYSTYLE$/i, 'PAY STYLE'],
+        [/^MIN\w*\s+WAGE$/i, 'MINIMUM WAGE'],
+        [/^MIN[MIUN]+UM?\s*WAGE$/i, 'MINIMUM WAGE'],
+        [/^MIN\w*WAGE$/i, 'MINIMUM WAGE'],
+        [/^PRODUCTIVE$/i, 'PRODUCTIVE'],
+        [/^(?:DURATION|DURA\w*)\s+(?:DURA\w*|TYPE|T\w*|TY\w*)$/i, 'DURATION TYPE'],
+        [/^(?:COLLECT|COLECT)\s+(?:PIECES|fe|f|s|S|T|CES|ICES)$/i, 'COLLECT PIECES'],
+        [/^(?:CREST|CICES|ICES|PIECES|CoE\.?|CoF\.?|Co[EF]|Cl[il]e|Cl[il]ce|Cl[il]ces|Cle|Clce)$/i, 'COLLECT PIECES'],
+        // JOB DURATION — must contain a digit/0/period middle so it never matches JOB CATEGORY
+        [/^(?:JOB|J0B|JoB|J08|108)\s+(?:0[BO0]|03|08|13|00)\s*(?:Ca\w*|D\w*|CON\w*)?$/i, 'JOB DURATION'],
+        [/^(?:0[BO0]|03|08|13|00)\s+\.?(?:Ca\w*|CON\w*|D\w*)$/i, 'JOB DURATION'],
+        [/^(?:0[BO0]|03|08|13|00)$/i, 'JOB DURATION'],
+        // Sort-arrow ↑ on JOB DURATION reads as 308 / 308. / 30B / 20B / 200 / 200B / 2008 / 0B / OB / polaron.
+        [/^3\s*0\s*[8B]\.?$/i, 'JOB DURATION'],
+        [/^J?(?:OB|0B)\s*30?\s*[8B]\.?$/i, 'JOB DURATION'],
+        [/^[023]0?[8B]\.?$/i, 'JOB DURATION'],
+        [/^[023]00[8B]?\.?$/i, 'JOB DURATION'],
+        [/^pola?ron$/i, 'JOB DURATION'],
+        [/^p[o0]l[a@][rR][o0]n$/i, 'JOB DURATION'],
+        // PREMIUM JOB / JOB TRANSLATION / DESCRIPTION variants
+        [/^PREM\w*\s+J\w*$/i, 'PREMIUM JOB'],
+        [/^J\w*\s+TRANS\w*$/i, 'JOB TRANSLATION'],
+        [/^DESCRIP\w*$/i, 'DESCRIPTION'],
+        // Single "A" or stand-alone "Type" in this slot is a misread of "DURATION TYPE"
+        [/^[Aa]$/, 'DURATION TYPE'],
+        [/^(?:Type|TYPE|Tvpe|TYP[Ee])$/i, 'DURATION TYPE'],
+        // JOB — most ambiguous patterns LAST (single-word, may collide if put earlier)
+        [/^(?:Jos|J0[8BSs]?|J0B|JoB|108|JOB|J08)$/i, 'JOB'],
+        [/^(?:oe|0e|OE|0E|Oe)$/i, 'JOB'],
+        [/^JOB\.$/i, 'JOB DURATION'],
+      ];
+      for (const [re, fix] of corrections) if (re.test(h)) { h = fix; break; }
+      return h || ('Col ' + (i + 1));
+    });
+
+    let dataRows = rows.slice(headerEnd)
+      .map(cellsForRow)
+      .filter(r => r.some(c => c && c.length));
+
+    // Normalize: any cell whose entire trimmed content is just dashes/separators becomes empty.
+    // Also strips lines/leftover punctuation so they don't count as filled in the sparse filter.
+    // Real values like "NPT- Travel Time" are unaffected because they contain alphanumerics.
+    const dashOnly = /^[\s—–\-_|:;\\\/<>.]+$/;
+    dataRows.forEach(r => {
+      for (let i = 0; i < r.length; i++) {
+        if (dashOnly.test(r[i] || '')) r[i] = '';
+      }
+    });
+
+    // Drop sparse junk rows (e.g. "mir", "1 >", "EE ——— >") — must fill at least half the
+    // columns OR have a strong data signature ($, "N min", em-dash, "Productive"/"Static"/etc.).
+    const minCellsRequired = Math.max(2, Math.ceil(keepCols.length / 2));
+    const rowDataMarker = /\$|\b\d+\s*(?:min|hr|sec)\b|—|\bProductive\b|\bStatic\b|\bNon-productive\b|\bHourly\b|\bLunch\b|\bBreak\b|\bUnpaid\b|\bPiecework\b|\bNA\b|\bPHASE\b|\bCODE\b/;
+    dataRows = dataRows.filter(r => {
+      const filled = r.filter(c => c && c.trim().length).length;
+      if (filled >= minCellsRequired) return true;
+      const joined = r.join(' ');
+      return rowDataMarker.test(joined);
+    });
+
+    // ── Wage / Rate column "$0" / "50" repair ──
+    headers.forEach((h, idx) => {
+      if (!/wage|rate/i.test(h)) return;
+      dataRows.forEach(r => {
+        const v = (r[idx] || '').trim();
+        if (v === '50' || v === '5O') r[idx] = '$0';
+      });
+    });
+
+    // ── Strip stray "M" prefix on Non-productive cells: "MNon-productive" → "Non-productive" ──
+    dataRows.forEach(r => {
+      r.forEach((v, ci) => {
+        if (typeof v !== 'string') return;
+        r[ci] = v.replace(/\bM(?=Non-productive)/g, '');
+      });
+    });
+
+    // ── Split a merged PAY STYLE + MINIMUM WAGE column ──
+    // When the X-projection collapses these two narrow adjacent columns, the header
+    // looks like "PAYSTYLE MINIMUM WAGE" or "PAY STYLE MINIMUM WAGE", and each data cell
+    // holds "Hourly $0" / "Piece $16.90". Split into two columns at the $ boundary.
+    {
+      const mergedIdx = headers.findIndex(h => /pay\s*style\s+min/i.test(h) || /style\s+min/i.test(h));
+      if (mergedIdx >= 0) {
+        const splitVals = dataRows.map(r => {
+          const v = (r[mergedIdx] || '').trim();
+          if (!v) return ['', ''];
+          const m = v.match(/^(.+?)\s+(\$\s*\d+(?:\.\d+)?)$/);
+          if (m) return [m[1].trim(), m[2].replace(/\s+/g, '')];
+          const parts = v.split(/\s+/);
+          if (parts.length >= 2) return [parts.slice(0, -1).join(' '), parts[parts.length - 1]];
+          return [v, ''];
+        });
+        headers[mergedIdx] = 'PAY STYLE';
+        headers.splice(mergedIdx + 1, 0, 'MINIMUM WAGE');
+        dataRows.forEach((r, ri) => {
+          r[mergedIdx] = splitVals[ri][0];
+          r.splice(mergedIdx + 1, 0, splitVals[ri][1]);
+        });
+      }
+    }
+
+    // ── Split a merged MINIMUM WAGE + PREMIUM JOB header ──
+    // The X-projection sometimes glues these two columns into "MINIMUMWAGE PREMIUM JOB".
+    // The data cell typically holds the MINIMUM WAGE value only ($0 / $16.90); PREMIUM JOB
+    // is empty for every row in the screenshot we've seen, so we keep the existing data
+    // under MINIMUM WAGE and insert an empty PREMIUM JOB column to its right.
+    {
+      const mergedIdx = headers.findIndex(h => /min\w*\s*wage\s+premium\s+job/i.test(h));
+      if (mergedIdx >= 0) {
+        headers[mergedIdx] = 'MINIMUM WAGE';
+        headers.splice(mergedIdx + 1, 0, 'PREMIUM JOB');
+        dataRows.forEach(r => r.splice(mergedIdx + 1, 0, ''));
+      }
+    }
+
+    // ── Drop a phantom DURATION column that absorbed DURATION TYPE values ──
+    // When DURATION TYPE is empty across all rows and a "DURATION" column immediately
+    // follows it with the values (Static, etc.), rename DURATION → DURATION TYPE and
+    // delete the now-redundant empty DURATION TYPE column.
+    {
+      const dtIdx = headers.findIndex(h => /^duration\s+type$/i.test(h));
+      const dIdx  = headers.findIndex(h => /^duration$/i.test(h));
+      if (dtIdx >= 0 && dIdx === dtIdx + 1) {
+        const dtFilled = dataRows.filter(r => r[dtIdx] && r[dtIdx].trim()).length;
+        const dFilled  = dataRows.filter(r => r[dIdx]  && r[dIdx].trim()).length;
+        if (dtFilled === 0 && dFilled > 0) {
+          headers[dtIdx] = 'DURATION TYPE';
+          headers.splice(dIdx, 1);
+          dataRows.forEach(r => {
+            r[dtIdx] = r[dIdx];
+            r.splice(dIdx, 1);
+          });
+        }
+      }
+    }
+
+    // ── Remove auto-named "Col N" phantom columns that are mostly empty ──
+    for (let ci = headers.length - 1; ci >= 0; ci--) {
+      if (/^Col\s+\d+$/i.test(headers[ci] || '')) {
+        const filled = dataRows.filter(r => r[ci] && r[ci].trim()).length;
+        if (dataRows.length === 0 || filled / dataRows.length < 0.20) {
+          headers.splice(ci, 1);
+          dataRows.forEach(r => r.splice(ci, 1));
+        }
+      }
+    }
+
+    // Normalize the "Collect Pieces"-style column: any short non-dash cell becomes ✓.
+    // Tesseract reads the checkmark glyph as many variants (v, V, w, Y, /, J, *, etc.) so we
+    // accept any 1-2 char cell that isn't a dash-only "no value" placeholder as a checkmark.
+    headers.forEach((h, idx) => {
+      if (/collect|piece/i.test(h)) {
+        dataRows.forEach(r => {
+          const v = (r[idx] || '').trim();
+          if (!v) return;
+          if (/^[—–\-_]+$/.test(v)) { r[idx] = ''; return; }
+          if (/^[v✓✔VYwJ\/*xX√√]+$/.test(v) || /check/i.test(v) || v.length <= 2) {
+            r[idx] = '✓';
+          }
+        });
+      }
+    });
+
+    if (dataRows.length === 0) { fallback(result.data.text); return; }
+
+    const tsv = [headers.join('\t'), ...dataRows.map(r => r.join('\t'))].join('\n');
+    output.value = tsv;
+    renderOCRTable(tsv);
+
+    fill.style.width = '100%';
+    ptext.textContent = 'Done! Detected ' + keepCols.length + ' columns, ' + dataRows.length + ' rows.';
+    copyBtn.style.display = '';
+    document.getElementById('ocrSaveBtn').style.display = '';
+    openOCRPanel();
+  } catch (err) {
+    ptext.textContent = 'Error: ' + err.message;
+  }
+  document.getElementById('ocrExtractBtn').disabled = false;
+}
+
+
+function cleanOCRCell_desktop(text) {
+  if (!text) return '';
+  let l = text.trim();
+
+  // Strip leading checkbox-OCR artifacts that may still be glued to the first cell.
+  l = l.replace(/^(?:\[+|\(+)?[OJ0lI|mn]{1,4}(?:\]+|\)+)?\s+(?=[A-Za-z0-9])/, '');
+  // Strip stray bracket characters anywhere
+  l = l.replace(/[\[\]]/g, '');
+
+  l = l.replace(/!/g, 'l');
+
+  // --- Token-based two-word dedup. Tesseract often reads each word twice with different
+  //     segmentations, producing patterns like "Forklift Forklift", "Drivin Driving",
+  //     "Esper Espera", "Bloc Block", "Prod roductive", "Mayord domo", "wort work".
+  //     A regex /g replace consumes pairs greedily from the left and misses overlapping
+  //     pairs ("min min Block Block" → consuming "X min" hides the "min min" pair), so we
+  //     scan tokens and merge each new token with the previous one if eligible. ---
+  const dedupPair = (w1, w2) => {
+    if (!/^\w{2,}$/.test(w1) || !/^\w{2,}$/.test(w2)) return null;
+    const lw1 = w1.toLowerCase();
+    const lw2 = w2.toLowerCase();
+    if (lw1 === lw2) return w1;
+    // Overlap merge: last N chars of w1 == first N chars of w2 (N>=3) → concatenate
+    for (let n = Math.min(lw1.length, lw2.length) - 1; n >= 3; n--) {
+      if (lw1.slice(-n) === lw2.slice(0, n)) return w1 + w2.slice(n);
+    }
+    // Suffix/prefix containment: drop the shorter one
+    if (lw1.length >= 3 && lw2.length >= 2 && lw2.length < lw1.length) {
+      if (lw1.endsWith(lw2) || lw1.startsWith(lw2)) return w1;
+    }
+    if (lw2.length >= 3 && lw1.length >= 2 && lw1.length < lw2.length) {
+      if (lw2.endsWith(lw1) || lw2.startsWith(lw1)) return w2;
+    }
+    return null;
+  };
+  {
+    const tokens = l.split(/\s+/).filter(t => t.length);
+    const out = [];
+    for (const tok of tokens) {
+      if (out.length > 0) {
+        const merged = dedupPair(out[out.length - 1], tok);
+        if (merged !== null) {
+          out[out.length - 1] = merged;
+          continue;
+        }
+      }
+      out.push(tok);
+    }
+    l = out.join(' ');
+  }
+
+  // Drop a single-letter filler word stuck between two real words ("Por r Hora" → "Por Hora",
+  // "Bus g Driving" → "Bus Driving"). Whitelist meaningful single chars (a, A, I, i).
+  l = l.replace(/\b(\w{3,})\s+([a-zA-Z])\s+(\w{3,})\b/g, (m, w1, c, w3) => {
+    if (/^[aAIi]$/.test(c)) return m;
+    return w1 + ' ' + w3;
+  });
+
+  // Trailing single digit/letter after -ing/-es/-ed words ("Changes 9", "Shining 9").
+  l = l.replace(/\b(\w+(?:ing|es|ed))\s+[9gq0]\b/g, '$1');
+
+  // --- Targeted descender / split fixes (still needed for Tesseract patterns the dedup misses) ---
+  // "Prunin 9" → "Pruning", "Pickin g" → "Picking", "Trainin 9" → "Training"
+  l = l.replace(/\b([A-Za-z]+in)\s+[9gq]\b/g, '$1g');
+  // "Pruning, 9" or "Prunin, 9" with stray comma
+  l = l.replace(/\b([A-Za-z]+in),?\s+[9gq]\b/g, '$1g');
+  // "Hour ly" / "Hourl ly" / "Hourly ly" → "Hourly"
+  l = l.replace(/\bHourly\s+ly\b/g, 'Hourly');
+  l = l.replace(/\bHourl\s+ly\b/g, 'Hourly');
+  l = l.replace(/\bHour\s+ly\b/g, 'Hourly');
+  // Standalone "Hour" → "Hourly" (Tesseract truncated the cell)
+  if (l === 'Hour') l = 'Hourly';
+  l = l.replace(/^ly\s+/, '');
+  l = l.replace(/\blg\s+\d\b/g, '');
+  // "Mayordomo yo" — descender of 'y' in Mayordomo OCR'd as separate token
+  l = l.replace(/\bMayordomo\s+yo\b/g, 'Mayordomo');
+  // Non-productive with trailing 2-3 char junk ("oi", "pr", "or", "pi", "p", "ro")
+  l = l.replace(/\bNon-productive\s+(?:oi|pr|or|pi|ro|p)\s+time\b/gi, 'Non-productive time');
+  // "pi y" "pI" descender residue trailing
+  l = l.replace(/\s+p[iI]?\s*$/, '');
+  l = l.replace(/\s+y\s*$/, '');
+  // "ig y" residue
+  l = l.replace(/\big\s+y\b/g, '');
+  // "Break real" / "Brea " misreads (Break gets re-read partially)
+  l = l.replace(/\bBreak\s+real\b/g, 'Break');
+  l = l.replace(/\bBrea\b/g, 'Break');
+  // "Break ent." → "Break Payment" (Payment garbled to "ent.")
+  l = l.replace(/\bBreak\s+ent\.?\b/g, 'Break Payment');
+  // "Non-prod lon-productive" duplicates
+  l = l.replace(/\bNon-prod\s+lon-productive\b/g, 'Non-productive');
+  l = l.replace(/\bs\s+tatic\b/g, 'Static');
+  // Trailing/internal stray punctuation: "NPT Misc. Payment %" → "NPT Misc. Payment"
+  l = l.replace(/\s+%+\s*$/, '');
+
+  // "$1690" → "$16.90" — Tesseract drops the decimal in dollar values. When we see $ followed
+  // by 4 digits and no decimal, insert one before the last 2 digits (cents format).
+  l = l.replace(/\$(\d{4})\b(?!\.)/g, (_, d) => '$' + d.slice(0, 2) + '.' + d.slice(2));
+  // "Forkift" → "Forklift" (l dropped). "Forkiift" already handled below.
+  l = l.replace(/\bForkift\b/g, 'Forklift');
+  // "Uwia" → "Lluvia" (Spanish "Ll" misread)
+  l = l.replace(/\bUwia\b/g, 'Lluvia');
+  // "lnc" → "Lunch" (truncated)
+  if (l === 'lnc') l = 'Lunch';
+
+  // --- Concat / dedup across punctuation: Tesseract sometimes injects ":", ".", "," between
+  //     fragments of the same word, which the whitespace-only dedup can't see through. ---
+  // Generic: "X[:,.] Y" where one is a prefix of the other → keep the longer.
+  l = l.replace(/\b(\w{3,})[:.,]\s+(\w{4,})\b/g, (m, w1, w2) => {
+    const lw1 = w1.toLowerCase();
+    const lw2 = w2.toLowerCase();
+    if (lw1 === lw2) return w2;
+    if (lw1.length < lw2.length && lw2.startsWith(lw1)) return w2;
+    if (lw2.length < lw1.length && lw1.startsWith(lw2)) return w1;
+    return m;
+  });
+  // "Chang: es" / "Chang es" → "Changes" (split mid-word; not a prefix/suffix relation)
+  l = l.replace(/\bChang[:.,]?\s+es\b/g, 'Changes');
+  // "Non-prodt lon-productive" → "Non-productive" (dash-spanning duplicate fragments)
+  l = l.replace(/\bNon-?prodt?\s+lon-?productive\b/gi, 'Non-productive');
+  // "Bloc" alone (not followed by 'k') is a misread of "Block" in this context.
+  l = l.replace(/\bBloc\b(?!k)/g, 'Block');
+  // "Hourly url" — "url" is a garbled re-read of the "rly" tail; drop it.
+  l = l.replace(/\bHourly\s+url\b/g, 'Hourly');
+  // "wort work" — "wort" is a partial re-read of "work" with wrong middle char.
+  l = l.replace(/\bwort\s+work\b/gi, 'work');
+  // "Mayord jomo" → "Mayordomo" (descender 'd' tail re-read as new token starting with 'j').
+  l = l.replace(/\bMayord\s+(?:jomo|domo)\b/g, 'Mayordomo');
+  // "ntrenamiento" → "Entrenamiento" (missing leading E)
+  l = l.replace(/\bntrenamiento\b/g, 'Entrenamiento');
+  // "Drivin" alone (not followed by 'g') → "Driving"
+  l = l.replace(/\bDrivin\b(?!g)/g, 'Driving');
+  // "in" stuck between "Min" and "Safety"/"Training"  — single-char filter doesn't catch 2-char
+  l = l.replace(/\bMin\s+in\b/g, 'Min');
+  // "raining" tail after "Training" already handled by dedup; "Training raining" → "Training"
+  // is caught by the suffix rule.
+
+  // --- Common job-name OCR misreads (NPT family) ---
+  // "NeT" → "NPT" (P misread as e). Apply before splitting sticky codes.
+  l = l.replace(/\bNeT\b/g, 'NPT');
+  l = l.replace(/\bNeT(\d)/g, 'NPT $1');
+  l = l.replace(/\bNeTS\b/g, 'NPT 5');
+  // Sticky ordinal+NPT+digits[+S]: "3rdNPT1S" → "3rd NPT 15", "2ndNPT10" → "2nd NPT 10"
+  l = l.replace(/\b(\d+)(rd|nd|st|th)NPT(\d+)([Ss]?)\b/gi, (_, num, ord, n, s) => {
+    return num + ord.toLowerCase() + ' NPT ' + n + (s ? '5' : '');
+  });
+  // "2dNPT2S" → "2nd NPT 25" (d misread of nd)
+  l = l.replace(/\b(\d+)dNPT(\d+)([Ss]?)\b/gi, (_, num, n, s) => {
+    return num + 'nd NPT ' + n + (s ? '5' : '');
+  });
+  // "NPT1S" / "NPT15" stuck without space → "NPT 15"
+  l = l.replace(/\bNPT(\d+)([Ss]?)\b/g, (_, n, s) => 'NPT ' + n + (s ? '5' : ''));
+  // Standalone NPT followed by trailing S → "NPT 5"
+  l = l.replace(/\bNPT\s+S\b/g, 'NPT 5');
+  // Trailing "S" after digits anywhere → "5" (e.g. "NPT 1S" → "NPT 15", "2S" → "25")
+  l = l.replace(/\b(\d+)S\b/g, (_, d) => d + '5');
+  l = l.replace(/\b2rd\b/g, '2nd');
+  // "Imigation" / "lrigation" → "Irrigation"
+  l = l.replace(/\b[Il]migation\b/g, 'Irrigation');
+  l = l.replace(/\b[Il]rigation\b/g, 'Irrigation');
+  // "wait Time" → "Wait Time"
+  l = l.replace(/\bwait Time\b/g, 'Wait Time');
+  // "Forkiift" → "Forklift"
+  l = l.replace(/\bForkiift\b/g, 'Forklift');
+
+  // ── Generic OCR repairs added for Picktrace Jobs page (mirrored from laptop pipeline) ──
+  l = l.replace(/\b([A-Z])\s*:\s+(ay|aid|art|ayment|izcando|izcador)\b/g, (_, p, suffix) => p + suffix);
+  l = l.replace(/\bHourl\s+ty\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bHourl\s+ty\b/gi, 'Hourly');
+  l = l.replace(/\bHourl\b(?!y)/g, 'Hourly');
+  l = l.replace(/\bHourly\s+fourly\s+worl?\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bHourly\s+iourly\s+work\b/gi, 'Hourly work');
+  l = l.replace(/\bH\s+iourly\s+wor\s+3\b/gi, 'Hourly work');
+  l = l.replace(/\bHourly\s+wor\s+rk\b/gi, 'Hourly work');
+  l = l.replace(/\b(?:Ho?\s+fourl|H\s+fourl|Ho?\s+our|H\s+our|Hour\s+jourly)\b/gi, 'Hourly');
+  l = l.replace(/\bshin\s+ing\b/gi, 'Shining');
+  l = l.replace(/\bBreak\s+t\b/g, 'Break');
+  l = l.replace(/\bMayordor\s+Mayordomo\b/g, 'Mayordomo');
+  l = l.replace(/\bForklift\s+orklift\b/gi, 'Forklift');
+  l = l.replace(/\bBus\s+ss\b/g, 'Bus');
+  l = l.replace(/\b-\s+-\s+/g, '- ');
+  l = l.replace(/\bBlock\s+Cha\s+inges\b/gi, 'Block Changes');
+  l = l.replace(/\ben\s+trenamiento\b/gi, 'Entrenamiento');
+  l = l.replace(/\b[Ss]t\s+tatic\b/g, 'Static');
+  l = l.replace(/\bNe?\s+lon-productive\s+(?:dl|di)\s+time\s*i?\b/gi, 'Non-productive time');
+  l = l.replace(/\bN\s+lon-productive\s+\w+\s+time\b/gi, 'Non-productive time');
+  l = l.replace(/\bNon-productive\s+[A-Za-z]{1,2}\s+time\b/gi, 'Non-productive time');
+  l = l.replace(/\bNe?\s+lon-?productive\s+time\s*i?\b/gi, 'Non-productive time');
+  l = l.replace(/\bPizeando\b/g, 'Pizcando');
+  l = l.replace(/\bPizeador\b/g, 'Pizcador');
+  l = l.replace(/\bUuvia\b/g, 'Lluvia');
+  l = l.replace(/\bneh\b/g, 'Lunch');
+  l = l.replace(/\bMala\b/g, 'Malla');
+  l = l.replace(/\$\s*(\d+\.\d{2})\s+\d+\.?\b/g, '$$$1');
+  l = l.replace(/\$\s*(\d+\.\d{2})\s+[xX]\b/g, '$$$1');
+  l = l.replace(/\$\s+(\d+\.\d{2})\b/g, '$$$1');
+  l = l.replace(/\b[sS]\s+(\d+\.\d{2})\b/g, '$$$1');
+  l = l.replace(/\b[sS]\s+0\b/g, '$0');
+  l = l.replace(/\bso\b/g, '$0');
+  l = l.replace(/\b(\d+)min\b/gi, '$1 min');
+  l = l.replace(/\bBlock\s+Changes[.,:](?=\s|$)/g, 'Block Changes');
+
+  // Collapse repeated spaces
+  l = l.replace(/\s{2,}/g, ' ').trim();
+  return l;
+}
+
+
+function fixDuplicateFarmCodes_desktop(lines) {
+  // Detect duplicate crop entries under the same farm code
+  // If "OF Broccoli" appears twice, the first occurrence should be "OE Broccoli"
+  // This handles OCR misreading OE as OF
+  const codePattern = /^(.+\s)([A-Z]{2})(\s.+)$/;
+  const seen = {}; // "CODE CROP" -> array of line indices
+
+  lines.forEach((line, i) => {
+    const m = line.match(codePattern);
+    if (m) {
+      const key = m[2] + m[3]; // e.g. "OF Broccoli"
+      if (!seen[key]) seen[key] = [];
+      seen[key].push(i);
+    }
+  });
+
+  // For any duplicates under OF, change the first occurrence to OE
+  Object.keys(seen).forEach(key => {
+    if (seen[key].length > 1 && key.startsWith('OF')) {
+      const firstIdx = seen[key][0];
+      const m = lines[firstIdx].match(codePattern);
+      if (m) {
+        lines[firstIdx] = m[1] + 'OE' + m[3];
+      }
+    }
+  });
+
+  return lines;
+}
+
+
+function cleanOCRText_desktop(raw) {
+  return raw
+    .split('\n')
+    .map(line => {
+      let l = line.trim();
+      // Remove lines that are only symbols/punctuation/noise
+      if (!/[a-zA-Z0-9]/.test(l)) return null;
+      // Remove lines that are very short and look like artifacts
+      if (l.length <= 2 && !/^\d+$/.test(l)) return null;
+      // Remove lines that are mostly non-alphanumeric junk
+      const alphaNum = l.replace(/[^a-zA-Z0-9\s]/g, '').length;
+      if (l.length > 3 && alphaNum / l.length < 0.3) return null;
+
+      // Fix common OCR misreads
+      // "!" -> "l"
+      l = l.replace(/!/g, 'l');
+
+      // "8" -> "B" in 2-letter farm codes (e.g. "8F" -> "BF", "A8" -> "AB")
+      l = l.replace(/\b8([A-Z])\b/g, 'B$1');
+      l = l.replace(/\b([A-Z])8\b/g, '$1B');
+      // "8" -> "B" at start of word before lowercase (e.g. "8ok" -> "Bok")
+      l = l.replace(/\b8([a-z])/g, 'B$1');
+      // "80" before space+letter -> "BO" (e.g. "80 G" -> "BO G")
+      l = l.replace(/\b80\b(?=\s+[A-Z])/g, 'BO');
+      // "806" -> "BO G" (80->BO, 6->G misread)
+      l = l.replace(/\b806\b/g, 'BO G');
+      // "0" -> "O" when between uppercase letters
+      l = l.replace(/([A-Z])0([A-Z])/g, '$1O$2');
+      // "0" -> "O" at end of uppercase codes (e.g. "262320GY0" -> "262320GYO")
+      l = l.replace(/([A-Z])0\b/g, '$1O');
+
+      // "5" -> "S" when it's a trailing suffix on a site code (e.g. "Frost 125" -> "Frost 12S")
+      // Pattern: alpha-word + space + 1-3 digits + "5" at end of token
+      // Only when preceded by a letter-word (site name), not standalone numbers
+      l = l.replace(/([A-Za-z]\s+\d{1,3})5\b/g, '$1S');
+
+      // "HaH" -> "H&H" (common OCR misread of ampersand)
+      l = l.replace(/\bHaH\b/g, 'H&H');
+      // More general: single lowercase 'a' between uppercase letters likely means '&'
+      l = l.replace(/\b([A-Z])a([A-Z])\b/g, '$1&$2');
+
+      // "£5" -> "ES" (common OCR misread)
+      l = l.replace(/£5/g, 'ES');
+      // "SF" -> "BF" when it's a farm code
+      l = l.replace(/\bSF\b(?=\s)/g, 'BF');
+      // "AS" -> "AB" when it's a farm code before a crop
+      l = l.replace(/\bAS\b(?=\s+[A-Z])/g, 'AB');
+      // "OE" is a valid farm code — do not replace
+      // "Re" -> "RE" (case fix)
+      l = l.replace(/\bRe\b(?=\s)/g, 'RE');
+
+      // Fix "Brea " -> "Break " (truncated)
+      l = l.replace(/\bBrea\b/g, 'Break');
+      // Fix "reac" -> "Break" (garbled)
+      l = l.replace(/\breac\b/gi, 'Break');
+      // Fix "(NP)" -> "(NPT)" (missing T)
+      l = l.replace(/\(NP\)/g, '(NPT)');
+      // Fix "(NPT " -> "(NPT) " (missing closing paren)
+      l = l.replace(/\(NPT(?=\s)/g, '(NPT)');
+      // Fix missing "5" in "min" pattern: "min £5" already handled, but "5 min" without 5
+      l = l.replace(/\)\s*min\b/g, ') 5 min');
+
+      // Fix Sroccoll/Sroccoli -> Broccoli
+      l = l.replace(/\bSroccol[il]?\b/gi, 'Broccoli');
+      // Fix all Cauliflower misspellings
+      l = l.replace(/\bC[ao]u[il]?[il]?f[il]?[io]?w?e?r?\b/gi, function(m) {
+        // Only replace if it looks like a cauliflower misspelling (starts with Ca/Co, has f)
+        if (/^C[ao]u/i.test(m) && /f/i.test(m)) return 'Cauliflower';
+        return m;
+      });
+      // Fix remaining specific Cauliflower misspellings
+      l = l.replace(/\bCavifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCouifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCoufower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauliower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauifiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauiifower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCauiffiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulfover\b/gi, 'Cauliflower');
+      l = l.replace(/\bCaulifiower\b/gi, 'Cauliflower');
+      l = l.replace(/\bCouiffoner\b/gi, 'Cauliflower');
+      // Fix Broccoli misspellings
+      l = l.replace(/\bBroccol\b/g, 'Broccoli');
+      l = l.replace(/\bBrocco\b/g, 'Broccoli');
+      // Fix Cilantro misspellings
+      l = l.replace(/\bCllantro\b/gi, 'Cilantro');
+      // Fix Cabbage misspellings
+      l = l.replace(/\bCaboage\b/gi, 'Cabbage');
+      // Fix Irrigation misspellings
+      l = l.replace(/\b[Il]igation\b/gi, 'Irrigation');
+      l = l.replace(/\b[Il]rigation\b/gi, 'Irrigation');
+      l = l.replace(/\blrigation\b/gi, 'Irrigation');
+      l = l.replace(/\bmigation\b/gi, 'Irrigation');
+      // Fix WETH -> WE/TH
+      l = l.replace(/\bWETH\b/g, 'WE/TH');
+
+      // Remove junk lines (random garbled words)
+      if (/^[A-Z]{3,6}$/.test(l) && !/^(NPT|WE|TH)$/.test(l)) return null;
+
+      // Remove periods (OCR artifact)
+      l = l.replace(/\./g, '');
+      // Remove semicolons (OCR artifact)
+      l = l.replace(/;/g, '');
+      // Remove colons at end of line
+      l = l.replace(/:$/g, '');
+      l = l.replace(/^:|:$/g, '');
+
+      // Remove standalone numbers (page numbers, UI artifacts)
+      if (/^\d{1,3}$/.test(l)) return null;
+
+      // Clean up multiple spaces
+      l = l.replace(/\s{2,}/g, ' ');
+      // Remove isolated single special chars surrounded by spaces
+      l = l.replace(/\s[^\w\s\/]\s/g, ' ').trim();
+      return l;
+    })
+    .filter(line => line !== null && line.length > 0)
+    .join('\n');
+}
+
+
 function copyOCRText() {
   const output = document.getElementById('ocrOutput');
   navigator.clipboard.writeText(output.value).then(() => {
@@ -2765,6 +4189,15 @@ function clearOCR() {
   document.getElementById('ocrSaveBtn').style.display = 'none';
   document.getElementById('ocrTableWrap').innerHTML = '<p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>';
   ocrTableDone = {};
+  ocrHeadersAll = [];
+  ocrRowsAll = [];
+  ocrColOrder = [];
+  ocrArchivedCells = new Set();
+  clearOCRSession();
+  const removedPanel = document.getElementById('ocrRemovedItemsPanel');
+  if (removedPanel) removedPanel.style.display = 'none';
+  const summary = document.getElementById('ocrProgressSummary');
+  if (summary) summary.style.display = 'none';
   closeOCRPanel();
 }
 

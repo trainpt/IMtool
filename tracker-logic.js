@@ -578,10 +578,14 @@ function trkSmartParse(allRows, yellowFlags) {
     if (isHeaderDupe && nonEmpty.length > 2) return false;
     // Skip description rows
     if (ri < 4 && descFlags[ri]) return false;
-    // Skip yellow-highlighted rows (examples in spreadsheet)
-    if (yellowDataRows.has(ri)) return false;
-    // Skip the example row right after descriptions (fallback heuristic)
-    if (ri === exampleIdx && ri < 5) return false;
+    // Skip yellow-highlighted rows (examples in spreadsheet) — unless the user has
+    // disabled this in the Import modal. When their real data is yellow-highlighted,
+    // they need to opt out so the rows aren't dropped.
+    const skipYellow = (typeof getImportSkipYellow === 'function') ? getImportSkipYellow() : true;
+    if (skipYellow && yellowDataRows.has(ri)) return false;
+    // Skip the example row right after descriptions (fallback heuristic) — also gated
+    // by the skipYellow toggle so users can opt out of all example-row removal.
+    if (skipYellow && ri === exampleIdx && ri < 5) return false;
     // Skip rows that don't fill enough columns compared to real data
     // (catches footer content like phone numbers, addresses, app names, notes)
     if (nonEmpty.length < minFillForData) return false;
@@ -2193,6 +2197,18 @@ window.trkInit = function() {
   if (!trkRestored && Object.keys(trkSheets).length === 0) {
     trkRestored = true;
     trkRestoreFromLocal();
+  }
+  // Sync the tracker-page yellow-skip checkbox to the persisted setting and wire it
+  // so toggling it here writes the same key the import modal reads.
+  const cb = document.getElementById('trkSkipYellowToggle');
+  if (cb) {
+    if (typeof getImportSkipYellow === 'function') cb.checked = getImportSkipYellow();
+    if (!cb._wired) {
+      cb.addEventListener('change', () => {
+        if (typeof setImportSkipYellow === 'function') setImportSkipYellow(cb.checked);
+      });
+      cb._wired = true;
+    }
   }
 };
 

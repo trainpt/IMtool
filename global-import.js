@@ -43,6 +43,15 @@ function initGlobalImport() {
 }
 
 // ─── Import Modal ───
+const IMPORT_SKIP_YELLOW_KEY = 'importSkipYellowExamples';
+function getImportSkipYellow() {
+  // Default true (preserve historical behavior). Returns false only when explicitly disabled.
+  const v = localStorage.getItem(IMPORT_SKIP_YELLOW_KEY);
+  return v === null ? true : v !== 'false';
+}
+function setImportSkipYellow(on) {
+  localStorage.setItem(IMPORT_SKIP_YELLOW_KEY, on ? 'true' : 'false');
+}
 function showImportModal() {
   giParsedSheets = [];
   giFileName = '';
@@ -50,6 +59,15 @@ function showImportModal() {
   document.getElementById('importStep2').style.display = 'none';
   document.getElementById('importBackBtn').style.display = 'none';
   document.getElementById('importSuccess').style.display = 'none';
+  // Sync the checkbox to the persisted preference each time the modal opens.
+  const cb = document.getElementById('importSkipYellowToggle');
+  if (cb) {
+    cb.checked = getImportSkipYellow();
+    if (!cb._wired) {
+      cb.addEventListener('change', () => setImportSkipYellow(cb.checked));
+      cb._wired = true;
+    }
+  }
   document.getElementById('globalImportModal').classList.add('show');
 }
 
