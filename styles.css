@@ -2479,3 +2479,429 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   .ce-controls { padding: 12px 16px; }
   .page-toolbar { padding: 10px 14px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Block Compare tool
+   ═══════════════════════════════════════════════════════════════ */
+.cmp-page { padding: 24px 28px; max-width: 1400px; margin: 0 auto; }
+.cmp-header h2 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+.cmp-header p { margin: 0 0 20px; color: var(--text-2); font-size: 13px; }
+
+.cmp-uploads {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.cmp-slot {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cmp-slot-db { border-color: var(--accent); background: var(--accent-soft); }
+.cmp-slot-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.cmp-req { color: var(--red-text); font-weight: 500; }
+.cmp-opt { color: var(--text-3); font-weight: 500; }
+.cmp-upload-btn { justify-content: center; }
+.cmp-filename {
+  font-size: 12px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.cmp-meta { font-size: 11px; color: var(--text-2); min-height: 14px; }
+.cmp-warn { color: var(--amber-text); }
+
+.cmp-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.cmp-summary {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 18px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.cmp-stat b { color: var(--text); font-weight: 600; margin-right: 4px; }
+.cmp-stat { color: var(--text-2); }
+
+.cmp-section { margin-bottom: 24px; }
+.cmp-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cmp-section-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.cmp-master {
+  font-size: 12px;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.cmp-bulk-actions { display: flex; gap: 6px; }
+
+#cmp-section-conflicts .cmp-conf-db td { background: var(--amber-soft); }
+#cmp-section-conflicts .cmp-conf-new td { background: var(--accent-soft); border-bottom: 2px solid var(--border-strong); }
+#cmp-section-conflicts .cmp-source-db { font-weight: 600; color: var(--amber-text); font-size: 11px; }
+#cmp-section-conflicts .cmp-source-new { font-weight: 600; color: var(--accent); font-size: 11px; }
+#cmp-section-conflicts .cmp-cell-diff {
+  outline: 2px solid var(--red);
+  outline-offset: -2px;
+  font-weight: 600;
+}
+#cmp-section-conflicts .cmp-conf-cell {
+  background: var(--bg) !important;
+  vertical-align: middle;
+  border-right: 1px solid var(--border-strong);
+}
+.cmp-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.cmp-radio-group label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cmp-sites-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 0 0 10px;
+  font-style: italic;
+}
+#cmp-section-sites { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: var(--radius); padding: 14px 18px; }
+#cmp-section-sites code { background: var(--bg); padding: 1px 6px; border-radius: 3px; font-size: 11px; color: var(--accent); }
+.cmp-export-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.cmp-export-modal-inner {
+  background: var(--bg); border-radius: var(--radius-lg); padding: 24px 28px;
+  max-width: 520px; box-shadow: var(--shadow-lg);
+}
+.cmp-export-modal-inner h3 { margin: 0 0 12px; color: var(--red-text); font-size: 18px; }
+.cmp-export-modal-inner p { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0 0 18px; }
+.cmp-export-modal-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+#cmp-section-cropvars { background: #f3f0ff; border: 1px solid #8b5cf6; border-radius: var(--radius); padding: 14px 18px; }
+#cmp-section-cropvars code { background: var(--bg); padding: 1px 6px; border-radius: 3px; font-size: 11px; color: #6d28d9; }
+#cmp-section-cropvars h3 { color: #6d28d9; }
+.cmp-action {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.cmp-action-un  { background: var(--amber-soft); color: var(--amber-text); border: 1px solid #f0d68b; }
+.cmp-action-new { background: var(--green-soft); color: var(--green-text); border: 1px solid #c4e7c5; }
+.cmp-action-unk { background: var(--bg-muted); color: var(--text-2); border: 1px solid var(--border); }
+
+.cmp-stat.cmp-warn-strong {
+  background: var(--red-soft);
+  border: 1px solid var(--red);
+  color: var(--red-text);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+.cmp-stat.cmp-warn-strong b { color: var(--red); }
+
+/* Click-to-copy on preview cells */
+.cmp-section .data-table tbody td,
+#cmp-sites-table tbody td {
+  cursor: copy;
+  user-select: text;
+}
+/* Empty Required Columns is form-only — no copy cursor or green flash */
+#cmp-section-defaults .data-table tbody td {
+  cursor: default;
+}
+.cmp-section .data-table tbody td.cmp-copied,
+#cmp-sites-table tbody td.cmp-copied {
+  background: var(--green-soft) !important;
+  color: var(--green-text);
+  font-weight: 600;
+  position: relative;
+}
+.cmp-section .data-table tbody td.cmp-copied::after,
+#cmp-sites-table tbody td.cmp-copied::after {
+  content: '\2713';
+  margin-left: 6px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.cmp-skipped-list { background: var(--amber-soft); border: 1px solid #f0d68b; border-radius: var(--radius); padding: 12px 16px; }
+.cmp-skipped-ul { margin: 0; padding-left: 18px; font-size: 12px; }
+.cmp-skipped-ul li { margin-bottom: 4px; color: var(--text-2); }
+.cmp-skipped-loc { color: var(--text); font-family: var(--font-mono); }
+.cmp-skipped-reason { color: var(--amber-text); font-style: italic; margin-left: 8px; }
+
+/* Allow the entire Compare page to scroll vertically (overrides .page overflow:hidden). */
+#page-compare {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#page-compare .cmp-page {
+  min-height: 0;
+}
+/* Each results section gets its own bounded scroll so sections don't all fight for the same space. */
+.cmp-section .table-wrap {
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.cmp-section .data-table {
+  font-size: 12px;
+}
+.cmp-section .data-table th,
+.cmp-section .data-table td {
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+/* Sticky header for each scrollable diff table. */
+.cmp-section .data-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.cmp-template-row {
+  background: var(--bg-sunken);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cmp-template-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.cmp-template-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 22px;
+  flex-wrap: wrap;
+}
+
+/* Template-Standardize export confirm modal — wider than the default
+   .cmp-export-modal-inner so blocker lists don't squash. */
+.ts-confirm-modal { max-width: 640px; }
+.ts-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.ts-confirm-issue {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-left: 4px solid #f59e0b;
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.ts-confirm-issue-head {
+  font-weight: 600;
+  color: #7c2d12;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.ts-confirm-issue-body {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.ts-confirm-list {
+  margin: 4px 0 6px 18px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.ts-confirm-list li { margin-bottom: 1px; }
+.ts-confirm-more { color: var(--text-3); font-style: italic; font-family: var(--font-sans, sans-serif); }
+
+/* Mode-toggle pills at the top of the Bulk Templates page (Block Compare vs Template Standardize). */
+.cmp-mode-pills {
+  display: flex;
+  gap: 6px;
+  padding: 12px 18px 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.cmp-mode-pill {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--text-2);
+  padding: 8px 16px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: none;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+  margin-bottom: -1px;
+}
+.cmp-mode-pill:hover { background: var(--bg-sunken); color: var(--text); }
+.cmp-mode-pill.cmp-mode-active {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--bg);
+  font-weight: 600;
+}
+
+/* Org-import target radio panel above the org list. */
+.cmp-org-import-target {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 8px 0 4px 0;
+}
+.cmp-org-target-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.cmp-org-target-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cmp-org-target-opt input { margin-top: 3px; }
+.cmp-org-target-opt b { color: var(--text); }
+
+/* Org-import picker list — one row per org with merged source counts. */
+.cmp-org-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+.cmp-org-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.1s ease;
+}
+.cmp-org-list-item:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.cmp-org-list-item .cmp-org-name { font-weight: 600; color: var(--text); }
+.cmp-org-list-item .cmp-org-counts { font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono); }
+.cmp-org-list-empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 13px; }
+
+/* Modal sub-checkboxes — only visible when the parent "Include updates" toggle is on. */
+.cmp-export-suboptions {
+  margin-left: 22px;
+  border-left: 2px solid var(--border);
+  padding: 6px 0 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cmp-export-suboption { font-size: 12.5px; color: var(--text-2); }
+
+/* Mismatch banner shown inside a slot's meta when the uploaded file's shape
+   doesn't fit the slot (e.g., a Bulk Update Template uploaded to the DB slot). */
+.cmp-warn-banner {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7c2d12;
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.cmp-warn-banner b { color: #7c2d12; }
+
+/* Per-slot hint under the upload button — small, muted, readable. */
+.cmp-slot-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+  background: var(--bg-sunken);
+  border-left: 3px solid var(--accent);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-top: 2px;
+}
+.cmp-slot-hint b { color: var(--text); }
+.cmp-slot-hint code {
+  font-size: 10.5px;
+  background: var(--bg-alt);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* Second-row template/sites/update-template upload cards. Visually distinct
+   from the primary three slots so the user can tell at a glance which row
+   they're in (these are auxiliary inputs, not the core comparison files). */
+.cmp-uploads-tpl { margin-top: 4px; margin-bottom: 16px; }
+.cmp-slot-tpl {
+  background: var(--bg-sunken);
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+.cmp-slot-tpl .cmp-slot-label { color: var(--text-2); }
+.cmp-slot-tpl .cmp-slot-hint { border-left-color: var(--text-3); }
+
+@media (max-width: 900px) {
+  .cmp-uploads { grid-template-columns: 1fr; }
+}
