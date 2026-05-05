@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IM Tools</title>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=28">
 </head>
 <body>
 
@@ -21,6 +21,7 @@
     <button class="topbar-tab" data-page="review">&#9745; Variant Review</button>
     <button class="topbar-tab" data-page="coleditor">&#9998; Column Editor</button>
     <button class="topbar-tab" data-page="tracker">&#9744; Data Progress</button>
+    <button class="topbar-tab" data-page="compare">&#8651; Bulk Templates</button>
   </div>
   <div class="topbar-right">
     <button class="topbar-import" id="btnGlobalImport">&#43; Import</button>
@@ -564,6 +565,7 @@
       <!-- Context menu -->
       <div id="trk-ctx" class="ctx-menu" style="display:none;">
         <div id="trk-ctx-edit">&#9998; Edit Cell</div>
+        <div id="trk-ctx-paste">&#128203; Paste</div>
         <div id="trk-ctx-flag">Toggle Flag</div>
         <div id="trk-ctx-note">Add Note</div>
         <div id="trk-ctx-clear-note" style="display:none;">Clear Note</div>
@@ -595,6 +597,340 @@
             <button class="btn btn-ghost" id="trk-quickadd-close">Cancel</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ─── Page: Block Compare ─── -->
+    <div class="page" id="page-compare">
+      <div class="cmp-mode-pills">
+        <button class="cmp-mode-pill cmp-mode-active" data-mode="compare">&#8651; Block Compare</button>
+        <button class="cmp-mode-pill" data-mode="standardize">&#9783; Template Standardize</button>
+      </div>
+
+      <div class="cmp-page" id="cmp-mode-compare">
+        <div class="cmp-header">
+          <h2>Block Compare</h2>
+          <p>Reconcile your organization database against the locations to be added and removed. Review changes, then export an updated XLSX.</p>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">1. Database <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload DB File</span>
+              <input type="file" id="cmp-db-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <button class="btn btn-ghost cmp-upload-btn" id="cmp-db-from-org" type="button">&#128229; Import from Org Data</button>
+            <div class="cmp-filename" id="cmp-db-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-db-meta"></div>
+            <div class="cmp-slot-hint">Set <b>Records</b> filter to <b>ALL RECORDS</b> in PickTrace before exporting.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">2. Locations to be added <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Adds</span>
+              <input type="file" id="cmp-add-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <div class="cmp-filename" id="cmp-add-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-add-meta"></div>
+            <div class="cmp-slot-hint">Skip → no <code>DATA ENTRY (CREATE)</code>, <b>New Adds</b>, <b>Conflicts</b>, or <b>Sites/Crops to Create</b>.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3. Locations to be removed <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Removes</span>
+              <input type="file" id="cmp-rm-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <div class="cmp-filename" id="cmp-rm-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-rm-meta"></div>
+            <div class="cmp-slot-hint">Skip → no <code>TO ARCHIVE</code> sheet or archive flags.</div>
+          </div>
+        </div>
+
+        <div class="cmp-uploads cmp-uploads-tpl">
+          <div class="cmp-slot cmp-slot-tpl">
+            <div class="cmp-slot-label">4. Bulk Create Template <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Template</span>
+              <input type="file" id="cmp-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="cmp-tpl-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-tpl-meta"></div>
+            <div class="cmp-slot-hint">Skip → no dropdown validation or <code>DROP-DOWN INPUTS</code> sheet.</div>
+          </div>
+
+          <div class="cmp-slot cmp-slot-tpl">
+            <div class="cmp-slot-label">5. Sites export <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Sites Export</span>
+              <input type="file" id="cmp-sites-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="cmp-sites-mfile-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-sites-mfile-meta"></div>
+            <div class="cmp-slot-hint">Set <b>Records</b> to <b>ALL RECORDS</b> in PickTrace. Skip → no <code>TO UNARCHIVE</code> or unarchive vs create-new split.</div>
+          </div>
+
+          <div class="cmp-slot cmp-slot-tpl" id="cmp-slot-updt" style="display:none;">
+            <div class="cmp-slot-label">6. Bulk Update Template <span class="cmp-req">(required — slot 1 is incomplete)</span></div>
+            <label class="btn btn-warning cmp-upload-btn">
+              <span>&#8679; Upload Update Template</span>
+              <input type="file" id="cmp-updt-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="cmp-updt-name">No file selected</div>
+            <div class="cmp-meta" id="cmp-updt-meta"></div>
+            <div class="cmp-slot-hint">Slot 1's database has no archived rows — upload an <b>ALL RECORDS</b> bulk update template here to supply them, or re-export slot 1 with <b>Records = ALL RECORDS</b>.</div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="cmp-run" disabled>&#9654; Run Comparison</button>
+          <button class="btn btn-primary" id="cmp-export" disabled>&#8615; Export Updated XLSX</button>
+          <button class="btn btn-ghost" id="cmp-debug" disabled title="Download a JSON dump of the full diff state for inspection">&#128270; Debug Dump</button>
+          <button class="btn btn-ghost" id="cmp-reset">&#8634; Reset</button>
+        </div>
+
+        <div class="cmp-summary" id="cmp-summary" style="display:none;"></div>
+
+        <div class="cmp-export-modal" id="cmp-org-import-modal" style="display:none;">
+          <div class="cmp-export-modal-inner">
+            <h3>Import from Org Data → Database</h3>
+            <p>Rows from <b>Org Data</b> ranches and <b>Data Progress</b> tracker saves are merged and loaded as the <b>Database</b> (slot 1). Then upload the <b>Bulk Create Template</b> (slot 4) and/or <b>Bulk Update Template</b> (slot 6) to format columns exactly to those templates.</p>
+            <div id="cmp-org-import-list" class="cmp-org-list"></div>
+            <div class="cmp-export-modal-actions">
+              <button class="btn btn-ghost" id="cmp-org-import-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-export-modal" id="cmp-export-modal" style="display:none;">
+          <div class="cmp-export-modal-inner">
+            <h3 id="cmp-export-modal-title">Confirm Export</h3>
+            <p id="cmp-export-modal-msg"></p>
+            <label class="cmp-export-option">
+              <input type="checkbox" id="cmp-modal-include-updates">
+              <span>Include update rows in the <code>DATA ENTRY (UPDATE)</code> sheet (default: archive flags only)</span>
+            </label>
+            <label class="cmp-export-option">
+              <input type="checkbox" id="cmp-modal-keep-exact-names">
+              <span>Keep exact <b>Site</b> and <b>Block</b> names from the source file (no comma/period stripping or canonicalization)</span>
+            </label>
+            <div class="cmp-export-suboptions" id="cmp-modal-suboptions" style="display:none;">
+              <label class="cmp-export-option cmp-export-suboption">
+                <input type="checkbox" id="cmp-modal-keep-update">
+                <span>Keep separate <code>TO UPDATE</code> sheet</span>
+              </label>
+              <label class="cmp-export-option cmp-export-suboption">
+                <input type="checkbox" id="cmp-modal-keep-archive">
+                <span>Keep separate <code>TO ARCHIVE</code> sheet</span>
+              </label>
+            </div>
+            <div class="cmp-export-modal-actions">
+              <label class="btn btn-primary" id="cmp-modal-tpl-btn">
+                <span id="cmp-modal-tpl-btn-label">&#8679; Re-upload bulk template</span>
+                <input type="file" id="cmp-modal-tpl-file" accept=".xlsx,.xls" hidden>
+              </label>
+              <button class="btn btn-success" id="cmp-modal-export">&#8615; Export</button>
+              <button class="btn btn-warning" id="cmp-modal-export-anyway" style="display:none;">I acknowledge — Export anyway</button>
+              <button class="btn btn-ghost" id="cmp-modal-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-results" id="cmp-results">
+          <section class="cmp-section" id="cmp-section-adds" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-adds-title">New Adds</h3>
+              <label class="cmp-master"><input type="checkbox" id="cmp-adds-master" checked> Select all</label>
+            </header>
+            <div class="table-wrap"><table class="data-table" id="cmp-adds-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-conflicts" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-conflicts-title">Conflicts</h3>
+              <div class="cmp-bulk-actions">
+                <button class="btn btn-ghost btn-sm" id="cmp-conf-all-db">All: Keep DB</button>
+                <button class="btn btn-ghost btn-sm" id="cmp-conf-all-new">All: Take New</button>
+              </div>
+            </header>
+            <div class="table-wrap"><table class="data-table" id="cmp-conflicts-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-removes" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-removes-title">Removes</h3>
+              <label class="cmp-master"><input type="checkbox" id="cmp-rm-master" checked> Select all</label>
+            </header>
+            <div class="table-wrap"><table class="data-table" id="cmp-removes-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-defaults" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-defaults-title">Empty Required Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">These required (*) columns have empty cells in DATA ENTRY or TO UPDATE. Provide a default to fill them all before exporting.</p>
+            <div class="table-wrap"><table class="data-table" id="cmp-defaults-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-sites" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-sites-title">Sites to Create in PickTrace</h3>
+              <div class="cmp-bulk-actions">
+                <label class="cmp-master"><input type="checkbox" id="cmp-sites-exact"> Show exact names (un-stripped)</label>
+                <button class="btn btn-ghost btn-sm" id="cmp-sites-copy">&#128203; Copy List</button>
+              </div>
+            </header>
+            <p class="cmp-sites-hint">Create these Sites in PickTrace before uploading the export. The new blocks below reference these Site names.</p>
+            <div class="table-wrap"><table class="data-table" id="cmp-sites-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-cropvars" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-cropvars-title">Crops &amp; Varieties to Create in PickTrace</h3>
+              <div class="cmp-bulk-actions">
+                <label class="btn btn-primary btn-sm">
+                  <span>&#8679; Re-upload template</span>
+                  <input type="file" id="cmp-cropvars-tpl-file" accept=".xlsx,.xls" hidden>
+                </label>
+                <button class="btn btn-ghost btn-sm" id="cmp-cropvars-copy">&#128203; Copy List</button>
+              </div>
+            </header>
+            <p class="cmp-sites-hint">Create these Crop &amp; Variety values in PickTrace's dropdown and re-upload the template, OR type the canonical name in each row to fill the cells manually.</p>
+            <div class="table-wrap"><table class="data-table" id="cmp-cropvars-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-updt-missing" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-updt-missing-title">Updates Not Found in Bulk Update Template</h3>
+              <label class="btn btn-primary btn-sm">
+                <span>&#8679; Upload bulk update template</span>
+                <input type="file" id="cmp-updt-missing-file" accept=".xlsx,.xls" hidden>
+              </label>
+            </header>
+            <div id="cmp-updt-missing-body"></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-arch-missing" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-arch-missing-title">Archives Not Found in Bulk Update Template</h3>
+              <label class="btn btn-primary btn-sm">
+                <span>&#8679; Upload bulk update template</span>
+                <input type="file" id="cmp-arch-missing-file" accept=".xlsx,.xls" hidden>
+              </label>
+            </header>
+            <div id="cmp-arch-missing-body"></div>
+          </section>
+
+          <section class="cmp-section" id="cmp-section-skipped" style="display:none;">
+            <header class="cmp-section-head"><h3 id="cmp-skipped-title">Skipped</h3></header>
+            <div id="cmp-skipped-list" class="cmp-skipped-list"></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="cmp-empty">Upload a DB file to start.</div>
+      </div>
+
+      <!-- ═══ Template Standardize mode ═══ -->
+      <div class="cmp-page" id="cmp-mode-standardize" style="display:none;">
+        <div class="cmp-header">
+          <h2>Template Standardize</h2>
+          <p>Format an Excel/CSV file or saved Org Data into a personalized PickTrace bulk template (Create or Update). Auto-maps columns by name; flags Sites and Crop&nbsp;&amp; Variety values that don't exist in your template's dropdown so you can create them in PickTrace before uploading. All required (*) cells must be filled.</p>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">1. Source data <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Excel/CSV</span>
+              <input type="file" id="ts-src-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <button class="btn btn-ghost cmp-upload-btn" id="ts-src-from-org" type="button">&#128229; Import from Org Data</button>
+            <div class="cmp-filename" id="ts-src-name">No file selected</div>
+            <div class="cmp-meta" id="ts-src-meta"></div>
+            <div class="cmp-slot-hint">Any Excel/CSV with row data. Columns matching the template by name auto-map; unmatched columns can be assigned manually.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">2. Personalized bulk template <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Template</span>
+              <input type="file" id="ts-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="ts-tpl-name">No file selected</div>
+            <div class="cmp-meta" id="ts-tpl-meta"></div>
+            <div class="cmp-slot-hint">Download <b>your org's personalized</b> bulk Create or Update template from PickTrace — its DROP-DOWN INPUTS sheet drives the Sites/Crop&nbsp;&amp; Variety validation.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Target template <span class="cmp-req">(required)</span></div>
+            <div style="display:flex;flex-direction:column;gap:8px;padding-top:8px;">
+              <label class="cmp-export-option">
+                <input type="radio" name="ts-target" value="create" checked>
+                <span><b>Bulk Create</b> — for new locations (41 columns)</span>
+              </label>
+              <label class="cmp-export-option">
+                <input type="radio" name="ts-target" value="update">
+                <span><b>Bulk Update</b> — for existing locations (42 columns, includes Is Archived)</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="ts-run" disabled>&#9654; Format Sheet</button>
+          <button class="btn btn-primary" id="ts-export" disabled>&#8615; Export XLSX</button>
+          <button class="btn btn-ghost" id="ts-reset">&#8634; Reset</button>
+        </div>
+
+        <div class="cmp-summary" id="ts-summary" style="display:none;"></div>
+
+        <div class="cmp-results" id="ts-results">
+          <section class="cmp-section" id="ts-section-mapping" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-mapping-title">Column Mapping</h3>
+            </header>
+            <p class="cmp-sites-hint">Auto-matched columns are pre-selected. Unmatched template columns are blank — pick a source column or leave empty.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-mapping-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-sites-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-sites-create-title">Sites to Create in PickTrace</h3>
+              <button class="btn btn-ghost btn-sm" id="ts-sites-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">These Site values aren't in your personalized template's dropdown. Create them in PickTrace, re-download the template, and re-upload here. Export is blocked until all Sites resolve.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-sites-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-cv-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-cv-create-title">Crops &amp; Varieties to Create in PickTrace</h3>
+              <button class="btn btn-ghost btn-sm" id="ts-cv-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">These Crop &amp; Variety values aren't in your template's dropdown. Create them in PickTrace, re-download the template, and re-upload. Export is blocked until they resolve.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-cv-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-required" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-required-title">Empty Required Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">Required (*) cells with no value. Pick a value from the template's dropdown or type a manual override; click Apply to fill all empty cells in that column.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-required-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-preview" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-preview-title">Preview</h3>
+            </header>
+            <p class="cmp-sites-hint">Empty required cells are highlighted in red. The export will fail validation until all are filled.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-preview-table"></table></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="ts-empty">Upload a source file (or import from Org Data) AND a personalized bulk template to start.</div>
       </div>
     </div>
 
@@ -702,7 +1038,7 @@
 <div class="ctx-menu" id="ctxMenu" style="display:none;"></div>
 
 <!-- ═══ Scripts ═══ -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="utils.js"></script>
 <script src="data-store.js"></script>
@@ -712,6 +1048,8 @@
 <script src="review-logic.js"></script>
 <script src="coleditor.js"></script>
 <script src="tracker-logic.js"></script>
+<script src="compare-logic.js?v=68"></script>
+<script src="template-standardize.js?v=13"></script>
 <script>
 // ═══ Page Switching ═══
 document.getElementById('topbarTabs').addEventListener('click', e => {
@@ -745,6 +1083,7 @@ function switchPage(pageName) {
   if (pageName === 'review') { hideStatsBar(); populateSheetSelects(); if (typeof rvInit === 'function') rvInit(); }
   if (pageName === 'coleditor') { hideStatsBar(); populateSheetSelects(); }
   if (pageName === 'tracker') { hideStatsBar(); populateSheetSelects(); if (typeof trkInit === 'function') trkInit(); }
+  if (pageName === 'compare') { hideStatsBar(); if (typeof cmpInit === 'function') cmpInit(); }
   if (pageName === 'sheetpreview') hideStatsBar();
 }
 
@@ -935,7 +1274,16 @@ function drawOCRCanvas() {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(ocrImage, 0, 0);
 
-  ocrZoomScale = 1;
+  // Long vertical images (e.g. PickTrace screenshots that are 600w × 3000h)
+  // get crushed by the fit-to-view base scale, so the initial zoom is bumped
+  // up proportionally to the aspect ratio. Auto-zoom caps at 8× (manual zoom
+  // can reach 20×). Normal-aspect images stay at 100%.
+  const aspect = ocrImage.height / ocrImage.width;
+  if (aspect > 1.5) {
+    ocrZoomScale = Math.min(8, Math.max(2, Math.round(aspect / 1.2)));
+  } else {
+    ocrZoomScale = 1;
+  }
   ocrPan = { x: 0, y: 0 };
   applyOCRTransform();
 }
@@ -970,7 +1318,7 @@ function positionCropOverlay() {
 }
 
 function ocrZoom(delta) {
-  ocrZoomScale = Math.max(0.5, Math.min(5, ocrZoomScale + delta));
+  ocrZoomScale = Math.max(0.5, Math.min(20, ocrZoomScale + delta));
   if (ocrZoomScale <= 1) { ocrPan = { x: 0, y: 0 }; }
   applyOCRTransform();
 }
@@ -1099,43 +1447,267 @@ document.addEventListener('mouseup', (e) => {
   cropStart = null;
 });
 
+// Honor the user's zoom level — the on-screen zoom is no longer just a CSS
+// transform; it scales the actual pixel data sent to Tesseract. Higher zoom
+// → bigger image → larger glyphs → better OCR on small UI text.
+function getOCRZoom() {
+  const z = +ocrZoomScale;
+  if (!isFinite(z) || z <= 0) return 1;
+  return z;
+}
+
+// Browser canvases (and the PNG encoder behind toDataURL) silently fail past
+// ~16 384 px on a side or ~268 MP total area. Clamp the requested zoom so the
+// resulting canvas stays under those caps — otherwise toDataURL returns an
+// empty/corrupt PNG and Tesseract crashes with "Error attempting to read image".
+// Allowed to go BELOW 1 when the source itself is bigger than the canvas cap,
+// so very tall column crops still produce a valid PNG.
+function clampZoomForCanvas(srcW, srcH, requestedZ) {
+  const MAX_DIM = 4096;         // Tighter cap — Tesseract.js v5 reliability drops sharply past this
+  const MAX_AREA = 16000000;    // ~16 MP — keeps PNGs under ~5 MB and Tesseract under ~20 sec/chunk
+  let z = requestedZ;
+  if (srcW * z > MAX_DIM) z = Math.min(z, MAX_DIM / srcW);
+  if (srcH * z > MAX_DIM) z = Math.min(z, MAX_DIM / srcH);
+  if (srcW * srcH * z * z > MAX_AREA) {
+    z = Math.min(z, Math.sqrt(MAX_AREA / (srcW * srcH)));
+  }
+  if (z !== requestedZ) {
+    console.warn('[OCR Debug] zoom clamped from ' + requestedZ + ' → ' + z.toFixed(3) +
+      ' to keep canvas under ' + MAX_DIM + 'px / 268 MP');
+  }
+  return z;
+}
+
 function getCroppedImageData() {
+  const z = clampZoomForCanvas(ocrCrop.w, ocrCrop.h, getOCRZoom());
   const c = document.createElement('canvas');
-  c.width = ocrCrop.w;
-  c.height = ocrCrop.h;
-  c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, ocrCrop.h, 0, 0, ocrCrop.w, ocrCrop.h);
+  c.width = Math.max(1, Math.round(ocrCrop.w * z));
+  c.height = Math.max(1, Math.round(ocrCrop.h * z));
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = z > 1;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, ocrCrop.h, 0, 0, c.width, c.height);
+  console.log('[OCR Debug] getCroppedImageData — effective zoom=' + z.toFixed(2) + ', src=' + ocrCrop.w + '×' + ocrCrop.h + ' → out=' + c.width + '×' + c.height);
   return c.toDataURL('image/png');
 }
 
 async function runOCR() {
   if (!ocrImage) return;
-  // Convert full image to data URL
+  const z = clampZoomForCanvas(ocrImage.width, ocrImage.height, getOCRZoom());
   const c = document.createElement('canvas');
-  c.width = ocrImage.width; c.height = ocrImage.height;
-  c.getContext('2d').drawImage(ocrImage, 0, 0);
+  c.width = Math.max(1, Math.round(ocrImage.width * z));
+  c.height = Math.max(1, Math.round(ocrImage.height * z));
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = z > 1;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(ocrImage, 0, 0, c.width, c.height);
+  console.log('[OCR Debug] runOCR — effective zoom=' + z.toFixed(2) + ', out=' + c.width + '×' + c.height);
   await doOCR(c.toDataURL('image/png'));
 }
 
 async function runCroppedOCR() {
   if (!ocrImage || !ocrCrop) return;
-  await doOCR(getCroppedImageData());
+  // Skip the alphabetical sort + farm-code dedup that the full-page path uses.
+  // Those passes are tuned for whole tables and scramble small/single-cell
+  // crops, so cropped output preserves Tesseract's natural reading order.
+  await doOCR(getCroppedImageData(), { skipSort: true });
 }
 
 async function runColumnOCR() {
   if (!ocrImage || !ocrCrop) return;
   // Same x and width as crop, but from crop top all the way to image bottom.
   // The crop must include the header row — column boundaries are detected from header word positions.
-  const c = document.createElement('canvas');
   const colH = ocrImage.height - ocrCrop.y;
-  c.width = ocrCrop.w;
-  c.height = colH;
-  c.getContext('2d').drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, colH, 0, 0, ocrCrop.w, colH);
-  const engine = getOCREngine();
-  if (engine === 'desktop') {
-    await doMultiColumnOCR_desktop(c.toDataURL('image/png'));
-  } else {
-    await doMultiColumnOCR(c.toDataURL('image/png'));
+
+  // If the source column is taller than what a single canvas can safely hold,
+  // chunk it. Each chunk gets its own canvas and its own OCR pass; results are
+  // concatenated. This is what fixes "Error attempting to read image" on huge
+  // tall PickTrace screenshots — the previous single-canvas path would either
+  // get clamped down to where text was unreadable, or exceed the 16 384 px cap.
+  const requestedZ = getOCRZoom();
+  // Dynamic chunk sizing: pick a slice height that lets the user's requested
+  // zoom apply in full WITHOUT exceeding the canvas dimension cap. Higher
+  // requested zoom → smaller chunks → more OCR runs. Cap chunk count to keep
+  // total runtime + memory bounded — 20 chunks × ~30 sec ≈ 10 min, ~100 MB peak.
+  const CANVAS_DIM_CAP = 4096;
+  const MAX_CHUNKS = 20;
+  const idealChunkH = Math.max(500, Math.floor(CANVAS_DIM_CAP / requestedZ));
+  let chunkPxH = Math.min(colH, idealChunkH);
+  let chunkCount = Math.max(1, Math.ceil(colH / chunkPxH));
+  // If the user asks for a zoom that would require >MAX_CHUNKS slices, sizing
+  // up the chunks to fit in MAX_CHUNKS reduces the effective zoom — but it's
+  // better than 30+ minutes of OCR + an OOM.
+  if (chunkCount > MAX_CHUNKS) {
+    chunkPxH = Math.ceil(colH / MAX_CHUNKS);
+    chunkCount = Math.ceil(colH / chunkPxH);
+    const effZoom = CANVAS_DIM_CAP / chunkPxH;
+    console.warn('[OCR Debug] requested zoom=' + requestedZ.toFixed(2) + ' would require ' +
+      Math.ceil(colH / idealChunkH) + ' chunks. Capped to ' + MAX_CHUNKS +
+      ' chunks → effective zoom ≈ ' + effZoom.toFixed(2) + '×.');
   }
+  console.log('[OCR Debug] runColumnOCR — chunk plan: requestedZoom=' + requestedZ.toFixed(2) +
+    ', chunkPxH=' + chunkPxH + ', chunkCount=' + chunkCount + ' for colH=' + colH);
+
+  if (chunkCount === 1) {
+    const z = clampZoomForCanvas(ocrCrop.w, colH, requestedZ);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(ocrCrop.w * z));
+    c.height = Math.max(1, Math.round(colH * z));
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = z > 1;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(ocrImage, ocrCrop.x, ocrCrop.y, ocrCrop.w, colH, 0, 0, c.width, c.height);
+    console.log('[OCR Debug] runColumnOCR — single chunk, effective zoom=' + z.toFixed(3) +
+      ', src=' + ocrCrop.w + '×' + colH + ' → out=' + c.width + '×' + c.height);
+    const engine = getOCREngine();
+    if (engine === 'desktop') {
+      await doMultiColumnOCR_desktop(c.toDataURL('image/png'));
+    } else {
+      await doMultiColumnOCR(c.toDataURL('image/png'));
+    }
+    return;
+  }
+
+  // Multi-chunk path. Run each chunk through the SINGLE-column doOCR pipeline
+  // (which is what the multi-column code falls back to on tiny crops anyway),
+  // then concatenate the cleaned text. Column-detection across a chunked image
+  // would require splicing word bboxes back together — out of scope for this fix.
+  console.log('[OCR Debug] runColumnOCR — chunking ' + chunkCount + ' × ' + chunkPxH + 'px slices over ' + colH + 'px source');
+
+  // ─── UI lifecycle — match what doMultiColumnOCR does so the user sees
+  //     progress and partial results instead of a frozen panel. ───
+  const progressEl = document.getElementById('ocrProgress');
+  const fillEl = document.getElementById('ocrProgressFill');
+  const ptextEl = document.getElementById('ocrProgressText');
+  const outputEl = document.getElementById('ocrOutput');
+  const copyBtn = document.getElementById('ocrCopyBtn');
+  // Force the progress container visible (the element has inline display:none
+  // baked into the HTML, and clearing the inline style isn't enough on every
+  // browser). Set explicitly to block.
+  if (progressEl) progressEl.style.display = 'block';
+  if (fillEl) {
+    fillEl.style.width = '0%';
+    fillEl.style.transition = 'width 0.2s ease';
+  }
+  if (ptextEl) ptextEl.textContent = 'Preparing ' + chunkCount + ' chunks…';
+  if (outputEl) outputEl.value = '';
+  if (copyBtn) copyBtn.style.display = 'none';
+  document.getElementById('ocrExtractBtn').disabled = true;
+  openOCRPanel();
+
+  // Create ONE worker for all chunks. The previous per-call Tesseract.recognize()
+  // shortcut leaked WASM heap state between calls — chunks 4+ silently returned
+  // confidence 0 / 0 chars even though their PNGs were valid. Reusing a single
+  // worker is what the Tesseract.js v5 docs recommend for batched OCR.
+  let worker;
+  try {
+    if (ptextEl) ptextEl.textContent = 'Initializing Tesseract worker…';
+    worker = await Tesseract.createWorker('eng', 1, {
+      logger: (m) => {
+        if (m.status === 'loading' || m.status === 'initializing') {
+          if (ptextEl) ptextEl.textContent = m.status + ' worker…';
+        }
+      }
+    });
+  } catch (workerErr) {
+    if (ptextEl) ptextEl.textContent = 'Worker init failed: ' + (workerErr && workerErr.message);
+    document.getElementById('ocrExtractBtn').disabled = false;
+    console.error('[OCR Debug] worker init failed:', workerErr);
+    return;
+  }
+
+  const allTexts = [];
+  for (let i = 0; i < chunkCount; i++) {
+    const sy = ocrCrop.y + i * chunkPxH;
+    const sh = Math.min(chunkPxH, ocrImage.height - sy);
+    const z = clampZoomForCanvas(ocrCrop.w, sh, requestedZ);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(ocrCrop.w * z));
+    c.height = Math.max(1, Math.round(sh * z));
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = z > 1;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(ocrImage, ocrCrop.x, sy, ocrCrop.w, sh, 0, 0, c.width, c.height);
+    console.log('[OCR Debug] runColumnOCR — chunk ' + (i + 1) + '/' + chunkCount + ', zoom=' + z.toFixed(3) +
+      ', src=' + ocrCrop.w + '×' + sh + ' → out=' + c.width + '×' + c.height);
+
+    // Update progress before the chunk runs so the bar moves immediately.
+    const baseProgress = (i / chunkCount) * 100;
+    if (fillEl) fillEl.style.width = baseProgress.toFixed(0) + '%';
+    if (ptextEl) ptextEl.textContent = 'Chunk ' + (i + 1) + '/' + chunkCount + ' — encoding…';
+
+    let url;
+    try {
+      url = c.toDataURL('image/png');
+    } catch (encodeErr) {
+      console.error('[OCR Debug] chunk ' + (i + 1) + ' toDataURL threw:', encodeErr.message);
+      allTexts.push('');
+      continue;
+    }
+    if (!url || url.length < 500) {
+      console.error('[OCR Debug] chunk ' + (i + 1) + ' produced a truncated PNG (dataURL length=' + (url ? url.length : 0) + ').');
+      allTexts.push('');
+      continue;
+    }
+    console.log('[OCR Debug] chunk ' + (i + 1) + ' PNG size: ' + url.length + ' chars');
+
+    if (ptextEl) ptextEl.textContent = 'Chunk ' + (i + 1) + '/' + chunkCount + ' — recognizing…';
+    try {
+      const upscaled = await upscaleForOCR(url);
+      const result = await worker.recognize(upscaled);
+      const chunkText = result.data.text || '';
+      allTexts.push(chunkText);
+      console.log('[OCR Debug] chunk ' + (i + 1) + ' OCR ok — ' + chunkText.length + ' chars, conf=' + result.data.confidence);
+      if (outputEl) outputEl.value = allTexts.join('\n');
+    } catch (err) {
+      console.error('[OCR Debug] chunk ' + (i + 1) + ' failed:', err && err.message ? err.message : err);
+      allTexts.push('[chunk ' + (i + 1) + ' failed: ' + (err && err.message ? err.message : 'unknown error') + ']');
+      if (outputEl) outputEl.value = allTexts.join('\n');
+    }
+
+    // Update progress after chunk completes.
+    const doneProgress = ((i + 1) / chunkCount) * 100;
+    if (fillEl) fillEl.style.width = doneProgress.toFixed(0) + '%';
+
+    // Yield to the browser so the UI repaints and GC can run before next chunk.
+    await new Promise(r => setTimeout(r, 30));
+  }
+  // Always terminate the worker, even on errors above.
+  try { await worker.terminate(); } catch (e) { /* ignore */ }
+
+  const joined = allTexts.join('\n');
+  const cleaned = cleanOCRText(joined);
+  // Chunked-OCR post-processing — strip ONLY clear garbage tokens
+  // ("THE TH—_—_—_=S", "RTT TH i i", "rr \\"). Do NOT dedupe duplicate lines:
+  // PickTrace tables have many blocks under each site, so the site column
+  // legitimately repeats each site name many times. Collapsing duplicates
+  // hides 90%+ of the rows the user actually wants to see.
+  const lines = (cleaned || joined).split('\n').map(l => l.trim()).filter(Boolean);
+  const filtered = [];
+  for (const l of lines) {
+    const total = l.length;
+    const letters = (l.match(/[A-Za-z0-9]/g) || []).length;
+    if (total >= 4 && letters / total < 0.5) continue;
+    if (/[^A-Za-z0-9 ]{3,}/.test(l)) continue;
+    // Cap pathological repetition: drop a line only if it would be the FOURTH
+    // consecutive identical occurrence (so 3 in a row is preserved).
+    if (filtered.length >= 3 &&
+        filtered[filtered.length - 1] === l &&
+        filtered[filtered.length - 2] === l &&
+        filtered[filtered.length - 3] === l) continue;
+    filtered.push(l);
+  }
+  const finalText = filtered.join('\n');
+  console.log('[OCR Debug] runColumnOCR — post-process: ' + lines.length + ' raw lines → ' + filtered.length + ' clean lines (duplicates kept)');
+  if (outputEl) outputEl.value = finalText;
+  renderOCRTable(finalText);
+  if (fillEl) fillEl.style.width = '100%';
+  if (ptextEl) ptextEl.textContent = 'Done (' + chunkCount + ' chunks).';
+  if (copyBtn) copyBtn.style.display = '';
+  const saveBtn = document.getElementById('ocrSaveBtn');
+  if (saveBtn) saveBtn.style.display = '';
+  document.getElementById('ocrExtractBtn').disabled = false;
+  console.log('[OCR Debug] runColumnOCR — finished. Final output length=' + (outputEl ? outputEl.value.length : 0) + ' chars');
 }
 
 // ─── Engine selector for columnar OCR ───
@@ -1179,13 +1751,23 @@ async function upscaleForOCR(dataUrl, targetMinHeight) {
       else if (img.height < targetMinHeight) factor = 2;
       // Memory cap — don't go above 3× even if the source is very small.
       factor = Math.min(3, factor);
-      if (factor === 1) { resolve(dataUrl); return; }
+
+      // Always go through the canvas (even at factor=1) so we can detect
+      // dark-mode screenshots and invert. Tesseract's LSTM model expects
+      // dark text on a light background; feeding a dark-themed UI returns
+      // confidence-0 garbage tokens like "Ho ——" / "SE —".
       const c = document.createElement('canvas');
       c.width = img.width * factor;
       c.height = img.height * factor;
       const ctx = c.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(img, 0, 0, c.width, c.height);
+
+      // No-op preprocessing here. The grayscale + contrast-stretch experiment
+      // didn't move Tesseract's confidence on UI screenshots, and the previous
+      // dark-mode inversion path was masking better paths. Keep the canvas
+      // upscale only; further improvement requires switching OCR engines.
+
       resolve(c.toDataURL('image/png'));
     };
     img.onerror = () => resolve(dataUrl);
@@ -1211,11 +1793,19 @@ async function doMultiColumnOCR(imageData) {
   imageData = await upscaleForOCR(imageData);
 
   const fallback = (text) => {
+    // If the cleaner essentially erased Tesseract's output, fall back to raw
+    // text so the user sees what the engine actually read on the small crop.
     const cleaned = cleanOCRText(text);
-    output.value = cleaned;
-    renderOCRTable(cleaned);
+    const cleanedAlphaNum = (cleaned || '').replace(/[^A-Za-z0-9]/g, '').length;
+    const display = (cleanedAlphaNum < 3 && (text || '').trim().length > cleanedAlphaNum)
+      ? (text || '').trim()
+      : cleaned;
+    output.value = display;
+    renderOCRTable(display);
     fill.style.width = '100%';
-    ptext.textContent = 'Done (fallback to single-column).';
+    ptext.textContent = cleanedAlphaNum < 3 && display === (text || '').trim()
+      ? 'Done (fallback to raw OCR — cleaner stripped the cleaned result).'
+      : 'Done (fallback to single-column).';
     copyBtn.style.display = '';
     document.getElementById('ocrSaveBtn').style.display = '';
     document.getElementById('ocrExtractBtn').disabled = false;
@@ -1223,6 +1813,21 @@ async function doMultiColumnOCR(imageData) {
   };
 
   try {
+    // ─── Debug — image dimensions BEFORE OCR ───
+    // Lets us see whether the upscaler produced a usable size, and whether the
+    // image dataURL is valid. Open the console (F12) to inspect.
+    try {
+      const dbgImg = new Image();
+      dbgImg.onload = () => {
+        console.group('%c[OCR Debug] image into Tesseract', 'color:#0a7;font-weight:bold;');
+        console.log('Image dimensions (post-upscale):', dbgImg.width + ' × ' + dbgImg.height);
+        console.log('Image dataURL prefix:', imageData.slice(0, 80) + '… (' + imageData.length + ' chars)');
+        console.log('ocrCrop:', ocrCrop);
+        console.groupEnd();
+      };
+      dbgImg.src = imageData;
+    } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
+
     const result = await Tesseract.recognize(imageData, 'eng', {
       logger: (m) => {
         if (m.status === 'recognizing text') {
@@ -1235,9 +1840,22 @@ async function doMultiColumnOCR(imageData) {
       }
     });
 
+    // ─── Debug — what Tesseract actually returned ───
+    console.group('%c[OCR Debug] Tesseract result', 'color:#0a7;font-weight:bold;');
+    console.log('Raw text:', JSON.stringify(result.data.text));
+    console.log('Confidence:', result.data.confidence);
+    console.log('Words count:', (result.data.words || []).length);
+    console.log('Words (first 20):', (result.data.words || []).slice(0, 20).map(w => ({ text: w.text, conf: w.confidence, bbox: w.bbox })));
+    console.log('Lines count:', (result.data.lines || []).length);
+    console.log('Lines (first 10):', (result.data.lines || []).slice(0, 10).map(l => ({ text: l.text, conf: l.confidence })));
+    console.log('Full result.data:', result.data);
+    console.groupEnd();
+    window.__lastOCRResult = result;
+
     const allWords = (result.data.words || [])
       .filter(w => w && w.bbox && w.text && w.text.trim());
-    if (allWords.length < 6) {
+    if (allWords.length < 2) {
+      console.warn('[OCR Debug] falling back to single-column (allWords.length=' + allWords.length + ' < 2)');
       fallback(result.data.text);
       return;
     }
@@ -2075,7 +2693,9 @@ function cleanOCRCell(text) {
   return l;
 }
 
-async function doOCR(imageData) {
+async function doOCR(imageData, opts) {
+  opts = opts || {};
+  const skipSort = !!opts.skipSort;     // Skip alphabetical sort + farm-code dedup
   const progress = document.getElementById('ocrProgress');
   const fill = document.getElementById('ocrProgressFill');
   const ptext = document.getElementById('ocrProgressText');
@@ -2091,6 +2711,19 @@ async function doOCR(imageData) {
   imageData = await upscaleForOCR(imageData);
 
   try {
+    // ─── Debug — image dimensions BEFORE OCR (Full / Selection paths) ───
+    try {
+      const dbgImg = new Image();
+      dbgImg.onload = () => {
+        console.group('%c[OCR Debug] doOCR — image into Tesseract', 'color:#0a7;font-weight:bold;');
+        console.log('Image dimensions (post-upscale):', dbgImg.width + ' × ' + dbgImg.height);
+        console.log('skipSort:', skipSort);
+        console.log('Image dataURL prefix:', imageData.slice(0, 80) + '… (' + imageData.length + ' chars)');
+        console.groupEnd();
+      };
+      dbgImg.src = imageData;
+    } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
+
     const result = await Tesseract.recognize(imageData, 'eng', {
       logger: (m) => {
         if (m.status === 'recognizing text') {
@@ -2102,14 +2735,32 @@ async function doOCR(imageData) {
         }
       }
     });
+
+    // ─── Debug — Tesseract result ───
+    console.group('%c[OCR Debug] doOCR — Tesseract result', 'color:#0a7;font-weight:bold;');
+    console.log('Raw text:', JSON.stringify(result.data.text));
+    console.log('Confidence:', result.data.confidence);
+    console.log('Words count:', (result.data.words || []).length);
+    console.log('Words:', (result.data.words || []).map(w => ({ text: w.text, conf: w.confidence, bbox: w.bbox })));
+    console.log('Lines:', (result.data.lines || []).map(l => ({ text: l.text, conf: l.confidence })));
+    console.groupEnd();
+    window.__lastOCRResult = result;
+
     const cleaned = cleanOCRText(result.data.text);
-    // Fix duplicate farm codes: if a crop appears twice under same code, first is likely OE
-    const lines = cleaned.split('\n');
-    const fixedLines = fixDuplicateFarmCodes(lines);
-    // Sort lines alphabetically to match source ordering
-    const sorted = fixedLines.sort((a, b) => a.localeCompare(b)).join('\n');
-    output.value = sorted;
-    renderOCRTable(sorted);
+    console.log('[OCR Debug] doOCR — after cleanOCRText:', JSON.stringify(cleaned));
+    let finalText;
+    if (skipSort) {
+      // Cropped/selection path — preserve OCR's natural reading order.
+      // Skipping the alphabetical sort + farm-code dedup, which are tuned
+      // for full-page tables and scramble small/single-cell crops.
+      finalText = cleaned;
+    } else {
+      const lines = cleaned.split('\n');
+      const fixedLines = fixDuplicateFarmCodes(lines);
+      finalText = fixedLines.sort((a, b) => a.localeCompare(b)).join('\n');
+    }
+    output.value = finalText;
+    renderOCRTable(finalText);
     fill.style.width = '100%';
     ptext.textContent = 'Done!';
     copyBtn.style.display = '';
@@ -3198,11 +3849,12 @@ function cleanOCRText(raw) {
       let l = line.trim();
       // Remove lines that are only symbols/punctuation/noise
       if (!/[a-zA-Z0-9]/.test(l)) return null;
-      // Remove lines that are very short and look like artifacts
-      if (l.length <= 2 && !/^\d+$/.test(l)) return null;
-      // Remove lines that are mostly non-alphanumeric junk
+      // Keep all alphanumeric content — even 1-2 char tokens — so partial OCR
+      // reads on small/UI crops survive instead of being filtered to nothing.
+      // The previous "drop short lines" rule was tuned for full-table dumps
+      // and erased legitimate cell values like "1", "ID", "L", etc.
       const alphaNum = l.replace(/[^a-zA-Z0-9\s]/g, '').length;
-      if (l.length > 3 && alphaNum / l.length < 0.3) return null;
+      if (l.length > 5 && alphaNum / l.length < 0.2) return null;
 
       // Fix common OCR misreads
       // "!" -> "l"
@@ -3337,11 +3989,22 @@ async function doMultiColumnOCR_desktop(imageData) {
   imageData = await upscaleForOCR(imageData);
 
   const fallback = (text) => {
+    // The desktop cleaner drops anything looking suspicious (short tokens,
+    // mostly-non-alphanumeric lines), which is great on full tables but
+    // demolishes small/narrow crops. If the cleaned output has effectively no
+    // signal, fall back to the raw Tesseract output so the user can see what
+    // the engine actually read instead of a misleading single token.
     const cleaned = cleanOCRText_desktop(text);
-    output.value = cleaned;
-    renderOCRTable(cleaned);
+    const cleanedAlphaNum = (cleaned || '').replace(/[^A-Za-z0-9]/g, '').length;
+    const display = (cleanedAlphaNum < 3 && (text || '').trim().length > cleanedAlphaNum)
+      ? (text || '').trim()
+      : cleaned;
+    output.value = display;
+    renderOCRTable(display);
     fill.style.width = '100%';
-    ptext.textContent = 'Done (fallback to single-column).';
+    ptext.textContent = cleanedAlphaNum < 3 && display === (text || '').trim()
+      ? 'Done (fallback to raw OCR — cleaner stripped the cleaned result).'
+      : 'Done (fallback to single-column).';
     copyBtn.style.display = '';
     document.getElementById('ocrSaveBtn').style.display = '';
     document.getElementById('ocrExtractBtn').disabled = false;
@@ -3349,6 +4012,21 @@ async function doMultiColumnOCR_desktop(imageData) {
   };
 
   try {
+    // ─── Debug — image dimensions BEFORE OCR ───
+    // Lets us see whether the upscaler produced a usable size, and whether the
+    // image dataURL is valid. Open the console (F12) to inspect.
+    try {
+      const dbgImg = new Image();
+      dbgImg.onload = () => {
+        console.group('%c[OCR Debug] image into Tesseract', 'color:#0a7;font-weight:bold;');
+        console.log('Image dimensions (post-upscale):', dbgImg.width + ' × ' + dbgImg.height);
+        console.log('Image dataURL prefix:', imageData.slice(0, 80) + '… (' + imageData.length + ' chars)');
+        console.log('ocrCrop:', ocrCrop);
+        console.groupEnd();
+      };
+      dbgImg.src = imageData;
+    } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
+
     const result = await Tesseract.recognize(imageData, 'eng', {
       logger: (m) => {
         if (m.status === 'recognizing text') {
@@ -3361,9 +4039,22 @@ async function doMultiColumnOCR_desktop(imageData) {
       }
     });
 
+    // ─── Debug — what Tesseract actually returned ───
+    console.group('%c[OCR Debug] Tesseract result', 'color:#0a7;font-weight:bold;');
+    console.log('Raw text:', JSON.stringify(result.data.text));
+    console.log('Confidence:', result.data.confidence);
+    console.log('Words count:', (result.data.words || []).length);
+    console.log('Words (first 20):', (result.data.words || []).slice(0, 20).map(w => ({ text: w.text, conf: w.confidence, bbox: w.bbox })));
+    console.log('Lines count:', (result.data.lines || []).length);
+    console.log('Lines (first 10):', (result.data.lines || []).slice(0, 10).map(l => ({ text: l.text, conf: l.confidence })));
+    console.log('Full result.data:', result.data);
+    console.groupEnd();
+    window.__lastOCRResult = result;
+
     const allWords = (result.data.words || [])
       .filter(w => w && w.bbox && w.text && w.text.trim());
-    if (allWords.length < 6) {
+    if (allWords.length < 2) {
+      console.warn('[OCR Debug] falling back to single-column (allWords.length=' + allWords.length + ' < 2)');
       fallback(result.data.text);
       return;
     }
@@ -4037,11 +4728,12 @@ function cleanOCRText_desktop(raw) {
       let l = line.trim();
       // Remove lines that are only symbols/punctuation/noise
       if (!/[a-zA-Z0-9]/.test(l)) return null;
-      // Remove lines that are very short and look like artifacts
-      if (l.length <= 2 && !/^\d+$/.test(l)) return null;
-      // Remove lines that are mostly non-alphanumeric junk
+      // Keep all alphanumeric content — even 1-2 char tokens — so partial OCR
+      // reads on small/UI crops survive instead of being filtered to nothing.
+      // The previous "drop short lines" rule was tuned for full-table dumps
+      // and erased legitimate cell values like "1", "ID", "L", etc.
       const alphaNum = l.replace(/[^a-zA-Z0-9\s]/g, '').length;
-      if (l.length > 3 && alphaNum / l.length < 0.3) return null;
+      if (l.length > 5 && alphaNum / l.length < 0.2) return null;
 
       // Fix common OCR misreads
       // "!" -> "l"
