@@ -1059,6 +1059,8 @@ document.addEventListener('contextmenu', e => {
   const suffix = totalTargets > 1 ? ' (' + totalTargets + ' cells)' : '';
   $('trk-ctx-flag').textContent = (trkFlags[td.dataset.uid] ? '✅ Unmark Red' : '🔴 Mark Red') + suffix;
   $('trk-ctx-note').textContent = 'Add Note' + suffix;
+  const pasteEl = $('trk-ctx-paste');
+  if (pasteEl) pasteEl.textContent = '📋 Paste' + (trkSelected.size > 1 ? ' (' + trkSelected.size + ' cells)' : '');
   $('trk-ctx-clear-note').style.display = trkNotes[td.dataset.uid] ? '' : 'none';
   trkCtxMenu.style.display = 'block';
   trkCtxMenu.style.left = Math.min(e.clientX, window.innerWidth - 170) + 'px';
@@ -1528,6 +1530,88 @@ document.addEventListener('keydown', e => {
     if (trkUndoStack.length > 0) { e.preventDefault(); trkUndo(); }
   }
 });
+
+// ── Bulk / single paste into selected cells ──
+// Apply text to all currently selected cells (or to a fallback uid if none selected)
+function trkPasteIntoTargets(text, fallbackUid) {
+  if (text == null) return;
+  text = String(text).replace(/\r?\n$/, '');
+  let targets = [];
+  if (trkSelected.size > 0) {
+    trkSelected.forEach(key => {
+      const [ri, ci] = key.split('-').map(Number);
+      targets.push({ ri, ci });
+    });
+  } else if (fallbackUid) {
+    const td = document.querySelector('#trk-tbody td[data-uid="' + fallbackUid + '"]');
+    if (td) targets.push({ ri: parseInt(td.dataset.ri), ci: parseInt(td.dataset.ci) });
+  }
+  if (targets.length === 0) return;
+  const changes = [];
+  targets.forEach(({ ri, ci }) => {
+    const oldVal = (trkRows[ri] && trkRows[ri][ci]) || '';
+    if (oldVal !== text) changes.push({ ri, ci, oldVal, newVal: text });
+  });
+  if (changes.length > 0) {
+    trkApplyEdits(changes, 'Paste into ' + changes.length + ' cell' + (changes.length > 1 ? 's' : ''));
+  }
+  trkClearSelection();
+}
+
+// Hidden textarea that captures the browser's native paste event.
+// This avoids both the Clipboard API permission/secure-context limits and
+// the fact that <td> elements aren't focusable (so paste never fires on them).
+const trkPasteCapture = document.createElement('textarea');
+trkPasteCapture.setAttribute('aria-hidden', 'true');
+trkPasteCapture.tabIndex = -1;
+trkPasteCapture.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:10px;height:10px;opacity:0;';
+document.body.appendChild(trkPasteCapture);
+
+let trkPasteFallbackUid = null;
+trkPasteCapture.addEventListener('paste', e => {
+  e.preventDefault();
+  const text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+  const fb = trkPasteFallbackUid; trkPasteFallbackUid = null;
+  if (text) trkPasteIntoTargets(text, fb);
+  trkPasteCapture.value = '';
+  setTimeout(() => { try { trkPasteCapture.blur(); } catch(_) {} }, 0);
+});
+
+// Ctrl+V / Cmd+V: redirect focus to the hidden textarea so the browser
+// delivers the paste event there, then we read it synchronously.
+document.addEventListener('keydown', e => {
+  if (!((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V') && !e.shiftKey && !e.altKey)) return;
+  const activePage = document.querySelector('.page.active');
+  if (!activePage || activePage.id !== 'page-tracker') return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable)) return;
+  if (trkSelected.size === 0) return;
+  // Don't preventDefault — we *want* the native paste to fire on the textarea
+  trkPasteFallbackUid = null;
+  trkPasteCapture.value = '';
+  trkPasteCapture.focus();
+});
+
+// Right-click "Paste": try Clipboard API, then fall back to prompt
+const trkCtxPaste = $('trk-ctx-paste');
+if (trkCtxPaste) {
+  trkCtxPaste.addEventListener('click', async () => {
+    const fallbackUid = trkCtxTarget ? trkCtxTarget.dataset.uid : null;
+    trkCtxMenu.style.display = 'none';
+    let text = null;
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        text = await navigator.clipboard.readText();
+      }
+    } catch (_) { text = null; }
+    if (text == null || text === '') {
+      const v = prompt('Paste value to apply to selected cell(s):', '');
+      if (v === null) return;
+      text = v;
+    }
+    trkPasteIntoTargets(text, fallbackUid);
+  });
+}
 
 // ── Save button ──
 $('trk-btn-save').addEventListener('click', () => {

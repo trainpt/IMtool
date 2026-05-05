@@ -1,25 +1,91 @@
-# Backup files
-backup/
-
-# Saved progress/screenshots
-Saved Progress/
-Screenshots/
-
-# Planning docs
-REWRITE-PLAN.md
-
-# Data files
+# ─── Customer / org data — NEVER commit ───
+# All spreadsheet, CSV, and tabular exports the app ingests or produces.
+Data/
 *.csv
 *.xlsx
 *.xls
+*.xlsm
+*.xlsb
+*.ods
+*.tsv
 
-# OS files
+# Debug dumps and JSON snapshots produced by the app
+**/Debug/
+**/debug/
+*-debug-*.json
+block-compare-debug-*.json
+*.dump.json
+
+# Screenshots (often contain customer data)
+Screenshots/
+**/screencapture-*.png
+**/screencapture-*.jpg
+**/screencapture-*.jpeg
+**/screenshot-*.png
+**/screenshot-*.jpg
+
+# Saved progress + backups + scratch
+Saved Progress/
+saved-progress/
+backup/
+backups/
+*.bak
+*.orig
+
+# Sensitive / credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.json
+credentials.json
+
+# ─── Build / dependency output (not used now but pre-emptive) ───
+node_modules/
+dist/
+build/
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Planning / internal docs not needed to run the site ───
+REWRITE-PLAN.md
+NOTES.md
+TODO.md
+SCRATCH.md
+
+# ─── OS junk ───
 Thumbs.db
+ehthumbs.db
 .DS_Store
+.AppleDouble
+.LSOverride
 desktop.ini
+$RECYCLE.BIN/
 
-# Editor files
+# ─── Editor / IDE ───
 .vscode/
+.idea/
 *.swp
 *.swo
+*.swn
 *~
+*.tmp
+.history/
+.ionide/
+
+# ─── Browser / runtime ───
+.cache-loader/
+*.pid
+</content>
+</invoke>
