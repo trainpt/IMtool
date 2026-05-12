@@ -131,7 +131,16 @@
               <div class="ocr-engine-segmented" role="radiogroup">
                 <button type="button" class="ocr-engine-btn" data-engine="desktop" onclick="setOCREngine('desktop')" title="Original desktop pipeline — best for high-resolution screenshots with clear column gaps">Desktop</button>
                 <button type="button" class="ocr-engine-btn" data-engine="laptop" onclick="setOCREngine('laptop')" title="Laptop pipeline — extra handling for narrow column gaps, sort-arrow glyphs, ATTEST=Y continuations, pagination footers">Laptop</button>
+                <button type="button" class="ocr-engine-btn" data-engine="cloud" onclick="setOCREngine('cloud')" title="Google Cloud Vision — highest accuracy on small-font tables, free up to 1000 images/month. Requires a Google Cloud API key.">Cloud</button>
               </div>
+            </div>
+            <div class="ocr-gcv-settings" id="ocrGcvSettings" style="display:none;">
+              <label class="ocr-gcv-key-label" for="gcvApiKeyInput">GCV API Key:</label>
+              <input type="password" id="gcvApiKeyInput" class="ocr-gcv-key-input" autocomplete="off" spellcheck="false" placeholder="paste your Google Cloud Vision key">
+              <button type="button" class="ocr-btn ocr-btn-secondary ocr-gcv-save" onclick="gcvSaveKey()">Save</button>
+              <span class="ocr-gcv-status" id="gcvKeyStatus"></span>
+              <span class="ocr-gcv-usage" id="gcvUsage" title="Local counter — Google's billing dashboard is authoritative">GCV calls this month: 0 / 1000</span>
+              <span class="ocr-gcv-warn">Restrict your key in Google Cloud Console: API = Cloud Vision only, referrer = this file's origin.</span>
             </div>
             <div class="ocr-crop-hint" id="ocrCropHint" style="display:none;">Left-click drag to crop &middot; Right-click drag to pan &middot; Scroll to zoom &middot; For <b>Extract Columns</b>, include the header row in your crop</div>
             <div class="ocr-progress" id="ocrProgress" style="display:none;">
@@ -1040,6 +1049,7 @@
 <!-- ═══ Scripts ═══ -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="gcv-ocr.js"></script>
 <script src="utils.js"></script>
 <script src="data-store.js"></script>
 <script src="global-import.js"></script>
@@ -1595,25 +1605,38 @@ async function runColumnOCR() {
   document.getElementById('ocrExtractBtn').disabled = true;
   openOCRPanel();
 
+  // ─── Cloud (Google Vision) mode: skip Tesseract worker entirely. If the user
+  // selected the Cloud engine but hasn't saved a key, fall back to Tesseract
+  // with a status message instead of failing.
+  const _engine = getOCREngine();
+  const _useCloud = _engine === 'cloud' && typeof gcvGetApiKey === 'function' && gcvGetApiKey();
+  if (_engine === 'cloud' && !_useCloud) {
+    if (ptextEl) ptextEl.textContent = 'No GCV key — using Tesseract.';
+    console.warn('[OCR Debug] Cloud engine selected but no GCV key saved; falling back to Tesseract.');
+  }
+
   // Create ONE worker for all chunks. The previous per-call Tesseract.recognize()
   // shortcut leaked WASM heap state between calls — chunks 4+ silently returned
   // confidence 0 / 0 chars even though their PNGs were valid. Reusing a single
   // worker is what the Tesseract.js v5 docs recommend for batched OCR.
-  let worker;
-  try {
-    if (ptextEl) ptextEl.textContent = 'Initializing Tesseract worker…';
-    worker = await Tesseract.createWorker('eng', 1, {
-      logger: (m) => {
-        if (m.status === 'loading' || m.status === 'initializing') {
-          if (ptextEl) ptextEl.textContent = m.status + ' worker…';
+  // Cloud mode skips worker creation — gcvRecognize is stateless.
+  let worker = null;
+  if (!_useCloud) {
+    try {
+      if (ptextEl) ptextEl.textContent = 'Initializing Tesseract worker…';
+      worker = await Tesseract.createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'loading' || m.status === 'initializing') {
+            if (ptextEl) ptextEl.textContent = m.status + ' worker…';
+          }
         }
-      }
-    });
-  } catch (workerErr) {
-    if (ptextEl) ptextEl.textContent = 'Worker init failed: ' + (workerErr && workerErr.message);
-    document.getElementById('ocrExtractBtn').disabled = false;
-    console.error('[OCR Debug] worker init failed:', workerErr);
-    return;
+      });
+    } catch (workerErr) {
+      if (ptextEl) ptextEl.textContent = 'Worker init failed: ' + (workerErr && workerErr.message);
+      document.getElementById('ocrExtractBtn').disabled = false;
+      console.error('[OCR Debug] worker init failed:', workerErr);
+      return;
+    }
   }
 
   const allTexts = [];
@@ -1651,10 +1674,19 @@ async function runColumnOCR() {
     }
     console.log('[OCR Debug] chunk ' + (i + 1) + ' PNG size: ' + url.length + ' chars');
 
-    if (ptextEl) ptextEl.textContent = 'Chunk ' + (i + 1) + '/' + chunkCount + ' — recognizing…';
+    if (ptextEl) ptextEl.textContent = 'Chunk ' + (i + 1) + '/' + chunkCount + (_useCloud ? ' — GCV…' : ' — recognizing…');
     try {
-      const upscaled = await upscaleForOCR(url);
-      const result = await worker.recognize(upscaled);
+      let result;
+      if (_useCloud) {
+        // GCV handles small text natively — skip upscaleForOCR (also keeps PNGs
+        // under the 7 MB base64 cap).
+        result = await gcvRecognize(url, (m) => {
+          if (ptextEl) ptextEl.textContent = 'Chunk ' + (i + 1) + '/' + chunkCount + ' — GCV ' + (m.status || '…');
+        });
+      } else {
+        const upscaled = await upscaleForOCR(url);
+        result = await worker.recognize(upscaled);
+      }
       const chunkText = result.data.text || '';
       allTexts.push(chunkText);
       console.log('[OCR Debug] chunk ' + (i + 1) + ' OCR ok — ' + chunkText.length + ' chars, conf=' + result.data.confidence);
@@ -1672,8 +1704,8 @@ async function runColumnOCR() {
     // Yield to the browser so the UI repaints and GC can run before next chunk.
     await new Promise(r => setTimeout(r, 30));
   }
-  // Always terminate the worker, even on errors above.
-  try { await worker.terminate(); } catch (e) { /* ignore */ }
+  // Always terminate the worker, even on errors above. (No-op when cloud mode skipped worker creation.)
+  if (worker) { try { await worker.terminate(); } catch (e) { /* ignore */ } }
 
   const joined = allTexts.join('\n');
   const cleaned = cleanOCRText(joined);
@@ -1717,13 +1749,13 @@ async function runColumnOCR() {
 // Stored per-machine in localStorage so each device remembers its choice.
 function getOCREngine() {
   const stored = localStorage.getItem('ocrEngine');
-  if (stored === 'desktop' || stored === 'laptop') return stored;
+  if (stored === 'desktop' || stored === 'laptop' || stored === 'cloud') return stored;
   // First-run auto-detect: large screen → desktop; otherwise → laptop.
   const w = window.screen.width || window.innerWidth || 0;
   return w >= 1600 ? 'desktop' : 'laptop';
 }
 function setOCREngine(engine) {
-  if (engine !== 'desktop' && engine !== 'laptop') return;
+  if (engine !== 'desktop' && engine !== 'laptop' && engine !== 'cloud') return;
   localStorage.setItem('ocrEngine', engine);
   updateOCREngineButtons();
 }
@@ -1732,6 +1764,12 @@ function updateOCREngineButtons() {
   document.querySelectorAll('.ocr-engine-btn').forEach(btn => {
     btn.classList.toggle('ocr-engine-active', btn.dataset.engine === cur);
   });
+  // Show GCV settings only when Cloud engine is selected.
+  const gcvPanel = document.getElementById('ocrGcvSettings');
+  if (gcvPanel) {
+    gcvPanel.style.display = (cur === 'cloud') ? '' : 'none';
+    if (cur === 'cloud' && typeof gcvHydrateKeyInput === 'function') gcvHydrateKeyInput();
+  }
 }
 
 // Upscale an image data URL for Tesseract. Tesseract recognizes small text far better
@@ -1788,9 +1826,18 @@ async function doMultiColumnOCR(imageData) {
   output.value = '';
   copyBtn.style.display = 'none';
   document.getElementById('ocrExtractBtn').disabled = true;
+  // ─── Cloud (Google Vision) mode: skip the upscale step (GCV handles native
+  // resolution better and the 7 MB base64 cap matters more here). If Cloud is
+  // selected but no key is saved, fall back to Tesseract with a status note.
+  const _engine = getOCREngine();
+  const _useCloud = _engine === 'cloud' && typeof gcvGetApiKey === 'function' && gcvGetApiKey();
+  if (_engine === 'cloud' && !_useCloud) {
+    ptext.textContent = 'No GCV key — using Tesseract.';
+    console.warn('[OCR Debug] Cloud engine selected but no GCV key saved; falling back to Tesseract.');
+  }
   // Upscale the cropped image before OCR so small text gets recognized cleanly.
   // All bbox reasoning below uses the upscaled image internally — coords stay consistent.
-  imageData = await upscaleForOCR(imageData);
+  if (!_useCloud) imageData = await upscaleForOCR(imageData);
 
   const fallback = (text) => {
     // If the cleaner essentially erased Tesseract's output, fall back to raw
@@ -1828,20 +1875,25 @@ async function doMultiColumnOCR(imageData) {
       dbgImg.src = imageData;
     } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
 
-    const result = await Tesseract.recognize(imageData, 'eng', {
-      logger: (m) => {
-        if (m.status === 'recognizing text') {
-          const pct = Math.round(m.progress * 100);
-          fill.style.width = pct + '%';
-          ptext.textContent = 'Extracting text... ' + pct + '%';
-        } else {
-          ptext.textContent = m.status || 'Processing...';
-        }
-      }
-    });
+    const result = _useCloud
+      ? await gcvRecognize(imageData, (m) => {
+          fill.style.width = Math.round((m.progress || 0) * 100) + '%';
+          ptext.textContent = 'GCV: ' + (m.status || 'working…');
+        })
+      : await Tesseract.recognize(imageData, 'eng', {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              const pct = Math.round(m.progress * 100);
+              fill.style.width = pct + '%';
+              ptext.textContent = 'Extracting text... ' + pct + '%';
+            } else {
+              ptext.textContent = m.status || 'Processing...';
+            }
+          }
+        });
 
-    // ─── Debug — what Tesseract actually returned ───
-    console.group('%c[OCR Debug] Tesseract result', 'color:#0a7;font-weight:bold;');
+    // ─── Debug — what the OCR engine actually returned ───
+    console.group('%c[OCR Debug] ' + (_useCloud ? 'GCV' : 'Tesseract') + ' result', 'color:#0a7;font-weight:bold;');
     console.log('Raw text:', JSON.stringify(result.data.text));
     console.log('Confidence:', result.data.confidence);
     console.log('Words count:', (result.data.words || []).length);
@@ -2708,7 +2760,14 @@ async function doOCR(imageData, opts) {
   output.value = '';
   copyBtn.style.display = 'none';
   document.getElementById('ocrExtractBtn').disabled = true;
-  imageData = await upscaleForOCR(imageData);
+  // ─── Cloud (Google Vision) mode: skip upscale, route through gcvRecognize.
+  const _engine = getOCREngine();
+  const _useCloud = _engine === 'cloud' && typeof gcvGetApiKey === 'function' && gcvGetApiKey();
+  if (_engine === 'cloud' && !_useCloud) {
+    ptext.textContent = 'No GCV key — using Tesseract.';
+    console.warn('[OCR Debug] Cloud engine selected but no GCV key saved; falling back to Tesseract.');
+  }
+  if (!_useCloud) imageData = await upscaleForOCR(imageData);
 
   try {
     // ─── Debug — image dimensions BEFORE OCR (Full / Selection paths) ───
@@ -2724,20 +2783,25 @@ async function doOCR(imageData, opts) {
       dbgImg.src = imageData;
     } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
 
-    const result = await Tesseract.recognize(imageData, 'eng', {
-      logger: (m) => {
-        if (m.status === 'recognizing text') {
-          const pct = Math.round(m.progress * 100);
-          fill.style.width = pct + '%';
-          ptext.textContent = 'Extracting text... ' + pct + '%';
-        } else {
-          ptext.textContent = m.status || 'Processing...';
-        }
-      }
-    });
+    const result = _useCloud
+      ? await gcvRecognize(imageData, (m) => {
+          fill.style.width = Math.round((m.progress || 0) * 100) + '%';
+          ptext.textContent = 'GCV: ' + (m.status || 'working…');
+        })
+      : await Tesseract.recognize(imageData, 'eng', {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              const pct = Math.round(m.progress * 100);
+              fill.style.width = pct + '%';
+              ptext.textContent = 'Extracting text... ' + pct + '%';
+            } else {
+              ptext.textContent = m.status || 'Processing...';
+            }
+          }
+        });
 
-    // ─── Debug — Tesseract result ───
-    console.group('%c[OCR Debug] doOCR — Tesseract result', 'color:#0a7;font-weight:bold;');
+    // ─── Debug — OCR result ───
+    console.group('%c[OCR Debug] doOCR — ' + (_useCloud ? 'GCV' : 'Tesseract') + ' result', 'color:#0a7;font-weight:bold;');
     console.log('Raw text:', JSON.stringify(result.data.text));
     console.log('Confidence:', result.data.confidence);
     console.log('Words count:', (result.data.words || []).length);
@@ -3986,7 +4050,15 @@ async function doMultiColumnOCR_desktop(imageData) {
   output.value = '';
   copyBtn.style.display = 'none';
   document.getElementById('ocrExtractBtn').disabled = true;
-  imageData = await upscaleForOCR(imageData);
+  // ─── Cloud (Google Vision) mode: skip upscale, route through gcvRecognize.
+  // No key → status note + Tesseract fallback.
+  const _engine = getOCREngine();
+  const _useCloud = _engine === 'cloud' && typeof gcvGetApiKey === 'function' && gcvGetApiKey();
+  if (_engine === 'cloud' && !_useCloud) {
+    ptext.textContent = 'No GCV key — using Tesseract.';
+    console.warn('[OCR Debug] Cloud engine selected but no GCV key saved; falling back to Tesseract.');
+  }
+  if (!_useCloud) imageData = await upscaleForOCR(imageData);
 
   const fallback = (text) => {
     // The desktop cleaner drops anything looking suspicious (short tokens,
@@ -4027,20 +4099,25 @@ async function doMultiColumnOCR_desktop(imageData) {
       dbgImg.src = imageData;
     } catch (e) { console.warn('[OCR Debug] image-load failed:', e); }
 
-    const result = await Tesseract.recognize(imageData, 'eng', {
-      logger: (m) => {
-        if (m.status === 'recognizing text') {
-          const pct = Math.round(m.progress * 100);
-          fill.style.width = pct + '%';
-          ptext.textContent = 'Extracting text... ' + pct + '%';
-        } else {
-          ptext.textContent = m.status || 'Processing...';
-        }
-      }
-    });
+    const result = _useCloud
+      ? await gcvRecognize(imageData, (m) => {
+          fill.style.width = Math.round((m.progress || 0) * 100) + '%';
+          ptext.textContent = 'GCV: ' + (m.status || 'working…');
+        })
+      : await Tesseract.recognize(imageData, 'eng', {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              const pct = Math.round(m.progress * 100);
+              fill.style.width = pct + '%';
+              ptext.textContent = 'Extracting text... ' + pct + '%';
+            } else {
+              ptext.textContent = m.status || 'Processing...';
+            }
+          }
+        });
 
-    // ─── Debug — what Tesseract actually returned ───
-    console.group('%c[OCR Debug] Tesseract result', 'color:#0a7;font-weight:bold;');
+    // ─── Debug — what the OCR engine actually returned ───
+    console.group('%c[OCR Debug] ' + (_useCloud ? 'GCV' : 'Tesseract') + ' result', 'color:#0a7;font-weight:bold;');
     console.log('Raw text:', JSON.stringify(result.data.text));
     console.log('Confidence:', result.data.confidence);
     console.log('Words count:', (result.data.words || []).length);
