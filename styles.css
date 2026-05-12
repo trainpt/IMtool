@@ -1205,6 +1205,46 @@ a { color: var(--accent); text-decoration: none; }
   color: #fff;
 }
 .ocr-engine-btn.ocr-engine-active:hover { background: var(--accent-hover); }
+
+/* Google Cloud Vision settings panel — visible only when engine === 'cloud' */
+.ocr-gcv-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.ocr-gcv-key-label { font-weight: 600; color: var(--text-muted); }
+.ocr-gcv-key-input {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 5px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+.ocr-gcv-key-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ocr-gcv-save { padding: 5px 12px; }
+.ocr-gcv-status { color: var(--accent); font-weight: 500; min-width: 60px; }
+.ocr-gcv-usage {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ocr-gcv-warn {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .ocr-crop-hint {
   font-size: 11px;
   color: var(--accent);
