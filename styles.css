@@ -2699,6 +2699,18 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   font-weight: 700;
 }
 
+/* Template Standardize — Sites address column + apply-to-all control row */
+#ts-sites-create-table .ts-site-addr { width: 100%; min-width: 200px; box-sizing: border-box; }
+#ts-sites-create-table td:has(.ts-site-addr),
+#ts-sites-create-table tr.ts-addr-allrow td { cursor: default; }
+#ts-sites-create-table tr.ts-addr-allrow td {
+  background: var(--bg-sunken);
+  white-space: normal;
+  vertical-align: middle;
+}
+.ts-addr-all-wrap { display: flex; gap: 6px; align-items: center; }
+.ts-addr-all-wrap input { flex: 1; min-width: 180px; }
+
 .cmp-skipped-list { background: var(--amber-soft); border: 1px solid #f0d68b; border-radius: var(--radius); padding: 12px 16px; }
 .cmp-skipped-ul { margin: 0; padding-left: 18px; font-size: 12px; }
 .cmp-skipped-ul li { margin-bottom: 4px; color: var(--text-2); }
