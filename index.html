@@ -614,6 +614,7 @@
       <div class="cmp-mode-pills">
         <button class="cmp-mode-pill cmp-mode-active" data-mode="compare">&#8651; Block Compare</button>
         <button class="cmp-mode-pill" data-mode="standardize">&#9783; Template Standardize</button>
+        <button class="cmp-mode-pill" data-mode="empmig">&#128101; Employee Migration</button>
       </div>
 
       <div class="cmp-page" id="cmp-mode-compare">
@@ -941,6 +942,124 @@
 
         <div class="empty-state" id="ts-empty">Upload a source file (or import from Org Data) AND a personalized bulk template to start.</div>
       </div>
+
+      <!-- ═══ Employee Migration mode ═══ -->
+      <div class="cmp-page" id="cmp-mode-empmig" style="display:none;">
+        <div class="cmp-header">
+          <h2>Legacy &#8594; 3.0 Employee Migration</h2>
+          <p>Convert a Legacy employee CSV export into the 3.0 Employee Bulk
+          Create template. Keeps only valid employees (<b>Is Valid</b> = true),
+          resolves each employee's employer from the contractor file by
+          <b>Contractor ID</b>, maps the fixed Legacy&#8594;3.0 columns, and
+          preserves the template's dropdowns. Large lists split into multiple
+          numbered files.</p>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">1. Legacy employee CSV <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Employee CSV</span>
+              <input type="file" id="em-emp-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="em-emp-name">No file selected</div>
+            <div class="cmp-meta" id="em-emp-meta"></div>
+            <div class="cmp-slot-hint">Legacy employee export. Only rows where <b>Is Valid</b> is true are migrated; the rest are skipped.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">2. Active contractors CSV <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Active Contractors</span>
+              <input type="file" id="em-employer-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="em-employer-name">No file selected</div>
+            <div class="cmp-meta" id="em-employer-meta"></div>
+            <div class="cmp-slot-hint"><b>Active (unarchived)</b> contractors only. Each employee's <b>Contractor ID</b> &#8594; employer <b>Name</b>.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3. All contractors (archived + unarchived) <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Full Contractor List</span>
+              <input type="file" id="em-fullcontractor-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="em-fullcontractor-name">No file selected</div>
+            <div class="cmp-meta" id="em-fullcontractor-meta"></div>
+            <div class="cmp-slot-hint">Optional. The complete list. Employees whose contractor is in this list but <b>not</b> in the active list are treated as <b>archived</b> and removed (restorable below).</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">4. 3.0 employee template <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Template</span>
+              <input type="file" id="em-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="em-tpl-name">No file selected</div>
+            <div class="cmp-meta" id="em-tpl-meta"></div>
+            <div class="cmp-slot-hint">3.0 Employee Bulk Create xlsx. Its DROP-DOWN INPUTS sheet drives the Employer list; all validations are preserved in every output file.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Max employees per file</div>
+            <div style="padding-top:8px;">
+              <input type="number" id="em-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
+              <div class="cmp-slot-hint">Lists larger than this split into numbered files: <b>&hellip; (1 of N)</b>.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="em-run" disabled>&#9654; Build Preview</button>
+          <button class="btn btn-primary" id="em-export" disabled>&#8615; Export XLSX</button>
+          <button class="btn btn-ghost" id="em-reset">&#8634; Reset</button>
+        </div>
+
+        <div class="cmp-summary" id="em-summary" style="display:none;"></div>
+
+        <div class="cmp-results" id="em-results">
+          <section class="cmp-section" id="em-section-archived" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-archived-title">Archived Contractors — employees removed</h3>
+            </header>
+            <p class="cmp-sites-hint">These contractors are in the full list but <b>not</b> active, so their employees are excluded from the export. Click <b>Restore</b> to migrate a given contractor's employees anyway (Employer is filled from the full list). <b>Remove</b> drops them again.</p>
+            <div class="table-wrap"><table class="data-table" id="em-archived-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-unresolved" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-unresolved-title">Unresolved Employers</h3>
+            </header>
+            <p class="cmp-sites-hint">These Contractor IDs have no matching employer in the contractor file (or the employer name isn't in the template's dropdown). Pick the correct Employer from the template's dropdown or type a manual override, then Apply to fill every row with that Contractor ID. Rows left unresolved export with a blank Employer.</p>
+            <div class="table-wrap"><table class="data-table" id="em-unresolved-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-bulk" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-bulk-title">Bulk Edit Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">Set a value for an entire column across all (non-removed) rows — same as the Unresolved Employers panel. Pick from the template dropdown where available or type a manual override, then Apply. Clear empties the column. Bulk values stick through re-runs until cleared.</p>
+            <div class="table-wrap"><table class="data-table" id="em-bulk-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-preview" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-preview-title">Preview</h3>
+            </header>
+            <p class="cmp-sites-hint">Cells are editable — click a cell, type, then click away to save. <b>Shift+click</b> selects a rectangular range; <b>Ctrl/Cmd+click</b> toggles individual cells; then set or clear them all at once. Empty required cells are highlighted in red. Click <b>&times;</b> at the start of a row to drop it from the preview + export.</p>
+            <div id="em-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
+              <b id="em-sel-count">0 cells selected</b>
+              <input type="text" id="em-sel-val" class="input-field" placeholder="Value for all selected cells" style="width:240px;">
+              <button class="btn btn-primary btn-sm" id="em-sel-apply">Apply to selected</button>
+              <button class="btn btn-ghost btn-sm" id="em-sel-clear">Clear contents</button>
+              <button class="btn btn-ghost btn-sm" id="em-sel-deselect">Deselect</button>
+            </div>
+            <div class="table-wrap"><table class="data-table" id="em-preview-table"></table></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="em-empty">Upload the Legacy employee CSV, the employer/contractor CSV, and the 3.0 employee template to start.</div>
+      </div>
     </div>
 
     <!-- ─── Page: Sheet Preview ─── -->
@@ -1059,7 +1178,8 @@
 <script src="coleditor.js"></script>
 <script src="tracker-logic.js"></script>
 <script src="compare-logic.js?v=68"></script>
-<script src="template-standardize.js?v=13"></script>
+<script src="template-standardize.js?v=14"></script>
+<script src="employee-migrate.js?v=7"></script>
 <script>
 // ═══ Page Switching ═══
 document.getElementById('topbarTabs').addEventListener('click', e => {
