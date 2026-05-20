@@ -40,6 +40,8 @@
   let fullContractorMap = null;// Map<string ContractorID, name> — full (archived+unarchived), optional
   let restoredArchived = new Set(); // archived ContractorIDs the user chose to keep
   let archivedStats = {};      // cid → { count, name } for the Archived panel
+  let migratedAltIds = null;   // Set<altId> of employees already in 3.0 (optional)
+  let alreadyMigratedCount = 0;// per-build count of skips due to cross-reference
   let tplData = null;          // { headers, employerList[], rawBuffer, fileName }
   let formattedRows = null;    // [[...34]] mapped rows (post Is-Valid filter)
   let srcKept = null;          // source rows that survived the filter (parallel to formattedRows)
@@ -184,8 +186,8 @@
     parseCsvFile(file).then(d => {
       const idx = {};
       d.headers.forEach((h, i) => { const k = norm(h); if (k && idx[k] == null) idx[k] = i; });
-      if (idx['is valid'] == null || idx['contractor id'] == null) {
-        alert('Employee file must have "Is Valid" and "Contractor ID" columns.');
+      if (idx['is active'] == null || idx['contractor id'] == null) {
+        alert('Employee file must have "Is Active" and "Contractor ID" columns.');
         return;
       }
       empData = { headers: d.headers, rows: d.rows, fileName: file.name, idx };
@@ -239,6 +241,27 @@
     }).catch(err => alert('Failed to read full contractor file: ' + (err && err.message ? err.message : err)));
   }
 
+  // Optional: a 3.0 employees export. We extract Alt ID and skip any Legacy
+  // employee whose Alt ID is already present (avoids duplicate uploads).
+  function handleAlreadyMigratedFile(file) {
+    parseCsvFile(file).then(d => {
+      const altI = d.headers.findIndex(h => norm(h) === 'alt id');
+      if (altI < 0) {
+        alert('Already-in-3.0 file must have an "Alt ID" column to cross-reference.');
+        return;
+      }
+      const s = new Set();
+      d.rows.forEach(r => {
+        const v = String(r[altI] == null ? '' : r[altI]).trim();
+        if (v) s.add(v);
+      });
+      migratedAltIds = s;
+      $('em-migrated-name').textContent = file.name;
+      $('em-migrated-meta').textContent = s.size + ' Alt ID' + (s.size === 1 ? '' : 's') + ' to skip';
+      if (empData && employerMap && tplData) runMigrate();
+    }).catch(err => alert('Failed to read 3.0 employees file: ' + (err && err.message ? err.message : err)));
+  }
+
   function handleTplFile(file) {
     const r = new FileReader();
     r.onload = e => {
@@ -288,16 +311,23 @@
   function buildFormattedRowsRaw() {
     if (!empData) return null;
     const get = (row, key) => { const i = eIdx(key); return i < 0 ? '' : String(row[i] == null ? '' : row[i]).trim(); };
-    const ivI = eIdx('is valid');
     const iaI = eIdx('is active');
+    const altI = eIdx('alt id');
     srcKept = [];
     archivedStats = {};
+    alreadyMigratedCount = 0;
     const out = [];
     empData.rows.forEach(srcRow => {
-      const iv = ivI < 0 ? '' : String(srcRow[ivI] == null ? '' : srcRow[ivI]).trim().toLowerCase();
-      if (iv !== 'true') return; // skip Is Valid = false / blank
+      // Active filter: Is Active column is the sole determinant. Skip if not
+      // literally "true" (false / blank both excluded).
       const ia = iaI < 0 ? '' : String(srcRow[iaI] == null ? '' : srcRow[iaI]).trim().toLowerCase();
-      if (ia === 'false') return; // skip Is Active = false (inactive employees)
+      if (ia !== 'true') return;
+      // Cross-reference: skip employees already migrated to 3.0 (joined on
+      // Alt ID). Blank Alt IDs can't be cross-referenced and pass through.
+      if (migratedAltIds && altI >= 0) {
+        const aid = String(srcRow[altI] == null ? '' : srcRow[altI]).trim();
+        if (aid && migratedAltIds.has(aid)) { alreadyMigratedCount++; return; }
+      }
 
       // Classify the contractor: active (in active list) → resolve name;
       // archived (in full list but not active) → drop unless restored;
@@ -839,7 +869,7 @@
     const total = formattedRows ? formattedRows.length : 0;
     const visible = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
     const archived = archivedRemovedCount();
-    const skipped = empData.rows.length - total - archived; // Is Valid / Is Active only
+    const skipped = empData.rows.length - total - archived - alreadyMigratedCount; // Is Active filter only
     const reqIdx = EMP_HEADERS.map((h, i) => /\*$/.test(h) ? i : -1).filter(i => i >= 0);
     let emptyReq = 0;
     if (formattedRows) formattedRows.forEach((r, ri) => {
@@ -855,7 +885,8 @@
     sum.innerHTML =
       '<div class="cmp-stat"><b>' + visible + '</b> employees' +
         (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + total + ')</span>' : '') + '</div>' +
-      '<div class="cmp-stat"><b>' + skipped + '</b> skipped (Is Valid = false / Is Active = false)</div>' +
+      '<div class="cmp-stat"><b>' + skipped + '</b> skipped (Is Active &ne; true)</div>' +
+      (alreadyMigratedCount ? '<div class="cmp-stat"><b>' + alreadyMigratedCount + '</b> skipped (already in 3.0)</div>' : '') +
       (archived ? '<div class="cmp-stat cmp-warn"><b>' + archived + '</b> removed (archived contractor)</div>' : '') +
       '<div class="cmp-stat"><b>' + EMP_HEADERS.length + '</b> template columns</div>' +
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
@@ -934,7 +965,8 @@
 
   // ─── Reset ───
   function reset() {
-    empData = null; employerMap = null; fullContractorMap = null; tplData = null;
+    empData = null; employerMap = null; fullContractorMap = null;
+    migratedAltIds = null; alreadyMigratedCount = 0; tplData = null;
     formattedRows = null; srcKept = null; employerOverrides = {};
     columnFills = {};
     removedRows = new Set();
@@ -944,13 +976,16 @@
     $('em-emp-name').textContent = 'No file selected';
     $('em-employer-name').textContent = 'No file selected';
     $('em-fullcontractor-name').textContent = 'No file selected';
+    $('em-migrated-name').textContent = 'No file selected';
     $('em-tpl-name').textContent = 'No file selected';
     $('em-emp-meta').textContent = '';
     $('em-employer-meta').textContent = '';
     $('em-fullcontractor-meta').textContent = '';
+    $('em-migrated-meta').textContent = '';
     $('em-tpl-meta').textContent = '';
     $('em-emp-file').value = ''; $('em-employer-file').value = '';
-    $('em-fullcontractor-file').value = ''; $('em-tpl-file').value = '';
+    $('em-fullcontractor-file').value = ''; $('em-migrated-file').value = '';
+    $('em-tpl-file').value = '';
     ['em-section-archived', 'em-section-unresolved', 'em-section-bulk', 'em-section-preview'].forEach(id => {
       const el = $(id); if (el) el.style.display = 'none';
     });
@@ -993,6 +1028,10 @@
     });
     $('em-fullcontractor-file').addEventListener('change', e => {
       if (e.target.files[0]) handleFullContractorFile(e.target.files[0]);
+      e.target.value = '';
+    });
+    $('em-migrated-file').addEventListener('change', e => {
+      if (e.target.files[0]) handleAlreadyMigratedFile(e.target.files[0]);
       e.target.value = '';
     });
     $('em-tpl-file').addEventListener('change', e => {
