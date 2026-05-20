@@ -66,6 +66,7 @@
   let formattedRows = null;    // [[...]] mapped + filled rows (canonical state)
   let manualFills = {};        // bulkColIdx → user-supplied value (re-applied after rebuilds)
   let removedRows = new Set(); // formattedRows indexes excluded from preview + export
+  let siteAddresses = {};      // site value → address string (reference only; survives re-renders)
   let initialized = false;
 
   // ─── Mode-pill switcher ───
@@ -76,6 +77,7 @@
         document.querySelectorAll('.cmp-mode-pill').forEach(b => b.classList.toggle('cmp-mode-active', b === btn));
         $('cmp-mode-compare').style.display = mode === 'compare' ? '' : 'none';
         $('cmp-mode-standardize').style.display = mode === 'standardize' ? '' : 'none';
+        const em = $('cmp-mode-empmig'); if (em) em.style.display = mode === 'empmig' ? '' : 'none';
       });
     });
   }
@@ -548,22 +550,65 @@
       if (v && !inDropdown(tplCvsMap, v))   cvs.set(v, (cvs.get(v) || 0) + 1);
     });
 
-    const renderList = (sectionId, tableId, titleId, label, m) => {
+    const renderList = (sectionId, tableId, titleId, label, m, withAddress) => {
       const sec = $(sectionId);
       if (!m.size) { sec.style.display = 'none'; return; }
       sec.style.display = '';
       $(titleId).textContent = label + ' (' + m.size + ')';
       const sorted = [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-      let html = '<thead><tr><th>Value</th><th>Row count</th></tr></thead><tbody>';
+      let html = '<thead><tr><th>Value</th><th>Row count</th>' +
+        (withAddress ? '<th>Address</th>' : '') + '</tr></thead><tbody>';
+      if (withAddress) {
+        html += '<tr class="ts-addr-allrow">' +
+          '<td colspan="2"><b>Apply one address to every site</b>' +
+            '<div class="text-muted small">Optional — for your reference when creating these Sites in PickTrace.</div></td>' +
+          '<td><div class="ts-addr-all-wrap">' +
+            '<input type="text" id="ts-site-addr-all" class="input-field" placeholder="123 Main St, City, ST">' +
+            '<button class="btn btn-primary btn-sm" id="ts-site-addr-apply-all" type="button">Apply to all</button>' +
+          '</div></td></tr>';
+      }
       sorted.forEach(([val, cnt]) => {
-        html += '<tr><td>' + escHtml(val) + '</td><td>' + cnt + '</td></tr>';
+        html += '<tr><td class="ts-copy-cell" title="Click to copy">' + escHtml(val) +
+          '</td><td>' + cnt + '</td>';
+        if (withAddress) {
+          html += '<td><input type="text" class="ts-site-addr input-field" data-site="' +
+            escHtml(val) + '" value="' + escHtml(siteAddresses[val] || '') +
+            '" placeholder="Address (optional)"></td>';
+        }
+        html += '</tr>';
       });
       html += '</tbody>';
       $(tableId).innerHTML = html;
+      if (withAddress) wireSitesAddressHandlers(tableId);
     };
-    renderList('ts-section-sites-create', 'ts-sites-create-table', 'ts-sites-create-title', 'Sites to Create in PickTrace', sites);
-    renderList('ts-section-cv-create',    'ts-cv-create-table',    'ts-cv-create-title',    'Crops & Varieties to Create in PickTrace', cvs);
+    renderList('ts-section-sites-create', 'ts-sites-create-table', 'ts-sites-create-title', 'Sites to Create in PickTrace', sites, true);
+    renderList('ts-section-cv-create',    'ts-cv-create-table',    'ts-cv-create-title',    'Crops & Varieties to Create in PickTrace', cvs, false);
     return { sitesCount: sites.size, cvsCount: cvs.size };
+  }
+
+  // Per-row address inputs + "Apply to all". Addresses are reference-only
+  // (keyed by site value in siteAddresses) so they survive the frequent
+  // renderSitesAndCvToCreate() rebuilds triggered by Apply/Clear/remove.
+  function wireSitesAddressHandlers(tableId) {
+    const tbl = $(tableId);
+    if (!tbl) return;
+    tbl.querySelectorAll('.ts-site-addr').forEach(inp => {
+      inp.addEventListener('input', () => {
+        siteAddresses[inp.dataset.site] = inp.value;
+      });
+    });
+    const allInp = tbl.querySelector('#ts-site-addr-all');
+    const allBtn = tbl.querySelector('#ts-site-addr-apply-all');
+    if (allInp && allBtn) {
+      allBtn.addEventListener('click', () => {
+        const v = allInp.value.trim();
+        if (!v) { alert('Type an address first.'); return; }
+        tbl.querySelectorAll('.ts-site-addr').forEach(inp => {
+          inp.value = v;
+          siteAddresses[inp.dataset.site] = v;
+        });
+      });
+    }
   }
 
   function renderRequired() {
@@ -1056,7 +1101,7 @@
   // ─── Reset ───
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
-    manualFills = {}; removedRows = new Set();
+    manualFills = {}; removedRows = new Set(); siteAddresses = {};
     $('ts-src-name').textContent = 'No file selected';
     $('ts-tpl-name').textContent = 'No file selected';
     $('ts-src-meta').textContent = '';
@@ -1103,10 +1148,32 @@
     $('ts-sites-copy').addEventListener('click', () => {
       const tbl = $('ts-sites-create-table');
       const rows = [...tbl.querySelectorAll('tbody tr')]
-        .map(tr => [...tr.children].map(td => td.textContent).join('\t'));
+        .filter(tr => !tr.classList.contains('ts-addr-allrow'))
+        .map(tr => {
+          const val  = tr.children[0] ? tr.children[0].textContent.trim() : '';
+          const cnt  = tr.children[1] ? tr.children[1].textContent.trim() : '';
+          const aInp = tr.querySelector('.ts-site-addr');
+          return val + '\t' + cnt + '\t' + (aInp ? aInp.value.trim() : '');
+        });
       if (!rows.length) return;
-      navigator.clipboard.writeText('Site\tRow count\n' + rows.join('\n'))
+      navigator.clipboard.writeText('Site\tRow count\tAddress\n' + rows.join('\n'))
         .then(() => alert('Copied ' + rows.length + ' sites.'), () => alert('Copy failed.'));
+    });
+    // Click-to-copy any cell (mirrors the Compare page). The Empty Required
+    // Columns section is form-only, and the address control row has no value
+    // worth copying, so both are excluded.
+    $('ts-results').addEventListener('click', e => {
+      const td = e.target.closest('.cmp-section .data-table td');
+      if (!td) return;
+      if (td.closest('#ts-section-required')) return;
+      if (td.closest('tr.ts-addr-allrow')) return;
+      if (e.target.closest('input, button, label, select, textarea, a')) return;
+      const text = (td.textContent || '').trim();
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => td.classList.toggle('cmp-copied'), () => {});
+      }
     });
     $('ts-cv-copy').addEventListener('click', () => {
       const tbl = $('ts-cv-create-table');
