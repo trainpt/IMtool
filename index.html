@@ -614,7 +614,7 @@
       <div class="cmp-mode-pills">
         <button class="cmp-mode-pill cmp-mode-active" data-mode="compare">&#8651; Block Compare</button>
         <button class="cmp-mode-pill" data-mode="standardize">&#9783; Template Standardize</button>
-        <button class="cmp-mode-pill" data-mode="empmig">&#128101; Employee Migration</button>
+        <button class="cmp-mode-pill" data-mode="employees">&#128101; Employees</button>
       </div>
 
       <div class="cmp-page" id="cmp-mode-compare">
@@ -784,6 +784,26 @@
             <div class="table-wrap"><table class="data-table" id="cmp-defaults-table"></table></div>
           </section>
 
+          <section class="cmp-section" id="cmp-section-datefill" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="cmp-datefill-title">Year-Only Dates</h3>
+            </header>
+            <p class="cmp-sites-hint">Some date cells (Planted Date, etc.) in the DATA ENTRY (CREATE) export contain only a year or a year range. Enter a month and day to expand them to full <b>YYYY-MM-DD</b> dates on export, keeping each row's year.</p>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span id="cmp-datefill-count" class="text-muted small"></span>
+              <label style="display:flex;align-items:center;gap:4px;">Month <input type="number" id="cmp-datefill-mm" class="input-field" min="1" max="12" placeholder="MM" style="width:70px;"></label>
+              <label style="display:flex;align-items:center;gap:4px;">Day <input type="number" id="cmp-datefill-dd" class="input-field" min="1" max="31" placeholder="DD" style="width:70px;"></label>
+              <label style="display:flex;align-items:center;gap:4px;">Ranges use
+                <select id="cmp-datefill-range" class="input-field" style="width:auto;">
+                  <option value="first">First year</option>
+                  <option value="last">Last year</option>
+                </select>
+              </label>
+              <button class="btn btn-primary btn-sm" id="cmp-datefill-apply">Apply to year-only dates</button>
+              <button class="btn btn-ghost btn-sm" id="cmp-datefill-clear">Reset</button>
+            </div>
+          </section>
+
           <section class="cmp-section" id="cmp-section-sites" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="cmp-sites-title">Sites to Create in PickTrace</h3>
@@ -849,6 +869,13 @@
           <p>Format an Excel/CSV file or saved Org Data into a personalized PickTrace bulk template (Create or Update). Auto-maps columns by name; flags Sites and Crop&nbsp;&amp; Variety values that don't exist in your template's dropdown so you can create them in PickTrace before uploading. All required (*) cells must be filled.</p>
         </div>
 
+        <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+          <span style="font-weight:600;color:var(--text-muted,#6b7280);">Standardize into:</span>
+          <button type="button" class="btn btn-sm ts-domain-pill ts-domain-active" data-domain="locations">&#128205; Locations</button>
+          <button type="button" class="btn btn-sm ts-domain-pill" data-domain="sites">&#127968; Sites</button>
+        </div>
+
+        <div id="ts-loc-wrap">
         <div class="cmp-uploads">
           <div class="cmp-slot cmp-slot-db">
             <div class="cmp-slot-label">1. Source data <span class="cmp-req">(required)</span></div>
@@ -886,12 +913,27 @@
               </label>
             </div>
           </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Existing locations <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Existing Locations</span>
+              <input type="file" id="ts-existing-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <div class="cmp-filename" id="ts-existing-name">No file selected</div>
+            <div class="cmp-meta" id="ts-existing-meta"></div>
+            <div class="cmp-slot-hint">A PickTrace <b>bulk Update / locations export</b> of what's already in the system. Rows whose <b>Site + Name</b> already exist are cross-referenced and dropped from the export (avoids <code>RESOURCE-DUPLICATE</code>).</div>
+          </div>
         </div>
 
         <div class="cmp-actions">
           <button class="btn btn-success" id="ts-run" disabled>&#9654; Format Sheet</button>
           <button class="btn btn-primary" id="ts-export" disabled>&#8615; Export XLSX</button>
           <button class="btn btn-ghost" id="ts-reset">&#8634; Reset</button>
+          <label style="display:flex;align-items:center;gap:6px;margin-left:12px;font-size:13px;color:var(--text-muted,#6b7280);" title="PickTrace rejects a subvariety inside Crop & Variety. This moves the part after ' - ' into the Clone/Subvariety column.">
+            <input type="checkbox" id="ts-crop-split" checked>
+            Split subvariety from Crop &amp; Variety &rarr; Clone/Subvariety
+          </label>
         </div>
 
         <div class="cmp-summary" id="ts-summary" style="display:none;"></div>
@@ -903,6 +945,15 @@
             </header>
             <p class="cmp-sites-hint">Auto-matched columns are pre-selected. Unmatched template columns are blank — pick a source column or leave empty.</p>
             <div class="table-wrap"><table class="data-table" id="ts-mapping-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-smartfix" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-smartfix-title">Smart Fixes</h3>
+              <button class="btn btn-primary btn-sm" id="ts-smartfix-apply-all">Apply all</button>
+            </header>
+            <p class="cmp-sites-hint">Every value in your data that isn't an exact match to the template dropdown. Each has a <b>Set to</b> dropdown: a <b>confident</b> match (spacing, punctuation, or singular&harr;plural, e.g. <code>Almonds-Other</code>&rarr;<code>Almond-Other</code>) is pre-selected; values with <b>no</b> match (e.g. <code>EQUIPMENT</code> isn't a PickTrace location type) say <b>needs a choice</b> — pick a valid value. Click <b>Apply</b> per row, or <b>Apply all</b> for every row that has a value chosen. PickTrace rejects any off-list value in a dropdown column.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-smartfix-table"></table></div>
           </section>
 
           <section class="cmp-section" id="ts-section-sites-create" style="display:none;">
@@ -931,19 +982,166 @@
             <div class="table-wrap"><table class="data-table" id="ts-required-table"></table></div>
           </section>
 
+          <section class="cmp-section" id="ts-section-existing" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-existing-title">Already in PickTrace — dropped</h3>
+            </header>
+            <p class="cmp-sites-hint">These rows match a <b>Site + Name</b> that already exists in the uploaded existing-locations file, so they are <b>dropped</b> from the export to avoid <code>RESOURCE-DUPLICATE</code>. (Showing up to 200.)</p>
+            <div class="table-wrap"><table class="data-table" id="ts-existing-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-collisions" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-collisions-title">Name Collisions</h3>
+            </header>
+            <p class="cmp-sites-hint">A block can't load under its name because the name is already taken &mdash; either by another <b>different block</b> in your data, or by an existing block <b>already in PickTrace</b> (shown greyed as "In PickTrace"). PickTrace requires a unique name within a site. Type a new, unique <b>name</b> for each <b>New</b> row and click <b>Rename</b>. Colliding Name cells are red in the preview.</p>
+            <div class="table-wrap"><table class="data-table" id="ts-collisions-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-datefill" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-datefill-title">Year-Only Dates</h3>
+            </header>
+            <p class="cmp-sites-hint">Some date cells (Planted Date, Grafting Date, Production Start, Organic Certification Date, Wet Date, Germination Date) contain only a year or a year range. Enter a month and day to expand them to full <b>YYYY-MM-DD</b> dates, keeping each row's year. Year-only cells are highlighted amber in the preview below.</p>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span id="ts-datefill-count" class="text-muted small"></span>
+              <label style="display:flex;align-items:center;gap:4px;">Month <input type="number" id="ts-datefill-mm" class="input-field" min="1" max="12" placeholder="MM" style="width:70px;"></label>
+              <label style="display:flex;align-items:center;gap:4px;">Day <input type="number" id="ts-datefill-dd" class="input-field" min="1" max="31" placeholder="DD" style="width:70px;"></label>
+              <label style="display:flex;align-items:center;gap:4px;">Ranges use
+                <select id="ts-datefill-range" class="input-field" style="width:auto;">
+                  <option value="first">First year</option>
+                  <option value="last">Last year</option>
+                </select>
+              </label>
+              <button class="btn btn-primary btn-sm" id="ts-datefill-apply">Apply to year-only dates</button>
+              <button class="btn btn-ghost btn-sm" id="ts-datefill-clear">Reset</button>
+            </div>
+          </section>
+
           <section class="cmp-section" id="ts-section-preview" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="ts-preview-title">Preview</h3>
             </header>
             <p class="cmp-sites-hint">Empty required cells are highlighted in red. The export will fail validation until all are filled.</p>
-            <div class="table-wrap"><table class="data-table" id="ts-preview-table"></table></div>
+            <div class="table-wrap"><table class="data-table ts-edit-grid" id="ts-preview-table"></table></div>
           </section>
         </div>
 
         <div class="empty-state" id="ts-empty">Upload a source file (or import from Org Data) AND a personalized bulk template to start.</div>
-      </div>
+        </div><!-- /ts-loc-wrap -->
 
-      <!-- ═══ Employee Migration mode ═══ -->
+        <!-- ═══ Sites domain ═══ -->
+        <div id="ts-site-wrap" style="display:none;">
+          <div class="cmp-uploads">
+            <div class="cmp-slot cmp-slot-db">
+              <div class="cmp-slot-label">1. Source data <span class="cmp-req">(required)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                <span>&#8679; Upload Excel/CSV</span>
+                <input type="file" id="tss-src-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <button class="btn btn-ghost cmp-upload-btn" id="tss-src-from-org" type="button">&#128229; Import from Org Data</button>
+              <div class="cmp-filename" id="tss-src-name">No file selected</div>
+              <div class="cmp-meta" id="tss-src-meta"></div>
+              <div class="cmp-slot-hint">The <b>Sites</b> tab of your implementation template, or any Excel/CSV of sites. A combined <b>Address</b> cell is auto-split into Address1 / City / State / Zip / Country.</div>
+            </div>
+
+            <div class="cmp-slot">
+              <div class="cmp-slot-label">2. Personalized Sites template <span class="cmp-req">(required)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                <span>&#8679; Upload Sites Template</span>
+                <input type="file" id="tss-tpl-file" accept=".xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="tss-tpl-name">No file selected</div>
+              <div class="cmp-meta" id="tss-tpl-meta"></div>
+              <div class="cmp-slot-hint">Download <b>your org's personalized</b> bulk <b>Sites</b> Create template from PickTrace &mdash; its DROP-DOWN INPUTS sheet drives the Site Type / Employer / State / Country validation.</div>
+            </div>
+
+            <div class="cmp-slot">
+              <div class="cmp-slot-label">Existing sites <span class="cmp-meta">(optional)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                <span>&#8679; Upload Existing Sites</span>
+                <input type="file" id="tss-existing-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <div class="cmp-filename" id="tss-existing-name">No file selected</div>
+              <div class="cmp-meta" id="tss-existing-meta"></div>
+              <div class="cmp-slot-hint">A PickTrace <b>sites export</b> of what's already in the system. Rows whose <b>Name</b> already exists are cross-referenced and dropped from the export.</div>
+            </div>
+          </div>
+
+          <div class="cmp-actions">
+            <button class="btn btn-success" id="tss-run" disabled>&#9654; Format Sheet</button>
+            <button class="btn btn-primary" id="tss-export" disabled>&#8615; Export XLSX</button>
+            <button class="btn btn-ghost" id="tss-reset">&#8634; Reset</button>
+          </div>
+
+          <div class="cmp-summary" id="tss-summary" style="display:none;"></div>
+
+          <div class="cmp-results" id="tss-results">
+            <section class="cmp-section" id="tss-section-mapping" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-mapping-title">Column Mapping</h3></header>
+              <p class="cmp-sites-hint">Auto-matched columns are pre-selected. Unmatched template columns are blank &mdash; pick a source column or leave empty. City / State / Zip / Country are usually filled from the parsed Address.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-mapping-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-smartfix" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="tss-smartfix-title">Smart Fixes</h3>
+                <button class="btn btn-primary btn-sm" id="tss-smartfix-apply-all">Apply all</button>
+              </header>
+              <p class="cmp-sites-hint">Every value that isn't an exact match to the template dropdown (Site Type / Employer / State / Country). Each has a <b>Set to</b> dropdown: a <b>confident</b> match (spacing, punctuation, singular&harr;plural) is pre-selected; values with <b>no</b> match say <b>needs a choice</b> — pick a valid value. Click <b>Apply</b> per row, or <b>Apply all</b> for every chosen row.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-smartfix-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-emp-create" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-emp-create-title">Employers to Create / Reconcile in PickTrace</h3></header>
+              <p class="cmp-sites-hint">These Employer values aren't in your template's dropdown (often just a spelling difference, e.g. <code>Teixeira and Sons, LLC</code> vs <code>Teixiera &amp; Sons, LLC</code>). Fix them in the preview to match, or create them in PickTrace and re-download the template.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-emp-create-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-type-create" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-type-create-title">Site Types to Create / Reconcile in PickTrace</h3></header>
+              <p class="cmp-sites-hint">These Site Type values aren't in your template's dropdown. Pick a listed type in the preview, or create them in PickTrace and re-download the template.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-type-create-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-required" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-required-title">Empty Required Columns</h3></header>
+              <p class="cmp-sites-hint">Required (*) cells with no value. Pick from the template's dropdown or type a manual override; click Apply to fill all empty cells in that column. (Great for a shared Employer / Country.)</p>
+              <div class="table-wrap"><table class="data-table" id="tss-required-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-existing" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-existing-title">Already in PickTrace — dropped</h3></header>
+              <p class="cmp-sites-hint">These sites match a <b>Name</b> that already exists in the uploaded existing-sites file, so they are <b>dropped</b> from the export. (Showing up to 200.)</p>
+              <div class="table-wrap"><table class="data-table" id="tss-existing-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-collisions" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-collisions-title">Name Collisions</h3></header>
+              <p class="cmp-sites-hint">A site can't load under its name because the name is already taken &mdash; by another site in your data, or one <b>already in PickTrace</b>. Type a new, unique <b>name</b> for each <b>New</b> row and click <b>Rename</b>. Colliding Name cells are red in the preview.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-collisions-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-preview" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-preview-title">Preview</h3></header>
+              <p class="cmp-sites-hint">Empty required cells are highlighted in red. The export will fail validation until all are filled.</p>
+              <div class="table-wrap"><table class="data-table ts-edit-grid" id="tss-preview-table"></table></div>
+            </section>
+          </div>
+
+          <div class="empty-state" id="tss-empty">Upload a source file (or import from Org Data) AND a personalized bulk <b>Sites</b> template to start.</div>
+        </div><!-- /ts-site-wrap -->
+      </div><!-- /cmp-mode-standardize -->
+
+      <!-- ═══ Employees mode (Standardize & Dedupe + Legacy Migration sub-tabs) ═══ -->
+      <div class="cmp-page" id="cmp-mode-employees" style="display:none;">
+        <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+          <span style="font-weight:600;color:var(--text-muted,#6b7280);">Employee tool:</span>
+          <button type="button" class="btn btn-sm ts-domain-pill emp-subtab ts-domain-active" data-sub="empstd">&#128101; Standardize &amp; Dedupe</button>
+          <button type="button" class="btn btn-sm ts-domain-pill emp-subtab" data-sub="empmig">&#8594; Legacy &rarr; 3.0 Migration</button>
+        </div>
+
+      <!-- ─── Sub-tab: Legacy → 3.0 Employee Migration ─── -->
       <div class="cmp-page" id="cmp-mode-empmig" style="display:none;">
         <div class="cmp-header">
           <h2>Legacy &#8594; 3.0 Employee Migration</h2>
@@ -1037,11 +1235,20 @@
             <div class="table-wrap"><table class="data-table" id="em-archived-table"></table></div>
           </section>
 
+          <section class="cmp-section" id="em-section-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-create-title">Employers to Create in 3.0</h3>
+              <button class="btn btn-ghost btn-sm" id="em-create-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">These employer names are kept in the employees' Employer column but don't exist in PickTrace 3.0 yet. <b>Click an employer to copy its name and check it off</b> as you create it in PickTrace. Create them all (or map them to an existing employer in the panel below), then re-download the template &mdash; otherwise the upload will be rejected with &ldquo;Employer not found&rdquo;.</p>
+            <div class="table-wrap"><table class="data-table" id="em-create-table"></table></div>
+          </section>
+
           <section class="cmp-section" id="em-section-unresolved" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="em-unresolved-title">Unresolved Employers</h3>
             </header>
-            <p class="cmp-sites-hint">These Contractor IDs have no matching employer in the contractor file (or the employer name isn't in the template's dropdown). Pick the correct Employer from the template's dropdown or type a manual override, then Apply to fill every row with that Contractor ID. Rows left unresolved export with a blank Employer.</p>
+            <p class="cmp-sites-hint">These Contractor IDs have no employer in 3.0 yet (blank, or a name not in the template's dropdown). The legacy name is kept in the Employer column. Optionally pick an existing 3.0 Employer (or type a manual override) and Apply to remap every row with that Contractor ID instead.</p>
             <div class="table-wrap"><table class="data-table" id="em-unresolved-table"></table></div>
           </section>
 
@@ -1071,6 +1278,132 @@
 
         <div class="empty-state" id="em-empty">Upload the Legacy employee CSV, the employer/contractor CSV, and the 3.0 employee template to start.</div>
       </div>
+
+      <!-- ─── Sub-tab: Employee Standardize & Dedupe (default) ─── -->
+      <div class="cmp-page" id="cmp-mode-empstd">
+        <div class="cmp-header">
+          <h2>Employee Standardize &amp; Dedupe</h2>
+          <p>Take a PickTrace Implementation <b>Data Template</b> (the new hires
+          to add), cross-reference your existing 3.0 employee export to drop
+          duplicates, then map every column onto the <b>3.0 Employee Bulk
+          Create</b> template &mdash; values snapped to its dropdowns and
+          validations preserved. Duplicates are matched on <b>Alt ID</b>,
+          <b>SSN</b>, or <b>Name + Date of Birth</b>; name-only matches are kept
+          but flagged. Large lists split into numbered files.</p>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">1. Data Template <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Data Template</span>
+              <input type="file" id="es-src-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <div class="cmp-filename" id="es-src-name">No file selected</div>
+            <div class="cmp-meta" id="es-src-meta"></div>
+            <div class="cmp-slot-hint">The implementation template's <b>Employees</b> sheet of new hires. The header row (<b>First Name</b>&hellip;) is auto-detected.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">2. Existing Employees <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload 3.0 Employees</span>
+              <input type="file" id="es-db-file" accept=".xlsx,.xls,.csv" hidden>
+            </label>
+            <div class="cmp-filename" id="es-db-name">No file selected</div>
+            <div class="cmp-meta" id="es-db-meta"></div>
+            <div class="cmp-slot-hint">Optional &mdash; a current 3.0 employee export, used to suppress duplicates (matched on Alt ID / SSN / Name + DOB). Skip it if the org has no employees yet; only within-file duplicates are removed.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3. Bulk Create Template <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Template</span>
+              <input type="file" id="es-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="es-tpl-name">No file selected</div>
+            <div class="cmp-meta" id="es-tpl-meta"></div>
+            <div class="cmp-slot-hint">3.0 Employee Bulk Create xlsx. Its DROP-DOWN INPUTS drive value-snapping; all validations are preserved in every output file.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Max employees per file</div>
+            <div style="padding-top:8px;">
+              <input type="number" id="es-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
+              <div class="cmp-slot-hint">Lists larger than this split into numbered files: <b>&hellip; (1 of N)</b>.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="es-run" disabled>&#9654; Build Preview</button>
+          <button class="btn btn-primary" id="es-export" disabled>&#8615; Export XLSX</button>
+          <button class="btn btn-ghost" id="es-reset">&#8634; Reset</button>
+        </div>
+
+        <div class="cmp-summary" id="es-summary" style="display:none;"></div>
+
+        <div class="cmp-results" id="es-results">
+          <section class="cmp-section" id="es-section-dups" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-dups-title">Duplicates Excluded</h3>
+            </header>
+            <p class="cmp-sites-hint">These new employees already exist in the database (confident match on <b>Alt ID</b>, <b>SSN</b>, or <b>Name + DOB</b>) and are <b>excluded</b> from the export.</p>
+            <div class="table-wrap"><table class="data-table" id="es-dups-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-possible" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-possible-title">Possible Duplicates</h3>
+            </header>
+            <p class="cmp-sites-hint">Kept in the export and flagged for review (a confident duplicate must agree on name <b>and</b> not be contradicted by SSN): <b>Name + DOB — SSN differs</b> = same name and birth date but a <i>different SSN</i>, so treated as two different people; <b>Alt ID/SSN — name differs</b> = shares an ID with a record having a completely different name (recycled or test ID); <b>Name only</b> = shares just a name with nothing to rule it out. Click <b>Exclude</b> to drop any you confirm is truly a duplicate.</p>
+            <div class="table-wrap"><table class="data-table" id="es-possible-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-create-title">Employers to Create in 3.0</h3>
+            </header>
+            <p class="cmp-sites-hint">These employer names appear in the data but aren't in the template's Employer dropdown. Create them in PickTrace 3.0 (or bulk-remap below) before upload, or it will be rejected with &ldquo;Employer not found&rdquo;.</p>
+            <div class="table-wrap"><table class="data-table" id="es-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-smartfix" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-smartfix-title">Smart Fixes</h3>
+              <button class="btn btn-primary btn-sm" id="es-smartfix-apply-all">Apply all</button>
+            </header>
+            <p class="cmp-sites-hint">Values that aren't one of the template's allowed dropdown options (Gender, Language, H2A, Country, &hellip;) &mdash; PickTrace rejects these (e.g. &ldquo;Unsupported 'Language Preference'&rdquo;). Each has a <b>Set to</b> dropdown: a <b>confident</b> match (case/spacing/plural) is pre-selected; the rest say <b>needs a choice</b>. Click <b>Apply</b> per row, or <b>Apply all</b> for every chosen row.</p>
+            <div class="table-wrap"><table class="data-table" id="es-smartfix-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-bulk" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-bulk-title">Bulk Edit Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">Set a value for an entire column across all (non-removed) rows. Pick from the template dropdown where available or type a manual override, then Apply. <b>Fill blanks</b> only touches empty cells (e.g. set Physical Address Country = US). Bulk values stick through re-runs until cleared.</p>
+            <div class="table-wrap"><table class="data-table" id="es-bulk-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-preview" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-preview-title">Preview</h3>
+            </header>
+            <p class="cmp-sites-hint">Cells are editable &mdash; click a cell, type, then click away to save. <b>Shift+click</b> selects a rectangular range; <b>Ctrl/Cmd+click</b> toggles individual cells. Empty required cells are red; amber rows are possible duplicates. Click <b>&times;</b> at the start of a row to drop it from the export.</p>
+            <div id="es-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
+              <b id="es-sel-count">0 cells selected</b>
+              <input type="text" id="es-sel-val" class="input-field" placeholder="Value for all selected cells" style="width:240px;">
+              <button class="btn btn-primary btn-sm" id="es-sel-apply">Apply to selected</button>
+              <button class="btn btn-ghost btn-sm" id="es-sel-clear">Clear contents</button>
+              <button class="btn btn-ghost btn-sm" id="es-sel-deselect">Deselect</button>
+            </div>
+            <div class="table-wrap"><table class="data-table" id="es-preview-table"></table></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="es-empty">Upload the Data Template and the Bulk Create template (Existing Employees is optional) to start.</div>
+      </div>
+      </div><!-- /cmp-mode-employees -->
     </div>
 
     <!-- ─── Page: Sheet Preview ─── -->
@@ -1180,7 +1513,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="gcv-ocr.js"></script>
-<script src="utils.js"></script>
+<script src="utils.js?v=2"></script>
 <script src="data-store.js"></script>
 <script src="global-import.js"></script>
 <script src="app.js"></script>
@@ -1188,9 +1521,11 @@
 <script src="review-logic.js"></script>
 <script src="coleditor.js"></script>
 <script src="tracker-logic.js"></script>
-<script src="compare-logic.js?v=68"></script>
-<script src="template-standardize.js?v=14"></script>
-<script src="employee-migrate.js?v=8"></script>
+<script src="compare-logic.js?v=69"></script>
+<script src="template-standardize.js?v=23"></script>
+<script src="sites-standardize.js?v=4"></script>
+<script src="employee-migrate.js?v=16"></script>
+<script src="employee-standardize.js?v=8"></script>
 <script>
 // ═══ Page Switching ═══
 document.getElementById('topbarTabs').addEventListener('click', e => {

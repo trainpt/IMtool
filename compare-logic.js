@@ -10,9 +10,23 @@ let dbCols = null;       // { name, site, altId, cropVar, acreage, plantCount, l
 let templateData = null; // { sites: [strings], cropVarieties: [strings], fileName }
 let updateTemplateData = null; // bulk UPDATE template (PickTrace export) — supplies the base row for every TO UPDATE row.
 let sitesMasterData = null; // { allLongNames: Set, archivedLongNames: Set, fileName, totalRows }
+let cmpDateFill = { mm: '', dd: '', range: 'first' }; // year-only → full-date expansion (export)
 let initialized = false;
 
 const $ = id => document.getElementById(id);
+
+// Historical date columns that may carry only a year / year range. Matched by
+// normHeader (lowercased, trailing '*' stripped). Start Date* is excluded.
+const CMP_DATE_COLS = new Set(['wet date', 'germination date', 'planted date',
+  'grafting date', 'production start', 'organic certification date']);
+function cmpYearOnlyDateCount() {
+  if (!diffResult || !dbData || !dbData.headers) return 0;
+  const idxs = dbData.headers.map((h, i) => CMP_DATE_COLS.has(normHeader(h)) ? i : -1).filter(i => i >= 0);
+  if (!idxs.length) return 0;
+  let n = 0;
+  (diffResult.newAdds || []).forEach(a => idxs.forEach(ci => { if (isYearOnlyDate(a.row[ci])) n++; }));
+  return n;
+}
 
 // ─── Helpers ───
 function extractCode(s) {
@@ -1850,11 +1864,51 @@ function renderResults() {
   renderConflicts();
   renderRemoves();
   renderRequiredDefaults();
+  renderCmpDateFill();
   renderSitesToCreate();
   renderCropVarsToCreate();
   renderUpdateMissing();
   renderArchiveMissing();
   renderSkipped();
+}
+
+// ─── Year-only date expansion control (applied at export) ───
+function renderCmpDateFill() {
+  const sec = $('cmp-section-datefill');
+  if (!sec) return;
+  const n = cmpYearOnlyDateCount();
+  // Only surface the control when there are year-only date cells (or a setting
+  // is already active), so it stays out of the way otherwise.
+  if (!n && !(cmpDateFill.mm && cmpDateFill.dd)) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  const cnt = $('cmp-datefill-count');
+  if (cnt) cnt.innerHTML = n
+    ? '<b style="color:#b45309;">' + n + '</b> year-only date cell' + (n === 1 ? '' : 's') + ' in New Adds'
+    : '<span style="color:#15803d;font-weight:600;">&#10003; Will expand on export</span>';
+  const mmEl = $('cmp-datefill-mm'), ddEl = $('cmp-datefill-dd'), rgEl = $('cmp-datefill-range');
+  if (mmEl && document.activeElement !== mmEl) mmEl.value = cmpDateFill.mm;
+  if (ddEl && document.activeElement !== ddEl) ddEl.value = cmpDateFill.dd;
+  if (rgEl) rgEl.value = cmpDateFill.range;
+}
+
+function applyCmpDateFill() {
+  const mm = ($('cmp-datefill-mm').value || '').trim();
+  const dd = ($('cmp-datefill-dd').value || '').trim();
+  const range = $('cmp-datefill-range').value || 'first';
+  const mi = parseInt(mm, 10), di = parseInt(dd, 10);
+  if (!(mi >= 1 && mi <= 12) || !(di >= 1 && di <= 31)) {
+    alert('Enter a valid month (1–12) and day (1–31) first.');
+    return;
+  }
+  cmpDateFill = { mm, dd, range };
+  renderCmpDateFill();
+}
+
+function clearCmpDateFill() {
+  cmpDateFill = { mm: '', dd: '', range: ($('cmp-datefill-range') ? $('cmp-datefill-range').value : 'first') };
+  if ($('cmp-datefill-mm')) $('cmp-datefill-mm').value = '';
+  if ($('cmp-datefill-dd')) $('cmp-datefill-dd').value = '';
+  renderCmpDateFill();
 }
 
 function renderCropVarsToCreate() {
@@ -2731,6 +2785,18 @@ function exportXlsx() {
     });
   });
 
+  // ─── Year-only date expansion: turn bare years / year ranges in the date
+  //     columns (e.g. Planted Date "2012", "2010-2011") into full YYYY-MM-DD
+  //     using the operator's chosen month/day, keeping each row's year.
+  if (cmpDateFill && cmpDateFill.mm && cmpDateFill.dd) {
+    const dfIdxs = outHeaders.map((h, i) => CMP_DATE_COLS.has(normHeader(h)) ? i : -1).filter(i => i >= 0);
+    outRows.forEach(cells => {
+      dfIdxs.forEach(ci => {
+        if (isYearOnlyDate(cells[ci])) cells[ci] = expandYearOnlyDate(cells[ci], cmpDateFill.mm, cmpDateFill.dd, cmpDateFill.range);
+      });
+    });
+  }
+
   // ─── Final safety-net pass: swap Acreage <-> Plant Count on any output row
   //     where Acreage > Plant Count (Plant Count is always greater in real data).
   const acColIdx = outHeaders.findIndex(h => normHeader(h) === 'acreage');
@@ -3357,8 +3423,9 @@ function resetAll() {
   // Slot 6 is conditionally revealed when the DB is incomplete — hide on reset.
   const _slot6 = $('cmp-slot-updt');
   if (_slot6) _slot6.style.display = 'none';
+  cmpDateFill = { mm: '', dd: '', range: 'first' };
   $('cmp-summary').style.display = 'none';
-  ['cmp-section-adds','cmp-section-conflicts','cmp-section-removes','cmp-section-defaults','cmp-section-sites','cmp-section-cropvars','cmp-section-updt-missing','cmp-section-arch-missing','cmp-section-skipped'].forEach(id => $(id).style.display = 'none');
+  ['cmp-section-adds','cmp-section-conflicts','cmp-section-removes','cmp-section-defaults','cmp-section-datefill','cmp-section-sites','cmp-section-cropvars','cmp-section-updt-missing','cmp-section-arch-missing','cmp-section-skipped'].forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
   $('cmp-empty').style.display = '';
   $('cmp-export').disabled = true;
   $('cmp-debug').disabled = true;
@@ -3493,6 +3560,8 @@ function cmpInit() {
 
   $('cmp-run').addEventListener('click', runCompare);
   $('cmp-export').addEventListener('click', requestExport);
+  { const a = $('cmp-datefill-apply'); if (a) a.addEventListener('click', applyCmpDateFill); }
+  { const c = $('cmp-datefill-clear'); if (c) c.addEventListener('click', clearCmpDateFill); }
 
   // Export gate modal handlers
   const captureExportOpts = () => {
