@@ -40,6 +40,7 @@
   let fullContractorMap = null;// Map<string ContractorID, name> — full (archived+unarchived), optional
   let restoredArchived = new Set(); // archived ContractorIDs the user chose to keep
   let archivedStats = {};      // cid → { count, name } for the Archived panel
+  let completedEmployers = new Set(); // employer names ticked off the "to create" checklist
   let migratedAltIds = null;   // Set<altId> of employees already in 3.0 (optional)
   let alreadyMigratedCount = 0;// per-build count of skips due to cross-reference
   let tplData = null;          // { headers, employerList[], rawBuffer, fileName }
@@ -55,12 +56,9 @@
 
   // ─── Mode-pill switcher (manages only this module's pane) ───
   function attachModeSwitcher() {
-    document.querySelectorAll('.cmp-mode-pill').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const em = $('cmp-mode-empmig');
-        if (em) em.style.display = btn.dataset.mode === 'empmig' ? '' : 'none';
-      });
-    });
+    // Page visibility is now owned by the top-level pill switcher
+    // (template-standardize.js → "employees" tab) and the employee sub-toggle
+    // (employee-standardize.js → .emp-subtab). Nothing to wire here.
   }
 
   // 'MM/DD/YYYY' → 'YYYY-MM-DD' (PickTrace bulk-template date format).
@@ -173,8 +171,11 @@
       const k = norm(h);
       const arr = m.get(k) || [];
       for (let r = 1; r < raw.length; r++) {
-        const v = String(raw[r][ci] != null ? raw[r][ci] : '').trim();
-        if (v && arr.indexOf(v) < 0) arr.push(v);
+        // Keep dropdown values VERBATIM — incl. trailing "ghost spaces".
+        // PickTrace stores some re-created employers with a trailing space
+        // (e.g. "Johan Hernandez FLC "); trimming it ⇒ "Employer not found".
+        const v = String(raw[r][ci] != null ? raw[r][ci] : '');
+        if (v.trim() && arr.indexOf(v) < 0) arr.push(v);
       }
       if (arr.length) m.set(k, arr);
     });
@@ -273,6 +274,9 @@
         if (!dataWs) { alert('Could not find DATA ENTRY sheet in this template.'); return; }
         const dataAoa = XLSX.utils.sheet_to_json(dataWs, { header: 1, defval: '' });
         const headers = dataAoa.length ? dataAoa[0].map(h => String(h == null ? '' : h).trim()) : [];
+        // Drop trailing empty header cells — report/template files often carry
+        // hundreds of blank styled columns (A1…ZZ1) that aren't real columns.
+        while (headers.length && headers[headers.length - 1] === '') headers.pop();
         // Headers carry a trailing '*' on required columns ("First Name*",
         // "Employer*"); norm() lowercases/trims but keeps the '*', so strip it
         // before validating.
@@ -284,10 +288,11 @@
         const dropdowns = readDropdowns(wb);
         const employerList = dropdowns.get('employer') || [];
         tplData = { headers, dropdowns, employerList, rawBuffer: buf, fileName: file.name };
+        const ghost = employerList.filter(v => /\s$/.test(v)).length;
         $('em-tpl-name').textContent = file.name;
         $('em-tpl-meta').textContent = headers.length + ' columns · ' +
-          dropdowns.size + ' dropdown column' + (dropdowns.size === 1 ? '' : 's') + ' · ' +
-          employerList.length + ' employer' + (employerList.length === 1 ? '' : 's');
+          employerList.length + ' employer' + (employerList.length === 1 ? '' : 's') +
+          ' (' + ghost + ' with trailing space)';
         maybeRun();
       } catch (err) {
         alert('Failed to read template: ' + (err && err.message ? err.message : err));
@@ -370,8 +375,10 @@
     });
 
     // Canonicalize Employer* to the template's dropdown literal when it
-    // matches (case-insensitive); otherwise KEEP the resolved contractor name
-    // (don't discard it just because the template's dropdown doesn't list it).
+    // matches (case-insensitive). A resolved name that ISN'T in the template's
+    // Employer dropdown is KEPT in the column (per request) — it surfaces in
+    // both the "Employers to Create in 3.0" list and the Unresolved Employers
+    // panel so it can be created in PickTrace or remapped before upload.
     if (tplData && tplData.employerList && tplData.employerList.length) {
       const cm = buildCaseMap(tplData.employerList);
       out.forEach(r => {
@@ -445,6 +452,7 @@
     columnFills = {};
     removedRows = new Set();
     restoredArchived = new Set();
+    completedEmployers = new Set();
     selCells = new Set(); selAnchor = null;
     rebuildFormattedRows();
     renderArchived();
@@ -517,17 +525,44 @@
   }
 
   // ─── Unresolved employers ───
+  // True if v is a valid 3.0 employer (in the template's Employer dropdown).
+  // When the template has no Employer dropdown we can't validate → treat any
+  // non-blank value as acceptable.
+  function employerValid(v) {
+    if (!v) return false;
+    if (!tplData || !tplData.employerList || !tplData.employerList.length) return true;
+    return buildCaseMap(tplData.employerList).has(String(v).toUpperCase().trim());
+  }
+
+  // Distinct employer names sitting in the column that are NOT valid 3.0
+  // employers — i.e. they must be created in PickTrace before upload.
+  function getEmployersToCreate() {
+    const m = new Map(); // employerName → { count, cids:Set }
+    if (!formattedRows) return m;
+    formattedRows.forEach((r, ri) => {
+      if (removedRows.has(ri)) return;
+      const v = r[4];
+      if (!v || employerValid(v)) return;
+      const e = m.get(v) || { count: 0, cids: new Set() };
+      e.count++;
+      e.cids.add(srcCid(srcKept[ri]));
+      m.set(v, e);
+    });
+    return m;
+  }
+
   function getUnresolved() {
     const m = new Map(); // cid → { count, sampleName, raw }
     if (!formattedRows || !empData) return m;
     const fnI = eIdx('first name'), lnI = eIdx('last name');
     formattedRows.forEach((r, ri) => {
       if (removedRows.has(ri)) return;
-      if (r[4]) return; // Employer* resolved
+      if (employerValid(r[4])) return; // valid 3.0 employer — nothing to resolve
       const src = srcKept[ri];
       const cid = srcCid(src);
       const e = m.get(cid) ||
-        { count: 0, sampleName: '', raw: (employerMap && employerMap.get(cid)) || '' };
+        { count: 0, sampleName: '', raw: (employerMap && employerMap.get(cid)) ||
+            (fullContractorMap && fullContractorMap.get(cid)) || '' };
       e.count++;
       if (!e.sampleName) {
         const fn = fnI < 0 ? '' : String(src[fnI] == null ? '' : src[fnI]).trim();
@@ -539,7 +574,58 @@
     return m;
   }
 
+  // Employers still needing creation (checklist items not yet ticked off).
+  function pendingEmployersToCreate() {
+    const out = [];
+    getEmployersToCreate().forEach((info, name) => {
+      if (!completedEmployers.has(name)) out.push([name, info]);
+    });
+    return out;
+  }
+
+  function renderEmployersToCreate() {
+    const sec = $('em-section-create');
+    const tbl = $('em-create-table');
+    if (!sec || !tbl) return;
+    const m = getEmployersToCreate();
+    if (!m.size) { sec.style.display = 'none'; tbl.innerHTML = ''; return; }
+    sec.style.display = '';
+    const done = [...m.keys()].filter(nm => completedEmployers.has(nm)).length;
+    const title = $('em-create-title');
+    if (title) title.textContent = 'Employers to Create in 3.0 (' +
+      (m.size - done) + ' to create' + (done ? ' · ' + done + ' done' : '') + ')';
+    let html = '<thead><tr><th></th><th>Employer to create</th><th>Employees</th>' +
+      '<th>Legacy Contractor IDs</th></tr></thead><tbody>';
+    [...m.entries()].sort((a, b) => b[1].count - a[1].count).forEach(([name, info]) => {
+      const isDone = completedEmployers.has(name);
+      const mark = isDone
+        ? '<span style="color:#15803d;font-weight:700;">&#10003;</span>'
+        : '<span style="color:#9ca3af;">&#9744;</span>';
+      const nameStyle = isDone ? ' style="text-decoration:line-through;color:#15803d;"' : '';
+      html += '<tr class="em-create-row" data-emp="' + escHtml(name) + '" ' +
+        'style="cursor:pointer;"' + (isDone ? ' ' : '') +
+        ' title="Click to copy this name and mark it created in 3.0">' +
+        '<td style="text-align:center;">' + mark + '</td>' +
+        '<td><b' + nameStyle + '>' + escHtml(name) + '</b></td>' +
+        '<td>' + info.count + '</td>' +
+        '<td>' + escHtml([...info.cids].sort((x, y) => x - y).join(', ')) + '</td></tr>';
+    });
+    html += '</tbody>';
+    tbl.innerHTML = html;
+    tbl.querySelectorAll('.em-create-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const name = tr.dataset.emp;
+        if (completedEmployers.has(name)) completedEmployers.delete(name);
+        else completedEmployers.add(name);
+        if (navigator.clipboard) navigator.clipboard.writeText(name).catch(() => {});
+        renderEmployersToCreate();
+        updateSummary();
+      });
+    });
+  }
+
   function renderUnresolved() {
+    renderEmployersToCreate();
     if (!formattedRows || !tplData) return;
     const sec = $('em-section-unresolved');
     const tbl = $('em-unresolved-table');
@@ -559,7 +645,8 @@
       const sel = employerOverrides[cid] || '';
       const opts = list.length
         ? '<option value="">— pick —</option>' +
-          list.map(o => '<option' + (o === sel ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('')
+          list.map(o => '<option value="' + escHtml(o) + '"' + (o === sel ? ' selected' : '') +
+            '>' + escHtml(o) + (/\s$/.test(o) ? ' ␣(trailing space)' : '') + '</option>').join('')
         : '<option value="">(template has no employer dropdown)</option>';
       html += '<tr>' +
         '<td><b>' + escHtml(cid) + '</b></td>' +
@@ -595,8 +682,12 @@
       btn.addEventListener('click', e => {
         const tr = e.target.closest('tr');
         const cid = e.target.dataset.cid;
-        const pick = tr.querySelector('.em-emp-pick').value.trim();
-        const ovr = tr.querySelector('.em-emp-override').value.trim();
+        // Don't trim the dropdown pick — it may carry a deliberate trailing
+        // "ghost space" that must be preserved to match the 3.0 employer.
+        // The manual override likewise keeps a trailing space (leading only
+        // stripped) so a ghost-spaced name can be typed in by hand.
+        const pick = tr.querySelector('.em-emp-pick').value;
+        const ovr = tr.querySelector('.em-emp-override').value.replace(/^\s+/, '');
         const val = ovr || pick;
         if (!val) { alert('Pick an Employer or type a manual override first.'); return; }
         applyEmployer(cid, val);
@@ -605,7 +696,7 @@
     // Instant apply on dropdown pick (intentional, like Template Standardize).
     tbl.querySelectorAll('.em-emp-pick').forEach(sel => {
       sel.addEventListener('change', e => {
-        const v = e.target.value.trim();
+        const v = e.target.value; // verbatim — keep any trailing ghost space
         if (v) applyEmployer(e.target.dataset.cid, v);
       });
     });
@@ -642,7 +733,8 @@
       const cur = columnFills[idx];
       const optsHtml = opts.length
         ? '<option value="">— pick —</option>' +
-          opts.map(o => '<option' + (cur && o === cur.val ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('')
+          opts.map(o => '<option value="' + escHtml(o) + '"' + (cur && o === cur.val ? ' selected' : '') +
+            '>' + escHtml(o) + (/\s$/.test(o) ? ' ␣(trailing space)' : '') + '</option>').join('')
         : '<option value="">(no template dropdown — use manual override)</option>';
       const status = cur
         ? '<span style="color:#15803d;font-weight:600;">✓ ' + escHtml(String(cur.val).slice(0, 40) || '(blank)') +
@@ -693,8 +785,10 @@
     if (!tbl) return;
     const grab = e => {
       const tr = e.target.closest('tr');
-      const pick = tr.querySelector('.em-bulk-pick').value.trim();
-      const ovr = tr.querySelector('.em-bulk-override').value.trim();
+      // Pick verbatim (keeps trailing ghost spaces); override keeps a trailing
+      // space too (leading whitespace only is stripped).
+      const pick = tr.querySelector('.em-bulk-pick').value;
+      const ovr = tr.querySelector('.em-bulk-override').value.replace(/^\s+/, '');
       return ovr || pick;
     };
     tbl.querySelectorAll('.em-bulk-apply').forEach(btn => {
@@ -716,7 +810,7 @@
     });
     tbl.querySelectorAll('.em-bulk-pick').forEach(sel => {
       sel.addEventListener('change', e => {
-        const v = e.target.value.trim();
+        const v = e.target.value; // verbatim — keep any trailing ghost space
         if (v) applyColumnFill(+e.target.dataset.idx, v, 'all');
       });
     });
@@ -877,6 +971,7 @@
       reqIdx.forEach(i => { if (!r[i]) emptyReq++; });
     });
     const unresolved = getUnresolved().size;
+    const toCreate = pendingEmployersToCreate().length;
     let limit = parseInt($('em-batch').value, 10);
     if (!Number.isFinite(limit) || limit < 1) limit = 5000;
     const files = visible ? Math.ceil(visible / limit) : 0;
@@ -891,6 +986,7 @@
       '<div class="cmp-stat"><b>' + EMP_HEADERS.length + '</b> template columns</div>' +
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
       (unresolved ? '<div class="cmp-stat cmp-warn"><b>' + unresolved + '</b> unresolved employer' + (unresolved === 1 ? '' : 's') + '</div>' : '') +
+      (toCreate ? '<div class="cmp-stat cmp-warn"><b>' + toCreate + '</b> employer' + (toCreate === 1 ? '' : 's') + ' to create in 3.0</div>' : '') +
       '<div class="cmp-stat"><b>' + files + '</b> output file' + (files === 1 ? '' : 's') + '</div>';
   }
 
@@ -905,6 +1001,20 @@
     if (!formattedRows || !tplData) return;
     const exportRows = formattedRows.filter((_, i) => !removedRows.has(i)).map(r => r.slice());
     if (!exportRows.length) { alert('No employees to export.'); return; }
+    // Warn if employers still need to be created in PickTrace 3.0 — uploading
+    // before they exist will be rejected with "Employer not found".
+    const pending = pendingEmployersToCreate();
+    if (pending.length) {
+      const names = pending.sort((a, b) => b[1].count - a[1].count)
+        .map(([n, info]) => '  • ' + n + ' (' + info.count + ')').join('\n');
+      const ok = window.confirm(
+        pending.length + ' employer' + (pending.length === 1 ? '' : 's') +
+        ' in this export are not yet created in PickTrace 3.0:\n\n' + names +
+        '\n\nCreate these employers in PickTrace first (click each in the ' +
+        '"Employers to Create" list to copy + check it off), or the upload ' +
+        'will be rejected with "Employer not found".\n\nExport anyway?');
+      if (!ok) return;
+    }
     let limit = parseInt($('em-batch').value, 10);
     if (!Number.isFinite(limit) || limit < 1) limit = 5000;
     const chunks = chunkArr(exportRows, limit);
@@ -958,7 +1068,11 @@
       const name = N === 1
         ? base + ' — filled' + ext
         : base + ' — filled (' + (i + 1) + ' of ' + N + ')' + ext;
-      XLSX.writeFile(wb, name, { cellStyles: true });
+      // bookSST:true forces shared-string output — that is the only writer
+      // path where SheetJS emits xml:space="preserve", which is required to
+      // keep trailing "ghost spaces" on employer names (otherwise the reader
+      // trims them and PickTrace reports "Employer not found").
+      XLSX.writeFile(wb, name, { cellStyles: true, bookSST: true });
       if (i < N - 1) await sleep(300); // let each download settle
     }
   }
@@ -971,6 +1085,7 @@
     columnFills = {};
     removedRows = new Set();
     restoredArchived = new Set(); archivedStats = {};
+    completedEmployers = new Set();
     selCells = new Set(); selAnchor = null; previewOrder = [];
     { const b = $('em-sel-bar'); if (b) b.style.display = 'none'; }
     $('em-emp-name').textContent = 'No file selected';
@@ -986,7 +1101,7 @@
     $('em-emp-file').value = ''; $('em-employer-file').value = '';
     $('em-fullcontractor-file').value = ''; $('em-migrated-file').value = '';
     $('em-tpl-file').value = '';
-    ['em-section-archived', 'em-section-unresolved', 'em-section-bulk', 'em-section-preview'].forEach(id => {
+    ['em-section-archived', 'em-section-create', 'em-section-unresolved', 'em-section-bulk', 'em-section-preview'].forEach(id => {
       const el = $(id); if (el) el.style.display = 'none';
     });
     $('em-summary').style.display = 'none';
@@ -1043,6 +1158,14 @@
     $('em-run').addEventListener('click', runMigrate);
     $('em-export').addEventListener('click', () => { doExport(); });
     $('em-reset').addEventListener('click', reset);
+    const copyBtn = $('em-create-copy');
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+      const names = [...getEmployersToCreate().keys()];
+      if (!names.length) { alert('No employers to create.'); return; }
+      navigator.clipboard.writeText(names.join('\n')).then(
+        () => alert('Copied ' + names.length + ' employer name' + (names.length === 1 ? '' : 's') + '.'),
+        () => alert('Copy failed.'));
+    });
     // Delegated inline-edit handlers bound ONCE to the persistent preview
     // table element (renderPreview only replaces its innerHTML).
     const ptbl = $('em-preview-table');
