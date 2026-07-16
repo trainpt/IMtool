@@ -45,6 +45,39 @@ function parseCSV(text) {
   return { headers: headers.map(h => h.trim()), rows };
 }
 
+// ── Year-only date expansion ──
+// PickTrace needs full dates (YYYY-MM-DD). Some date columns (e.g. Planted
+// Date) carry only a year ("2012") or a year range ("2010-2011"). These
+// helpers detect those and expand them to a full date using an operator-chosen
+// month/day, KEEPING each row's year. rangePref ('first'|'last') picks which
+// year of a range to keep. Anything that is already a full date — or not a
+// year/range at all — is returned untouched (so the pass is idempotent).
+function isYearOnlyDate(value) {
+  const s = String(value == null ? '' : value).trim();
+  return /^\d{4}$/.test(s) || /^\d{4}\s*(?:-|–|—|\/|to)\s*\d{4}$/i.test(s);
+}
+function expandYearOnlyDate(value, mm, dd, rangePref) {
+  const s = String(value == null ? '' : value).trim();
+  if (!s) return s;
+  const mi = parseInt(String(mm), 10), di = parseInt(String(dd), 10);
+  if (!(mi >= 1 && mi <= 12) || !(di >= 1 && di <= 31)) return s; // invalid MM/DD → leave as-is
+  const MM = String(mi).padStart(2, '0'), DD = String(di).padStart(2, '0');
+  let year = null;
+  let m = s.match(/^(\d{4})$/);
+  if (m) year = m[1];
+  else {
+    m = s.match(/^(\d{4})\s*(?:-|–|—|\/|to)\s*(\d{4})$/i);
+    if (m) year = (String(rangePref) === 'last') ? m[2] : m[1];
+  }
+  if (!year) return s;
+  return year + '-' + MM + '-' + DD;
+}
+function countYearOnlyDates(rows, colIdxs) {
+  let n = 0;
+  (rows || []).forEach(r => { (colIdxs || []).forEach(ci => { if (isYearOnlyDate(r[ci])) n++; }); });
+  return n;
+}
+
 // Read a file (CSV or Excel) and return {headers, rows, sheetNames?, workbook?}
 function readUploadedFile(file) {
   return new Promise((resolve, reject) => {

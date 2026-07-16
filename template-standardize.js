@@ -67,7 +67,163 @@
   let manualFills = {};        // bulkColIdx → user-supplied value (re-applied after rebuilds)
   let removedRows = new Set(); // formattedRows indexes excluded from preview + export
   let siteAddresses = {};      // site value → address string (reference only; survives re-renders)
+  let dateFill = { mm: '', dd: '', range: 'first' }; // year-only → full-date expansion
+  let existingData = null;        // { keys: Set<siteName>, fileName, count } — locations already in PickTrace
+  let existingRowIdxs = new Set();// formattedRows indexes that already exist in PickTrace (dropped)
+  let cropSplit = true;           // split " - Subvariety" out of Crop & Variety → Clone/Subvariety
+  let nameOverrides = {};         // formattedRows index → renamed Name* (resolves collisions, sticky)
+  let cellOverrides = {};         // "rowIdx|colIdx" → value — sticky per-cell edits from the editable preview (all columns EXCEPT Name*, which uses nameOverrides)
+  let smartFixMap = {};           // "colIdx||UPPERVALUE" → canonical dropdown value — sticky bulk fixes the user applied from the Smart Fixes panel
+  let previewIssuesOnly = false;  // preview toggle: show only rows with an errored cell
+  let collisionKeys = new Set();  // locKeys flagged as collisions (set in rebuildFormattedRows)
+  let existingTakenKeys = new Set(); // locKeys whose name is already used by a DIFFERENT block in PickTrace
   let initialized = false;
+
+  // A row is excluded from preview + export if the user removed it OR it already
+  // exists in PickTrace (cross-referenced from the uploaded existing-locations file).
+  function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i); }
+
+  // Location identity key — case/whitespace-insensitive Site + Name (block).
+  const locNorm = s => String(s == null ? '' : s).toUpperCase().trim().replace(/\s+/g, ' ');
+  function locKey(site, name) { return locNorm(site) + '||' + locNorm(name); }
+  function findColIdxByNames(headers, names) {
+    const noStar = h => String(h || '').toLowerCase().replace(/\*+$/, '').trim();
+    for (const want of names) {
+      const i = headers.findIndex(h => noStar(h) === want);
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+
+  // Historical date columns whose cells may carry only a year / year range.
+  // Start Date* is intentionally excluded (it's the required activation date).
+  const DATE_FILL_HEADERS = ['Wet Date', 'Germination Date', 'Planted Date',
+    'Grafting Date', 'Production Start', 'Organic Certification Date'];
+  function dateFillIdxs() {
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    return DATE_FILL_HEADERS.map(h => bulkHeaders.indexOf(h)).filter(i => i >= 0);
+  }
+
+  // The full set of bulk columns that hold dates (Start Date* + the historical
+  // date columns). Used to coerce Excel date serials read from the source.
+  function dateColIdxs() {
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const names = ['Start Date*'].concat(DATE_FILL_HEADERS);
+    return names.map(h => bulkHeaders.indexOf(h)).filter(i => i >= 0);
+  }
+
+  // Excel stores dates as serial day-counts; when a source column is date-
+  // formatted, XLSX hands us the raw serial (e.g. 46213) instead of a date, so
+  // the cell would otherwise show "46213". Convert a 5–7-digit serial in a date
+  // column to 'YYYY-MM-DD'. Excel's epoch is 1900-01-01 but it wrongly counts
+  // 1900 as a leap year, so anchoring at 1899-12-30 (UTC, to avoid TZ drift)
+  // accounts for the phantom 1900-02-29. Non-serial values (real date strings,
+  // 4-digit years, blanks, text) are returned untouched.
+  function excelSerialToYMD(serial) {
+    const n = Math.floor(Number(serial));
+    if (!isFinite(n)) return null;
+    const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000);
+    if (isNaN(d.getTime())) return null;
+    return d.getUTCFullYear() + '-' +
+      String(d.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getUTCDate()).padStart(2, '0');
+  }
+  function coerceExcelDate(v) {
+    const s = String(v == null ? '' : v).trim();
+    // Only 5–7 digit integers → leaves 4-digit years, year ranges (have a dash),
+    // real date strings, and text alone. 10000 ≈ 1927, 2958465 = 9999-12-31.
+    if (!/^\d{5,7}$/.test(s)) return s;
+    const n = parseInt(s, 10);
+    if (n < 10000 || n > 2958465) return s;
+    return excelSerialToYMD(n) || s;
+  }
+
+  function activeSchemaHeaders() { return target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS; }
+
+  // ─── Smart-match helpers (Smart Fixes panel) ───
+  // Collapse to alphanumerics only — catches spacing/punctuation/case diffs
+  // ("Crop & Variety" ↔ "Crop and Variety", "Almond -Other" ↔ "Almond-Other").
+  function looseKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  // Token-wise singular/plural key — depluralizes each word (>3 chars ending in
+  // 's') so "Almonds-Other" and "Almond-Other" collapse to the same key. The
+  // same normalization is applied to both sides, so exact linguistic accuracy
+  // doesn't matter — only that the two sides agree.
+  function pluralKey(s) {
+    return String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+      .map(w => (w.length > 3 && w.endsWith('s')) ? w.slice(0, -1) : w).join('|');
+  }
+  // Build { canon:Map<UPPER,val>, loose:Map<key,[vals]>, plural:Map<key,[vals]> }
+  // for a dropdown value list.
+  function buildMatchMaps(vals) {
+    const canon = new Map(), loose = new Map(), plural = new Map();
+    (vals || []).forEach(v => {
+      const u = String(v).toUpperCase().trim();
+      if (u && !canon.has(u)) canon.set(u, v);
+      const lk = looseKey(v); if (lk) { const a = loose.get(lk) || []; if (!a.includes(v)) a.push(v); loose.set(lk, a); }
+      const pk = pluralKey(v); if (pk) { const a = plural.get(pk) || []; if (!a.includes(v)) a.push(v); plural.set(pk, a); }
+    });
+    return { canon, loose, plural };
+  }
+  // Given a value already known to be off-list (not a case-insensitive exact
+  // dropdown hit), return the single confident canonical match, or null when
+  // there's no match or it's ambiguous (2+ candidates).
+  function confidentMatch(value, maps) {
+    const uniq = m => (m && m.length === 1) ? m[0] : null;
+    const byLoose = uniq(maps.loose.get(looseKey(value)));
+    if (byLoose) return byLoose;
+    const byPlural = uniq(maps.plural.get(pluralKey(value)));
+    if (byPlural) return byPlural;
+    return null;
+  }
+  // Bulk columns that carry a template dropdown (indices into the active schema).
+  function dropdownColIdxs() {
+    const bulkHeaders = activeSchemaHeaders();
+    return bulkHeaders.map((h, i) => dropdownValuesFor(h) ? i : -1).filter(i => i >= 0);
+  }
+  // Scan every dropdown-backed column for off-list values. Each becomes one row
+  // in the Smart Fixes panel with a dropdown to choose the target value —
+  // pre-selected to the confident match when there is one (case/spacing/plural),
+  // left as "— pick —" when there isn't (e.g. "EQUIPMENT" has no auto match, so
+  // the user chooses a valid Location Type). Returns
+  // [{ colIdx, header, from, count, options, suggestion }], suggested first.
+  function computeSmartFixes() {
+    if (!formattedRows || !tplData) return [];
+    const bulkHeaders = activeSchemaHeaders();
+    const out = [];
+    dropdownColIdxs().forEach(ci => {
+      const vals = dropdownValuesFor(bulkHeaders[ci]);
+      const maps = buildMatchMaps(vals);
+      const seen = new Map(); // UPPERVALUE → { from, count, options, suggestion }
+      formattedRows.forEach((r, ri) => {
+        if (excluded(ri)) return;
+        const val = r[ci];
+        if (!val) return;
+        const u = String(val).toUpperCase().trim();
+        if (maps.canon.has(u)) return;                 // already an exact (case-insensitive) hit
+        if (smartFixMap[ci + '||' + u]) return;         // already applied
+        const sug = confidentMatch(val, maps);
+        const suggestion = (sug && String(sug).toUpperCase().trim() !== u) ? sug : '';
+        const e = seen.get(u) || { colIdx: ci, header: bulkHeaders[ci], from: val, count: 0, options: vals, suggestion };
+        e.count++;
+        seen.set(u, e);
+      });
+      seen.forEach(e => out.push(e));
+    });
+    // Confident suggestions first, then most-rows-first.
+    out.sort((a, b) => (b.suggestion ? 1 : 0) - (a.suggestion ? 1 : 0) || b.count - a.count);
+    return out;
+  }
+
+  // Template dropdown values for a bulk column, or null if that column carries
+  // no list. tplData.dropdowns is keyed by norm(header) with the trailing '*'
+  // absent (the DROP-DOWN INPUTS sheet labels columns "Site", "Crop & Variety",
+  // "Location Type", "Production Status", …).
+  function dropdownValuesFor(bulkHeader) {
+    if (!tplData || !tplData.dropdowns) return null;
+    const key = norm(bulkHeader).replace(/\*+$/, '').trim();
+    const set = tplData.dropdowns.get(key);
+    return set && set.size ? [...set] : null;
+  }
 
   // ─── Mode-pill switcher ───
   function attachModeSwitcher() {
@@ -77,7 +233,9 @@
         document.querySelectorAll('.cmp-mode-pill').forEach(b => b.classList.toggle('cmp-mode-active', b === btn));
         $('cmp-mode-compare').style.display = mode === 'compare' ? '' : 'none';
         $('cmp-mode-standardize').style.display = mode === 'standardize' ? '' : 'none';
-        const em = $('cmp-mode-empmig'); if (em) em.style.display = mode === 'empmig' ? '' : 'none';
+        // Employee Migration + Standardize/Dedupe now share one top-level tab
+        // ("Employees") with an internal sub-toggle (see employee-standardize.js).
+        const emp = $('cmp-mode-employees'); if (emp) emp.style.display = mode === 'employees' ? '' : 'none';
       });
     });
   }
@@ -262,14 +420,14 @@
   //   3. Common alias map (display_name → Name*, plant_name → Crop & Variety*, etc.)
   const ALIASES = {
     'site*':              ['site','sites','site_name','site name','grower','farm'],
-    'name*':              ['name','block','display_name','display name'],
+    'name*':              ['name','block','location name','location_name','display_name','display name'],
     'alt id':             ['alt id','altid','code'],
     'location type*':     ['location type','type'],
     'crop & variety*':    ['crop & variety','crop and variety','plant_name','plant name','crop'],
     'planted at':         ['planted at','planted_at'],
     'acreage':            ['acreage','acres','acre','hectares'],
     'length':             ['length','length_meters'],
-    'plant count':        ['plant count','plant_count','tree count','trees','plants','quantity'],
+    'plant count':        ['plant count','plant_count','plant quantity','tree count','trees','plants','quantity'],
     'start date*':        ['start date','start_date'],
     'planted date':       ['planted date','planted_date'],
     'is archived':        ['is archived','is_archived','archived'],
@@ -421,6 +579,8 @@
     const cropSrcIdx = findSrcColByNames(['crop','crop type','crop name','plant_name','plant name']);
     const varSrcIdx = findSrcColByNames(['variety','varietal'], ['clone','subvariety','sub variety','sub-variety']);
     const synthesizeCv = cvIdx >= 0 && cropSrcIdx >= 0 && varSrcIdx >= 0 && cropSrcIdx !== varSrcIdx;
+    const dateIdxs = dateColIdxs();
+    const acreageIdx = bulkHeaders.indexOf('Acreage');
 
     return srcData.rows.map(srcRow => {
       const out = new Array(bulkHeaders.length).fill('');
@@ -431,6 +591,11 @@
           if (v) out[bi] = v;
         }
       });
+      // Acreage of 0 → blank (a plot with 0 acres shouldn't carry a literal 0).
+      if (acreageIdx >= 0 && out[acreageIdx] !== '') {
+        const n = parseFloat(String(out[acreageIdx]).replace(/[, ]/g, ''));
+        if (!isNaN(n) && n === 0) out[acreageIdx] = '';
+      }
       if (synthesizeCv) {
         const c = String(srcRow[cropSrcIdx] || '').trim();
         const v = String(srcRow[varSrcIdx] || '').trim();
@@ -438,6 +603,9 @@
         else if (c) out[cvIdx] = c;
         else if (v) out[cvIdx] = v;
       }
+      // Convert Excel date serials in date columns to YYYY-MM-DD so dates read
+      // as dates, not raw numbers (e.g. 46213 → 2026-07-10).
+      dateIdxs.forEach(ci => { if (out[ci]) out[ci] = coerceExcelDate(out[ci]); });
       if (target === 'update' && isArchivedIdx >= 0 && !out[isArchivedIdx]) {
         out[isArchivedIdx] = 'FALSE';
       }
@@ -456,27 +624,211 @@
       const i = +idx;
       formattedRows.forEach(r => { if (!r[i]) r[i] = val; });
     });
+    // Expand year-only / year-range date cells to full YYYY-MM-DD using the
+    // operator's chosen month/day. Re-derived from raw source on every rebuild,
+    // so changing the month/day re-expands cleanly (non-destructive).
+    if (dateFill.mm && dateFill.dd) {
+      const idxs = dateFillIdxs();
+      formattedRows.forEach(r => {
+        idxs.forEach(ci => {
+          if (isYearOnlyDate(r[ci])) r[ci] = expandYearOnlyDate(r[ci], dateFill.mm, dateFill.dd, dateFill.range);
+        });
+      });
+    }
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    // Split a "Crop-Variety - Subvariety" value: keep "Crop-Variety" in the
+    // Crop & Variety cell and move the part after the first " - " into
+    // Clone/Subvariety (only when that cell is empty). PickTrace's location
+    // upload rejects a subvariety embedded in Crop & Variety.
+    if (cropSplit) {
+      const cvIdx = bulkHeaders.indexOf('Crop & Variety*');
+      const cloneIdx = bulkHeaders.indexOf('Clone/Subvariety');
+      if (cvIdx >= 0) {
+        formattedRows.forEach(r => {
+          const v = String(r[cvIdx] == null ? '' : r[cvIdx]);
+          const m = v.match(/^(.*?)\s+-\s+(.+)$/); // split on the FIRST " - "
+          if (m) {
+            r[cvIdx] = m[1].trim();
+            if (cloneIdx >= 0 && !String(r[cloneIdx] || '').trim()) r[cloneIdx] = m[2].trim();
+          }
+        });
+      }
+    }
+    const siteIdx = bulkHeaders.indexOf('Site*');
+    const nameIdx = bulkHeaders.indexOf('Name*');
+    const cvIdxR = bulkHeaders.indexOf('Crop & Variety*');
+    // Re-apply sticky Name* overrides (collision resolutions) FIRST, so a
+    // renamed row no longer counts as a collision or a duplicate.
+    if (nameIdx >= 0) {
+      Object.keys(nameOverrides).forEach(k => {
+        const ri = +k;
+        if (formattedRows[ri] && nameOverrides[k]) formattedRows[ri][nameIdx] = nameOverrides[k];
+      });
+    }
+    // Apply accepted Smart Fixes (bulk snap of off-list values to the template
+    // dropdown, e.g. "Almonds-Other" → "Almond-Other"). Keyed by column + upper
+    // value, applied to every matching cell. User cell edits (below) still win.
+    if (Object.keys(smartFixMap).length) {
+      const dropIdxs = dropdownColIdxs();
+      formattedRows.forEach(r => {
+        dropIdxs.forEach(ci => {
+          const v = r[ci];
+          if (!v) return;
+          const hit = smartFixMap[ci + '||' + String(v).toUpperCase().trim()];
+          if (hit) r[ci] = hit;
+        });
+      });
+    }
+    // Re-apply sticky per-cell edits from the editable preview. Applied AFTER
+    // mapping / crop-split / date-fill / name-overrides and BEFORE collision +
+    // existing detection so edited Site/Crop/etc. feed those computations.
+    // Never touches Name* — that column is owned by nameOverrides above.
+    Object.keys(cellOverrides).forEach(k => {
+      const sep = k.indexOf('|');
+      const ri = +k.slice(0, sep), ci = +k.slice(sep + 1);
+      if (ci === nameIdx) return;
+      if (formattedRows[ri]) formattedRows[ri][ci] = cellOverrides[k];
+    });
+    const rowNameKey = ri => locKey(formattedRows[ri][siteIdx], formattedRows[ri][nameIdx]);
+    const rowBlockKey = ri => rowNameKey(ri) + '||' + locNorm(cvIdxR >= 0 ? formattedRows[ri][cvIdxR] : '');
+    // Count how many source rows share each Site + Name (a within-file collision
+    // protects against being silently dropped by a name-only existing file).
+    const withinCounts = new Map();
+    if (siteIdx >= 0 && nameIdx >= 0) formattedRows.forEach((r, ri) => {
+      if (removedRows.has(ri)) return;
+      const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
+      const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+      if (!s || !n) return;
+      const k = rowNameKey(ri);
+      withinCounts.set(k, (withinCounts.get(k) || 0) + 1);
+    });
+    // Cross-reference: drop a row ONLY when the SAME block (Site + Name + Crop &
+    // Variety) already exists in PickTrace — so "SGS / Golden Delicious" is
+    // recognized as already there, while "SGS / Granny Smith" (a different
+    // block reusing the name) is NOT dropped and gets flagged as a collision.
+    // If the existing file has no Crop column we fall back to Site + Name, but
+    // never auto-drop a within-file collision (we can't tell the blocks apart).
+    existingRowIdxs = new Set();
+    if (existingData && existingData.keys && existingData.keys.size && siteIdx >= 0 && nameIdx >= 0) {
+      const useBlock = !!(existingData.hasCrop && existingData.blockKeys);
+      formattedRows.forEach((r, ri) => {
+        if (removedRows.has(ri)) return;
+        const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
+        const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+        if (!s || !n) return;
+        const match = useBlock
+          ? existingData.blockKeys.has(rowBlockKey(ri))
+          : (existingData.keys.has(rowNameKey(ri)) && (withinCounts.get(rowNameKey(ri)) || 0) <= 1);
+        if (match) existingRowIdxs.add(ri);
+      });
+    }
+    // Collisions among the rows that will actually be CREATED (not removed, not
+    // already-in-PickTrace): (a) a Site + Name shared by 2+ such rows, or
+    // (b) a Site + Name that PickTrace already uses for a DIFFERENT block.
+    collisionKeys = new Set();
+    existingTakenKeys = new Set();
+    if (siteIdx >= 0 && nameIdx >= 0) {
+      const counts = new Map();
+      formattedRows.forEach((r, ri) => {
+        if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+        const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
+        const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+        if (!s || !n) return;
+        const kk = rowNameKey(ri);
+        counts.set(kk, (counts.get(kk) || 0) + 1);
+        if (existingData && existingData.keys && existingData.keys.has(kk)) {
+          collisionKeys.add(kk);
+          existingTakenKeys.add(kk);
+        }
+      });
+      counts.forEach((c, kk) => { if (c >= 2) collisionKeys.add(kk); });
+    }
+  }
+
+  // Groups the to-be-created rows that fall under a flagged collision name
+  // (computed in rebuildFormattedRows). Returns Map<locKey, [rowIdx,…]>. A group
+  // can have a single row when the name is taken by an existing PickTrace block
+  // (existingTakenKeys) — that row still can't load under its name.
+  function computeCollisions() {
+    const out = new Map();
+    if (!formattedRows || !collisionKeys.size) return out;
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const siteIdx = bulkHeaders.indexOf('Site*');
+    const nameIdx = bulkHeaders.indexOf('Name*');
+    if (siteIdx < 0 || nameIdx < 0) return out;
+    formattedRows.forEach((r, ri) => {
+      if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+      const site = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
+      const name = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+      if (!site || !name) return;
+      const k = locKey(site, name);
+      if (!collisionKeys.has(k)) return;
+      const arr = out.get(k) || [];
+      arr.push(ri);
+      out.set(k, arr);
+    });
+    return out;
+  }
+  function collisionRowSet() {
+    const s = new Set();
+    computeCollisions().forEach(arr => arr.forEach(ri => s.add(ri)));
+    return s;
   }
 
   function renderPreview() {
     if (!srcData || !tplData || !formattedRows) return;
+    renderExisting();
+    renderCollisions();
+    renderSmartFixes();
+    renderDateFill();
     const sec = $('ts-section-preview');
     const tbl = $('ts-preview-table');
     sec.style.display = '';
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const collisionIdxs = collisionRowSet();
+    const nameColIdx = bulkHeaders.indexOf('Name*');
+    const startDateIdx = bulkHeaders.indexOf('Start Date*');
+    const dateIdxSet = new Set(dateFillIdxs());
+    // Per-column dropdown metadata, built once: the value list for the cell's
+    // <datalist> and a caseless set used to flag off-list values amber.
+    const colDrop = bulkHeaders.map(h => {
+      const vals = dropdownValuesFor(h);
+      if (!vals) return null;
+      return { vals, lower: new Set(vals.map(v => String(v).toLowerCase().trim())) };
+    });
     let html = '<thead><tr>';
     // First column is the row-action column (X to remove the row).
     html += '<th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
-    bulkHeaders.forEach(h => {
+    bulkHeaders.forEach((h, i) => {
       const req = /\*$/.test(h);
-      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) + '</th>';
+      const listed = colDrop[i] ? ' title="Dropdown from template — pick a value or type your own"' : '';
+      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + listed + '>' + escHtml(h) +
+        (colDrop[i] ? ' <span class="ts-col-listed" title="Has a template dropdown">&#9662;</span>' : '') + '</th>';
     });
     html += '</tr></thead><tbody>';
-    const visibleRowIdxs = formattedRows
-      .map((_, i) => i)
-      .filter(i => !removedRows.has(i));
-    const startDateIdx = bulkHeaders.indexOf('Start Date*');
-    const limit = Math.min(visibleRowIdxs.length, 50);
+    // A row "needs attention" if any cell would be flagged in the preview:
+    // empty required, off-list dropdown value, name collision, past Start Date,
+    // or a year-only date.
+    const rowHasIssue = ri => {
+      const row = formattedRows[ri];
+      for (let i = 0; i < bulkHeaders.length; i++) {
+        const val = row[i] == null ? '' : String(row[i]);
+        if (/\*$/.test(bulkHeaders[i]) && !val) return true;
+        if (i === startDateIdx && val && isDateBeforeToday(val)) return true;
+        if (dateIdxSet.has(i) && isYearOnlyDate(val)) return true;
+        if (i === nameColIdx && collisionIdxs.has(ri)) return true;
+        const d = colDrop[i];
+        if (d && val && !d.lower.has(val.toLowerCase().trim())) return true;
+      }
+      return false;
+    };
+    const allVisible = formattedRows.map((_, i) => i).filter(i => !excluded(i));
+    const issueCount = allVisible.filter(rowHasIssue).length;
+    if (previewIssuesOnly && !issueCount) previewIssuesOnly = false; // nothing to filter to
+    const visibleRowIdxs = previewIssuesOnly ? allVisible.filter(rowHasIssue) : allVisible;
+    // No cap in "needs attention" mode (safety ceiling 2000); 50 in normal mode.
+    const CAP = previewIssuesOnly ? 2000 : 50;
+    const limit = Math.min(visibleRowIdxs.length, CAP);
     for (let r = 0; r < limit; r++) {
       const ri = visibleRowIdxs[r];
       const row = formattedRows[ri];
@@ -487,28 +839,75 @@
         '</td>';
       bulkHeaders.forEach((h, i) => {
         const req = /\*$/.test(h);
-        const empty = !row[i];
-        let cellStyle = '';
-        if (req && empty) cellStyle = ' style="background:#fee2e2;color:#7f1d1d;"';
-        else if (i === startDateIdx && row[i] && isDateBeforeToday(row[i])) {
-          cellStyle = ' style="background:#fef3c7;color:#7c2d12;" title="Start Date must be today (' + todayYMD() + ') or later"';
+        const val = row[i] == null ? '' : String(row[i]);
+        const empty = !val;
+        const d = colDrop[i];
+        const inList = !!(d && val && d.lower.has(val.toLowerCase().trim()));
+        let bg = '', title = '';
+        if (req && empty) { bg = '#fee2e2'; title = 'Required — must be filled before export'; }
+        else if (i === startDateIdx && val && isDateBeforeToday(val)) {
+          bg = '#fef3c7'; title = 'Start Date must be today (' + todayYMD() + ') or later';
+        } else if (dateIdxSet.has(i) && isYearOnlyDate(val)) {
+          bg = '#fef3c7'; title = 'Year only — set a month/day in Year-Only Dates above to make this a full YYYY-MM-DD date';
+        } else if (i === nameColIdx && collisionIdxs.has(ri)) {
+          bg = '#fee2e2'; title = 'Name collision — another block at this Site shares this Name. Rename it here (or in Name Collisions above), or PickTrace will drop one.';
+        } else if (d && val && !inList) {
+          bg = '#fef3c7'; title = 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is (a new value to create in PickTrace), or pick a listed value.';
         }
-        html += '<td' + cellStyle + '>' + escHtml(row[i]) + '</td>';
+        const cellStyle = bg ? ' style="background:' + bg + ';"' : '';
+        const fieldColor = bg ? ('color:' + (bg === '#fee2e2' ? '#7f1d1d' : '#7c2d12') + ';') : '';
+        if (d) {
+          // Real <select> combo: always shows the full template list; keeps the
+          // current off-list value as a "(current)" option; "Type custom…" swaps
+          // the cell to a free-text input for a brand-new value.
+          let opts = '<option value=""' + (empty ? ' selected' : '') + '>— blank —</option>';
+          if (val && !inList) opts += '<option value="' + escHtml(val) + '" selected>' + escHtml(val) + '  (current)</option>';
+          d.vals.forEach(v => {
+            const s = (inList && v.toLowerCase().trim() === val.toLowerCase().trim()) ? ' selected' : '';
+            opts += '<option value="' + escHtml(v) + '"' + s + '>' + escHtml(v) + '</option>';
+          });
+          opts += '<option value="__ts_custom__">✎ Type custom…</option>';
+          html += '<td class="ts-cell"' + cellStyle + '>' +
+            '<select class="ts-cell-select" data-ri="' + ri + '" data-ci="' + i + '"' +
+            (title ? ' title="' + escHtml(title) + '"' : '') +
+            (fieldColor ? ' style="' + fieldColor + '"' : '') + '>' + opts + '</select>' +
+            '</td>';
+        } else {
+          html += '<td class="ts-cell"' + cellStyle + '>' +
+            '<input class="ts-cell-input" type="text" data-ri="' + ri + '" data-ci="' + i + '"' +
+            (title ? ' title="' + escHtml(title) + '"' : '') +
+            (fieldColor ? ' style="' + fieldColor + '"' : '') +
+            ' value="' + escHtml(val) + '">' +
+            '</td>';
+        }
       });
       html += '</tr>';
     }
     html += '</tbody>';
     tbl.innerHTML = html;
     const hint = sec.querySelector('.cmp-sites-hint');
-    let hintText = 'Empty required cells are highlighted in red. Click <b>×</b> at the start of a row to drop it from the preview + export.';
-    if (visibleRowIdxs.length > limit) {
-      hintText = 'Showing first ' + limit + ' of ' + visibleRowIdxs.length + ' rows. ' + hintText;
+    // "Needs attention" toggle — lets the user see EVERY errored row (no cap),
+    // not just the first 50. Disabled when there are no issues.
+    const toggle = '<label class="ts-issues-toggle" style="display:inline-flex;align-items:center;gap:6px;margin-right:12px;font-weight:600;' +
+      (issueCount ? '' : 'opacity:.5;') + '">' +
+      '<input type="checkbox" id="ts-issues-only"' + (previewIssuesOnly ? ' checked' : '') + (issueCount ? '' : ' disabled') + '>' +
+      'Show only rows needing attention' + (issueCount ? ' (' + issueCount + ')' : ' (0)') + '</label>';
+    let hintText = toggle;
+    if (previewIssuesOnly) {
+      hintText += 'Showing ' + Math.min(limit, visibleRowIdxs.length) + ' of ' + issueCount + ' flagged row' + (issueCount === 1 ? '' : 's') +
+        (visibleRowIdxs.length > limit ? ' (capped at ' + limit + ')' : '') + '. ';
+    } else if (visibleRowIdxs.length > limit) {
+      hintText += 'Showing first ' + limit + ' of ' + visibleRowIdxs.length + ' rows. ';
     }
+    hintText += 'Every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. ' +
+      'Red = empty required; amber = off-list / needs attention. Click <b>×</b> to drop a row.';
     if (removedRows.size) {
       hintText += ' &nbsp; <button class="btn btn-ghost btn-sm" id="ts-restore-rows">' +
         'Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
     }
     hint.innerHTML = hintText;
+    const issuesOnly = $('ts-issues-only');
+    if (issuesOnly) issuesOnly.addEventListener('change', e => { previewIssuesOnly = !!e.target.checked; renderPreview(); });
     tbl.querySelectorAll('.ts-row-remove').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -528,7 +927,116 @@
       renderSitesAndCvToCreate();
       updateSummary();
     });
+    // Editable-cell handlers, delegated on the persistent <table> so we attach
+    // them once (not once per cell) and they survive innerHTML re-renders.
+    if (!tbl._tsCellWired) {
+      tbl._tsCellWired = true;
+      tbl.addEventListener('change', e => {
+        const sel = e.target.closest('.ts-cell-select');
+        if (sel) {
+          const ri = +sel.dataset.ri, ci = +sel.dataset.ci;
+          // "Type custom…" swaps the cell to a free-text input in place; the real
+          // value gets committed by the input's own change event below.
+          if (sel.value === '__ts_custom__') { swapSelectToInput(sel, ri, ci); return; }
+          setCell(ri, ci, sel.value);
+          recomputeAfterEdit();
+          return;
+        }
+        const inp = e.target.closest('.ts-cell-input');
+        if (inp) {
+          setCell(+inp.dataset.ri, +inp.dataset.ci, inp.value);
+          recomputeAfterEdit();
+        }
+      });
+    }
     updateExportButton();
+  }
+
+  // Route a preview cell edit into the correct sticky store + the live grid.
+  // Name* flows through nameOverrides (keeps the Name Collisions panel in sync);
+  // every other column flows through cellOverrides. Empty values are stored too
+  // (except Name*, which clears its override) so a deliberate clear sticks across
+  // rebuilds instead of snapping back to the mapped source value.
+  function setCell(ri, ci, val) {
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const nameIdx = bulkHeaders.indexOf('Name*');
+    const v = val == null ? '' : String(val);
+    if (ci === nameIdx) {
+      if (v.trim()) nameOverrides[ri] = v.trim(); else delete nameOverrides[ri];
+    } else {
+      cellOverrides[ri + '|' + ci] = v;
+    }
+    if (formattedRows[ri]) formattedRows[ri][ci] = v;
+  }
+
+  // Replace a listed-column <select> with a free-text input in place, so the
+  // user can enter a brand-new value not in the template list. The input's own
+  // change event commits it (and re-renders the cell back to a select).
+  function swapSelectToInput(sel, ri, ci) {
+    const td = sel.closest('td');
+    if (!td) return;
+    const cur = formattedRows[ri] ? (formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci])) : '';
+    td.innerHTML = '<input class="ts-cell-input" type="text" data-ri="' + ri + '" data-ci="' + ci +
+      '" placeholder="Type a value…" value="' + escHtml(cur) + '">';
+    const inp = td.querySelector('input');
+    if (inp) { inp.focus(); inp.select(); }
+  }
+
+  // After any preview edit: rebuild (re-applies sticky edits, recomputes
+  // collisions + existing-in-PickTrace), then refresh the dependent panels.
+  function recomputeAfterEdit() {
+    rebuildFormattedRows();
+    renderPreview();
+    renderRequired();
+    renderSitesAndCvToCreate();
+    updateSummary();
+  }
+
+  // ─── Year-only date expansion control ───
+  function renderDateFill() {
+    const sec = $('ts-section-datefill');
+    if (!sec || !formattedRows) return;
+    sec.style.display = '';
+    const idxs = dateFillIdxs();
+    const visRows = formattedRows.filter((_, i) => !excluded(i));
+    const n = countYearOnlyDates(visRows, idxs);
+    const cnt = $('ts-datefill-count');
+    if (cnt) cnt.innerHTML = n
+      ? '<b style="color:#b45309;">' + n + '</b> year-only date cell' + (n === 1 ? '' : 's') + ' remaining'
+      : '<span style="color:#15803d;font-weight:600;">✓ No year-only date cells</span>';
+    // Reflect current settings in the inputs.
+    const mmEl = $('ts-datefill-mm'), ddEl = $('ts-datefill-dd'), rgEl = $('ts-datefill-range');
+    if (mmEl && document.activeElement !== mmEl) mmEl.value = dateFill.mm;
+    if (ddEl && document.activeElement !== ddEl) ddEl.value = dateFill.dd;
+    if (rgEl) rgEl.value = dateFill.range;
+  }
+
+  function applyDateFill() {
+    const mm = ($('ts-datefill-mm').value || '').trim();
+    const dd = ($('ts-datefill-dd').value || '').trim();
+    const range = $('ts-datefill-range').value || 'first';
+    const mi = parseInt(mm, 10), di = parseInt(dd, 10);
+    if (!(mi >= 1 && mi <= 12) || !(di >= 1 && di <= 31)) {
+      alert('Enter a valid month (1–12) and day (1–31) first.');
+      return;
+    }
+    dateFill = { mm, dd, range };
+    rebuildFormattedRows();
+    renderRequired();
+    renderSitesAndCvToCreate();
+    renderPreview();
+    updateSummary();
+  }
+
+  function clearDateFill() {
+    dateFill = { mm: '', dd: '', range: ($('ts-datefill-range') ? $('ts-datefill-range').value : 'first') };
+    if ($('ts-datefill-mm')) $('ts-datefill-mm').value = '';
+    if ($('ts-datefill-dd')) $('ts-datefill-dd').value = '';
+    rebuildFormattedRows();
+    renderRequired();
+    renderSitesAndCvToCreate();
+    renderPreview();
+    updateSummary();
   }
 
   function renderSitesAndCvToCreate() {
@@ -543,7 +1051,7 @@
 
     const sites = new Map(), cvs = new Map();
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (excluded(ri)) return;
       const s = r[siteIdx];
       if (s && !inDropdown(tplSitesMap, s)) sites.set(s, (sites.get(s) || 0) + 1);
       const v = r[cvIdx];
@@ -611,6 +1119,63 @@
     }
   }
 
+  // ─── Smart Fixes panel — every off-list value gets a dropdown to choose the
+  // target template value (suggested match pre-selected; the rest ask the user). ───
+  function renderSmartFixes() {
+    const sec = $('ts-section-smartfix');
+    if (!sec) return;
+    const fixes = computeSmartFixes();
+    if (!fixes.length) { sec.style.display = 'none'; $('ts-smartfix-table').innerHTML = ''; return; }
+    sec.style.display = '';
+    let totalRows = 0, needPick = 0;
+    fixes.forEach(f => { totalRows += f.count; if (!f.suggestion) needPick++; });
+    const t = $('ts-smartfix-title');
+    if (t) t.textContent = 'Smart Fixes (' + fixes.length + ' value' + (fixes.length === 1 ? '' : 's') + ', ' + totalRows + ' rows' +
+      (needPick ? ' — ' + needPick + ' need your choice' : '') + ')';
+    let html = '<thead><tr><th>Column</th><th>Value in your data</th><th>Set to</th><th>Rows</th><th></th></tr></thead><tbody>';
+    fixes.forEach(f => {
+      const opts = '<option value="">— pick a value —</option>' +
+        f.options.slice().sort().map(o => '<option' + (f.suggestion && o === f.suggestion ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('');
+      html += '<tr>' +
+        '<td>' + escHtml(f.header) + '</td>' +
+        '<td><span style="color:#7c2d12;background:#fef3c7;padding:1px 6px;border-radius:3px;">' + escHtml(f.from) + '</span></td>' +
+        '<td><select class="ts-smartfix-pick input-field" style="min-width:200px;">' + opts + '</select>' +
+          (f.suggestion ? ' <span class="text-muted small" title="Confident match — spacing, punctuation or singular/plural">suggested</span>' : ' <span style="color:#b45309;font-weight:600;" class="small">needs a choice</span>') +
+        '</td>' +
+        '<td>' + f.count + '</td>' +
+        '<td><button class="btn btn-primary btn-sm ts-smartfix-apply" data-ci="' + f.colIdx + '" data-from="' + escHtml(f.from) + '">Apply</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody>';
+    $('ts-smartfix-table').innerHTML = html;
+    $('ts-smartfix-table').querySelectorAll('.ts-smartfix-apply').forEach(btn => btn.addEventListener('click', e => {
+      const tr = e.currentTarget.closest('tr');
+      const to = tr.querySelector('.ts-smartfix-pick').value.trim();
+      if (!to) { alert('Pick a value to set "' + e.currentTarget.dataset.from + '" to first.'); return; }
+      applySmartFix(+e.currentTarget.dataset.ci, e.currentTarget.dataset.from, to);
+    }));
+    return fixes.length;
+  }
+  function applySmartFix(ci, from, to) {
+    smartFixMap[ci + '||' + String(from).toUpperCase().trim()] = to;
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderSitesAndCvToCreate(); updateSummary();
+  }
+  // Apply every Smart Fixes row that currently has a value chosen in its
+  // dropdown (suggested ones are pre-selected; the user picks the rest).
+  function applyAllSmartFixes() {
+    const tbl = $('ts-smartfix-table');
+    if (!tbl) return;
+    const picks = [];
+    tbl.querySelectorAll('.ts-smartfix-apply').forEach(btn => {
+      const tr = btn.closest('tr');
+      const to = tr.querySelector('.ts-smartfix-pick').value.trim();
+      if (to) picks.push({ ci: +btn.dataset.ci, from: btn.dataset.from, to });
+    });
+    if (!picks.length) { alert('No values chosen yet. Pick a target for at least one row (suggested rows are pre-selected).'); return; }
+    picks.forEach(p => { smartFixMap[p.ci + '||' + String(p.from).toUpperCase().trim()] = p.to; });
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderSitesAndCvToCreate(); updateSummary();
+  }
+
   function renderRequired() {
     if (!formattedRows || !tplData) return;
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
@@ -629,7 +1194,7 @@
       let empty = 0;
       const sample = new Set();
       formattedRows.forEach((r, ri) => {
-        if (removedRows.has(ri)) return;
+        if (excluded(ri)) return;
         if (!r[col.idx]) empty++;
         else if (sample.size < 1 && r[col.idx]) sample.add(r[col.idx]);
       });
@@ -689,7 +1254,7 @@
     if (!val) return 0;
     let filled = 0;
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (excluded(ri)) return;
       if (overwrite || !r[idx]) { r[idx] = val; filled++; }
     });
     manualFills[idx] = val;
@@ -701,7 +1266,7 @@
   }
   function clearColumn(idx) {
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (excluded(ri)) return;
       r[idx] = '';
     });
     delete manualFills[idx];
@@ -756,25 +1321,29 @@
     const reqIdxs = bulkHeaders.map((h, i) => ({ h, i, req: /\*$/.test(h) })).filter(x => x.req);
     let emptyReq = 0;
     if (formattedRows) reqIdxs.forEach(({ i }) => {
-      formattedRows.forEach((r, ri) => { if (!removedRows.has(ri) && !r[i]) emptyReq++; });
+      formattedRows.forEach((r, ri) => { if (!excluded(ri) && !r[i]) emptyReq++; });
     });
     const sites = renderSitesAndCvToCreate() || { sitesCount: 0, cvsCount: 0 };
-    const visibleCount = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
+    const visibleCount = formattedRows ? formattedRows.filter((_, i) => !excluded(i)).length : 0;
     const totalCount = formattedRows ? formattedRows.length : 0;
     const startDateIdx = bulkHeaders.indexOf('Start Date*');
     let pastDates = 0;
     if (formattedRows && startDateIdx >= 0) {
       formattedRows.forEach((r, ri) => {
-        if (removedRows.has(ri)) return;
+        if (excluded(ri)) return;
         if (isDateBeforeToday(r[startDateIdx])) pastDates++;
       });
     }
     const sum = $('ts-summary');
     sum.style.display = '';
+    const existingCount = existingRowIdxs.size;
+    let collisionRows = 0; computeCollisions().forEach(arr => collisionRows += arr.length);
     sum.innerHTML =
       '<div class="cmp-stat"><b>' + visibleCount + '</b> rows' +
         (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + totalCount + ')</span>' : '') +
         '</div>' +
+      (existingCount ? '<div class="cmp-stat cmp-warn"><b>' + existingCount + '</b> already in PickTrace (dropped)</div>' : '') +
+      (collisionRows ? '<div class="cmp-stat cmp-warn"><b>' + collisionRows + '</b> name collision rows</div>' : '') +
       '<div class="cmp-stat"><b>' + bulkHeaders.length + '</b> template columns</div>' +
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
       (sites.sitesCount ? '<div class="cmp-stat cmp-warn"><b>' + sites.sitesCount + '</b> sites to create</div>' : '') +
@@ -808,7 +1377,7 @@
       .filter(i => i >= 0);
     let emptyReq = 0;
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (excluded(ri)) return;
       reqIdxs.forEach(i => { if (!r[i]) emptyReq++; });
     });
     const tplSites = tplData.dropdowns.get('site') || new Set();
@@ -824,12 +1393,19 @@
     const unknownCvVals = new Set();
     let pastStartDates = 0;
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (excluded(ri)) return;
       if (checkSites && r[siteIdx] && !inDropdown(tplSitesMap, r[siteIdx])) unknownSiteVals.add(r[siteIdx]);
       if (checkCvs   && r[cvIdx]   && !inDropdown(tplCvsMap,   r[cvIdx]))   unknownCvVals.add(r[cvIdx]);
       if (startDateIdx >= 0 && isDateBeforeToday(r[startDateIdx])) pastStartDates++;
     });
-    return { emptyReq, unknownSites: [...unknownSiteVals], unknownCvs: [...unknownCvVals], pastStartDates };
+    const collisionGroups = computeCollisions();
+    let nameCollisions = 0; collisionGroups.forEach(arr => nameCollisions += arr.length);
+    const collisionSamples = [];
+    collisionGroups.forEach((arr, k) => {
+      const r0 = formattedRows[arr[0]];
+      collisionSamples.push(String(r0[siteIdx] || '') + ' / ' + String(r0[bulkHeaders.indexOf('Name*')] || '') + ' (×' + arr.length + ')');
+    });
+    return { emptyReq, unknownSites: [...unknownSiteVals], unknownCvs: [...unknownCvVals], pastStartDates, nameCollisions, collisionSamples };
   }
 
   function updateExportButton() {
@@ -843,6 +1419,7 @@
     if (b.emptyReq > 0) reasons.push(b.emptyReq + ' empty required cells');
     if (b.unknownSites.length) reasons.push(b.unknownSites.length + ' sites not in template dropdown');
     if (b.unknownCvs.length) reasons.push(b.unknownCvs.length + ' Crop & Variety values not in template dropdown');
+    if (b.nameCollisions > 0) reasons.push(b.nameCollisions + ' rows with duplicate Site + Name (collision)');
     if (b.pastStartDates > 0) reasons.push(b.pastStartDates + ' Start Date values are before today');
     btn.title = reasons.length
       ? 'Click to review issues before exporting: ' + reasons.join(', ') + '.'
@@ -894,6 +1471,16 @@
           '</div>'
         );
       }
+      if (b.nameCollisions > 0) {
+        const sample = (b.collisionSamples || []).slice(0, 8).map(v => '<li>' + escHtml(v) + '</li>').join('');
+        const more = (b.collisionSamples || []).length > 8 ? '<li class="ts-confirm-more">… and ' + (b.collisionSamples.length - 8) + ' more</li>' : '';
+        sections.push(
+          '<div class="ts-confirm-issue">' +
+          '<div class="ts-confirm-issue-head">⚠ ' + b.nameCollisions + ' row(s) share a Site + Name (' + (b.collisionSamples || []).length + ' collision' + ((b.collisionSamples || []).length === 1 ? '' : 's') + ')</div>' +
+          '<div class="ts-confirm-issue-body">PickTrace requires a unique name within a site — one block in each pair will be <b>silently dropped</b> on upload. Rename one in the <b>Name Collisions</b> panel first.<ul class="ts-confirm-list">' + sample + more + '</ul></div>' +
+          '</div>'
+        );
+      }
       if (b.pastStartDates > 0) {
         sections.push(
           '<div class="ts-confirm-issue">' +
@@ -930,6 +1517,9 @@
     // to the prior mapping/target context.
     manualFills = {};
     removedRows = new Set();
+    cellOverrides = {};
+    smartFixMap = {};
+    previewIssuesOnly = false;
     rebuildFormattedRows();
     renderMapping();
     renderPreview();
@@ -941,23 +1531,28 @@
   function doExport() {
     if (!formattedRows || !tplData) return;
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
-    const siteIdx = bulkHeaders.indexOf('Site*');
-    const cvIdx   = bulkHeaders.indexOf('Crop & Variety*');
-    const tplSitesMap = buildCaseMap(tplData.dropdowns.get('site'));
-    const tplCvsMap   = buildCaseMap(tplData.dropdowns.get('crop & variety'));
-    // Drop removed rows and canonicalize Site / Crop & Variety casing so the
-    // values match the template's dropdown literally (PickTrace is strict).
+    const acreageIdx = bulkHeaders.indexOf('Acreage');
+    // Case-canonicalize EVERY dropdown-backed column (Location Type, Production
+    // Status, Organic Status, …) — not just Site / Crop & Variety. PickTrace is
+    // case-sensitive on dropdown values, so "FIELD" is rejected where the list
+    // has "Field" ("Invalid location type: FIELD"). Map upper-cased value →
+    // the template's exact casing.
+    const dropMaps = bulkHeaders.map(h => buildCaseMap(dropdownValuesFor(h)));
     const exportRows = formattedRows
-      .filter((_, ri) => !removedRows.has(ri))
+      .filter((_, ri) => !excluded(ri))
       .map(row => {
         const r = row.slice();
-        if (siteIdx >= 0 && r[siteIdx]) {
-          const k = String(r[siteIdx]).toUpperCase().trim();
-          if (tplSitesMap.has(k)) r[siteIdx] = tplSitesMap.get(k);
-        }
-        if (cvIdx >= 0 && r[cvIdx]) {
-          const k = String(r[cvIdx]).toUpperCase().trim();
-          if (tplCvsMap.has(k)) r[cvIdx] = tplCvsMap.get(k);
+        dropMaps.forEach((m, i) => {
+          if (m.size && r[i]) {
+            const k = String(r[i]).toUpperCase().trim();
+            if (m.has(k)) r[i] = m.get(k);
+          }
+        });
+        // Acreage of 0 exports as blank (per request — a plot with 0 acres
+        // shouldn't carry a literal 0).
+        if (acreageIdx >= 0 && r[acreageIdx] !== '' && r[acreageIdx] != null) {
+          const n = parseFloat(String(r[acreageIdx]).replace(/[, ]/g, ''));
+          if (!isNaN(n) && n === 0) r[acreageIdx] = '';
         }
         return r;
       });
@@ -1040,6 +1635,142 @@
       alert('Failed to read file: ' + (err && err.message ? err.message : err));
     });
   }
+  // Optional: a PickTrace existing-locations export (bulk Update template /
+  // ALL RECORDS). Build a Site + Name index so rows already in PickTrace are
+  // dropped from the export (avoids RESOURCE-DUPLICATE).
+  function handleExistingFile(file) {
+    readSrcFile(file).then(data => {
+      const siteI = findColIdxByNames(data.headers, ['site', 'sites', 'grower', 'farm']);
+      const nameI = findColIdxByNames(data.headers, ['name', 'block']);
+      const cvI = findColIdxByNames(data.headers, ['crop & variety', 'crop and variety', 'crop variety', 'crop']);
+      const acI = findColIdxByNames(data.headers, ['acreage', 'acres', 'acre']);
+      if (siteI < 0 || nameI < 0) {
+        alert('Existing-locations file must have Site and Name columns (a PickTrace bulk Update / locations export).');
+        return;
+      }
+      // keys = Site+Name (is this name taken?). blockKeys = Site+Name+Crop&Variety
+      // (is THIS exact block already there?). byName = Site+Name → existing
+      // blocks under that name, for showing the conflict.
+      const keys = new Set();
+      const blockKeys = new Set();
+      const byName = new Map();
+      data.rows.forEach(r => {
+        const s = r[siteI], n = r[nameI];
+        if (!(String(s == null ? '' : s).trim() || String(n == null ? '' : n).trim())) return;
+        const nk = locKey(s, n);
+        const cv = cvI >= 0 ? String(r[cvI] == null ? '' : r[cvI]).trim() : '';
+        const ac = acI >= 0 ? String(r[acI] == null ? '' : r[acI]).trim() : '';
+        keys.add(nk);
+        blockKeys.add(nk + '||' + locNorm(cv));
+        const arr = byName.get(nk) || [];
+        arr.push({ cv, ac });
+        byName.set(nk, arr);
+      });
+      existingData = { keys, blockKeys, byName, hasCrop: cvI >= 0, fileName: file.name, count: keys.size };
+      $('ts-existing-name').textContent = file.name + ' [' + data.sheetName + ']';
+      $('ts-existing-meta').textContent = keys.size + ' existing location' + (keys.size === 1 ? '' : 's') + ' indexed' +
+        (cvI >= 0 ? ' (block-level)' : ' (name-only — no Crop column)');
+      if (srcData && tplData) {
+        rebuildFormattedRows();
+        renderPreview();
+        renderRequired();
+        renderSitesAndCvToCreate();
+        updateSummary();
+      }
+    }).catch(err => {
+      if (err && err.message === 'cancelled') return;
+      alert('Failed to read existing-locations file: ' + (err && err.message ? err.message : err));
+    });
+  }
+
+  function renderExisting() {
+    const sec = $('ts-section-existing');
+    if (!sec) return;
+    const idxs = formattedRows ? [...existingRowIdxs] : [];
+    if (!existingData || !idxs.length) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const siteIdx = bulkHeaders.indexOf('Site*'), nameIdx = bulkHeaders.indexOf('Name*');
+    const t = $('ts-existing-title');
+    if (t) t.textContent = 'Already in PickTrace — dropped (' + idxs.length + ')';
+    let html = '<thead><tr><th>Site</th><th>Name</th></tr></thead><tbody>';
+    idxs.slice(0, 200).forEach(ri => {
+      const r = formattedRows[ri];
+      html += '<tr><td>' + escHtml(r[siteIdx]) + '</td><td>' + escHtml(r[nameIdx]) + '</td></tr>';
+    });
+    html += '</tbody>';
+    $('ts-existing-table').innerHTML = html;
+  }
+
+  // ─── Name collisions (same Site + Name, different blocks) ───
+  function renderCollisions() {
+    const sec = $('ts-section-collisions');
+    if (!sec) return;
+    const groups = formattedRows ? computeCollisions() : new Map();
+    if (!groups.size) { sec.style.display = 'none'; $('ts-collisions-table').innerHTML = ''; return; }
+    sec.style.display = '';
+    const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const siteIdx = bulkHeaders.indexOf('Site*');
+    const nameIdx = bulkHeaders.indexOf('Name*');
+    const cvIdx = bulkHeaders.indexOf('Crop & Variety*');
+    const acIdx = bulkHeaders.indexOf('Acreage');
+    let total = 0; groups.forEach(arr => total += arr.length);
+    const t = $('ts-collisions-title');
+    if (t) t.textContent = 'Name Collisions (' + groups.size + ' name' + (groups.size === 1 ? '' : 's') + ', ' + total + ' to fix)';
+    let html = '<thead><tr><th>Source</th><th>Site</th><th>Name</th><th>Crop &amp; Variety</th><th>Acreage</th>' +
+      '<th>New name</th><th></th></tr></thead><tbody>';
+    [...groups.entries()].forEach(([k, arr]) => {
+      // When the name is already used by a DIFFERENT block in PickTrace, show
+      // that existing block first (read-only) so it's clear the name is taken.
+      if (existingTakenKeys.has(k) && existingData && existingData.byName && existingData.byName.get(k)) {
+        existingData.byName.get(k).forEach(ex => {
+          const r0 = formattedRows[arr[0]];
+          html += '<tr style="background:var(--bg-sunken,#f3f4f6);color:#6b7280;">' +
+            '<td><b>In PickTrace</b></td>' +
+            '<td>' + escHtml(r0[siteIdx]) + '</td>' +
+            '<td><b>' + escHtml(r0[nameIdx]) + '</b></td>' +
+            '<td>' + escHtml(ex.cv) + '</td>' +
+            '<td>' + escHtml(ex.ac) + '</td>' +
+            '<td colspan="2"><i>already exists — name is taken</i></td>' +
+            '</tr>';
+        });
+      }
+      arr.forEach(ri => {
+        const r = formattedRows[ri];
+        html += '<tr>' +
+          '<td>New</td>' +
+          '<td>' + escHtml(r[siteIdx]) + '</td>' +
+          '<td><b style="color:#dc2626;">' + escHtml(r[nameIdx]) + '</b></td>' +
+          '<td>' + escHtml(cvIdx >= 0 ? r[cvIdx] : '') + '</td>' +
+          '<td>' + escHtml(acIdx >= 0 ? r[acIdx] : '') + '</td>' +
+          '<td><input type="text" class="ts-coll-name input-field" data-ri="' + ri + '" placeholder="' + escHtml(r[nameIdx]) + '" style="width:140px;"></td>' +
+          '<td><button class="btn btn-primary btn-sm ts-coll-apply" data-ri="' + ri + '">Rename</button></td>' +
+          '</tr>';
+      });
+    });
+    html += '</tbody>';
+    $('ts-collisions-table').innerHTML = html;
+    const tbl = $('ts-collisions-table');
+    tbl.querySelectorAll('.ts-coll-apply').forEach(btn => {
+      btn.addEventListener('click', e => {
+        const tr = e.target.closest('tr');
+        const ri = +e.target.dataset.ri;
+        const val = tr.querySelector('.ts-coll-name').value.trim();
+        if (!val) { alert('Type a new name first.'); return; }
+        applyRename(ri, val);
+      });
+    });
+  }
+
+  function applyRename(ri, newName) {
+    nameOverrides[ri] = newName;
+    rebuildFormattedRows();
+    renderPreview();
+    renderRequired();
+    renderSitesAndCvToCreate();
+    updateSummary();
+  }
+
   function handleTplFile(file) {
     const r = new FileReader();
     r.onload = e => {
@@ -1102,12 +1833,19 @@
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
     manualFills = {}; removedRows = new Set(); siteAddresses = {};
+    smartFixMap = {}; previewIssuesOnly = false;
+    dateFill = { mm: '', dd: '', range: 'first' };
+    existingData = null; existingRowIdxs = new Set();
+    nameOverrides = {}; cellOverrides = {}; collisionKeys = new Set(); existingTakenKeys = new Set();
     $('ts-src-name').textContent = 'No file selected';
     $('ts-tpl-name').textContent = 'No file selected';
     $('ts-src-meta').textContent = '';
     $('ts-tpl-meta').textContent = '';
+    { const en = $('ts-existing-name'); if (en) en.textContent = 'No file selected'; }
+    { const em = $('ts-existing-meta'); if (em) em.textContent = ''; }
+    { const ef = $('ts-existing-file'); if (ef) ef.value = ''; }
     $('ts-src-file').value = ''; $('ts-tpl-file').value = '';
-    ['ts-section-mapping','ts-section-sites-create','ts-section-cv-create','ts-section-required','ts-section-preview']
+    ['ts-section-mapping','ts-section-smartfix','ts-section-sites-create','ts-section-cv-create','ts-section-required','ts-section-existing','ts-section-collisions','ts-section-datefill','ts-section-preview']
       .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
     $('ts-summary').style.display = 'none';
     $('ts-empty').style.display = '';
@@ -1129,6 +1867,13 @@
       e.target.value = '';
     });
     $('ts-src-from-org').addEventListener('click', importFromOrgData);
+    { const ef = $('ts-existing-file'); if (ef) ef.addEventListener('change', e => { if (e.target.files[0]) handleExistingFile(e.target.files[0]); e.target.value = ''; }); }
+    { const cs = $('ts-crop-split'); if (cs) cs.addEventListener('change', e => {
+        cropSplit = !!e.target.checked;
+        if (srcData && tplData) { rebuildFormattedRows(); renderPreview(); renderRequired(); renderSitesAndCvToCreate(); updateSummary(); }
+      }); }
+    { const a = $('ts-datefill-apply'); if (a) a.addEventListener('click', applyDateFill); }
+    { const c = $('ts-datefill-clear'); if (c) c.addEventListener('click', clearDateFill); }
     document.querySelectorAll('input[name="ts-target"]').forEach(r => {
       r.addEventListener('change', e => {
         target = e.target.value;
@@ -1138,13 +1883,14 @@
     $('ts-run').addEventListener('click', runFormat);
     $('ts-export').addEventListener('click', async () => {
       const b = getExportBlockers();
-      if (b && (b.emptyReq > 0 || b.unknownSites.length || b.unknownCvs.length || b.pastStartDates > 0)) {
+      if (b && (b.emptyReq > 0 || b.unknownSites.length || b.unknownCvs.length || b.nameCollisions > 0 || b.pastStartDates > 0)) {
         const proceed = await showExportConfirm(b);
         if (!proceed) return;
       }
       doExport();
     });
     $('ts-reset').addEventListener('click', reset);
+    { const sfa = $('ts-smartfix-apply-all'); if (sfa) sfa.addEventListener('click', applyAllSmartFixes); }
     $('ts-sites-copy').addEventListener('click', () => {
       const tbl = $('ts-sites-create-table');
       const rows = [...tbl.querySelectorAll('tbody tr')]
