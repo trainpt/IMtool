@@ -1035,23 +1035,6 @@
       if (srcData && tplData) { rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary(); }
     }).catch(err => { if (err && err.message === 'cancelled') return; alert('Failed to read existing-sites file: ' + (err && err.message ? err.message : err)); });
   }
-  function importFromOrgData() {
-    if (typeof aggregateOrgData !== 'function' || typeof getAllOrgNames !== 'function') { alert('Org Data store unavailable. Reload the page.'); return; }
-    const names = getAllOrgNames();
-    if (!names.length) { alert('No saved orgs found.'); return; }
-    const pick = prompt('Type the org name to import:\n\n' + names.join('\n'));
-    if (!pick) return;
-    const found = names.find(n => n.toLowerCase() === pick.trim().toLowerCase());
-    if (!found) { alert('Org "' + pick + '" not found.'); return; }
-    const aggregated = aggregateOrgData(found);
-    if (!aggregated || !aggregated.rows.length) { alert('No rows for "' + found + '".'); return; }
-    srcData = { headers: aggregated.headers, rows: aggregated.rows, fileName: '(Org Data: ' + found + ')', sheetName: '(synthesized)' };
-    $('tss-src-name').textContent = '(Org Data: ' + found + ')';
-    $('tss-src-meta').textContent = aggregated.rows.length + ' rows · ' + aggregated.headers.length + ' columns';
-    $('tss-run').disabled = !(srcData && tplData);
-    if (srcData && tplData) runFormat();
-  }
-
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
     manualFills = {}; removedRows = new Set(); existingData = null; existingRowIdxs = new Set();
@@ -1077,7 +1060,6 @@
     $('tss-src-file').addEventListener('change', e => { if (e.target.files[0]) handleSrcFile(e.target.files[0]); e.target.value = ''; });
     $('tss-tpl-file').addEventListener('change', e => { if (e.target.files[0]) handleTplFile(e.target.files[0]); e.target.value = ''; });
     { const ef = $('tss-existing-file'); if (ef) ef.addEventListener('change', e => { if (e.target.files[0]) handleExistingFile(e.target.files[0]); e.target.value = ''; }); }
-    { const og = $('tss-src-from-org'); if (og) og.addEventListener('click', importFromOrgData); }
     $('tss-run').addEventListener('click', runFormat);
     $('tss-export').addEventListener('click', async () => {
       const b = getExportBlockers();
@@ -1093,16 +1075,8 @@
       const text = (td.textContent || '').trim();
       if (text && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => td.classList.toggle('cmp-copied'), () => {});
     });
-    // Domain toggle (Locations / Sites) — shared control at the top of the page.
-    document.querySelectorAll('.ts-domain-pill').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const d = btn.dataset.domain;
-        document.querySelectorAll('.ts-domain-pill').forEach(b => b.classList.toggle('ts-domain-active', b === btn));
-        const loc = $('ts-loc-wrap'), site = $('ts-site-wrap');
-        if (loc) loc.style.display = d === 'locations' ? '' : 'none';
-        if (site) site.style.display = d === 'sites' ? '' : 'none';
-      });
-    });
+    // Locations / Sites is now the entity picker in the context strip, handled
+    // by showBuild() in index.html's router — nothing to wire here.
   }
 
   window.tssInit = init;

@@ -1,6 +1,10 @@
 // ═══════════════════════════════════════════
-// Table Merge Tool
-// Uses data-store.js for all persistence
+// Table Merge
+//
+// Upload (or paste) a sheet, map its columns onto the eight canonical ones,
+// then click cells as you copy them across so you can see what's left. Data
+// lives in this module for the session only — there are no projects, ranches
+// or saved progress, and nothing is written to the browser.
 // ═══════════════════════════════════════════
 
 const HEADERS = ['Location','Sites','Crop','Variety','Location Type','Planted Date','Acreage','Plant Count'];
@@ -10,150 +14,16 @@ const PLANTCOUNT_COL = 7;
 const SKIP_FOR_DONE = new Set([RANCH_COL]);
 const NUMERIC_COLS = new Set([ACREAGE_COL, PLANTCOUNT_COL]);
 
-let currentOrg = null;
-let currentRanch = null;
+// ─── Session state ───
+let mergeRows = [];        // [[...8 cols]]
+let mergeProgress = {};    // rowIdx → [colIdx…] marked copied
+let mergeMapping = null;   // [srcColIdx per canonical column], -1 = skip
+let mergeSrcHeaders = [];  // the uploaded file's own header row
+let mergeFileName = '';
 let copiedCells = {};
 let sortCol = -1, sortAsc = true;
 
-// ═══ Init ═══
-function initMergePage() {
-  renderMergeSidebar();
-  renderMergeMain();
-}
-
-// ═══ Sidebar ═══
-function renderMergeSidebar() {
-  const container = document.getElementById('mergeOrgList');
-  if (!container) return;
-  const store = getStore();
-  container.innerHTML = '';
-
-  Object.keys(store.orgs || {}).sort().forEach(orgName => {
-    const org = store.orgs[orgName];
-    const isOpen = currentOrg === orgName;
-
-    // Org header
-    const header = document.createElement('div');
-    header.className = 'sb-org-header';
-    header.innerHTML = '<span class="arrow' + (isOpen ? ' open' : '') + '">&#9654;</span>' +
-      '<span class="name">' + escHtml(orgName) + '</span>' +
-      '<span class="del" title="Archive org">x</span>';
-    header.addEventListener('click', e => {
-      if (e.target.classList.contains('del')) { archiveOrg(orgName); return; }
-      toggleMergeOrg(orgName);
-    });
-    container.appendChild(header);
-
-    // Ranch list
-    const list = document.createElement('div');
-    list.className = 'sb-list' + (isOpen ? ' open' : '');
-
-    const ranches = Object.keys(org.ranches || {}).sort((a, b) => {
-      const ad = isRanchComplete(org.ranches[a]), bd = isRanchComplete(org.ranches[b]);
-      if (ad !== bd) return ad ? 1 : -1;
-      return a.localeCompare(b);
-    });
-
-    ranches.forEach(rName => {
-      const ranch = org.ranches[rName];
-      const done = isRanchComplete(ranch);
-      const item = document.createElement('div');
-      item.className = 'sb-item' + (currentOrg === orgName && currentRanch === rName ? ' active' : '') + (done ? ' done' : '');
-      item.title = rName;
-      item.innerHTML = '<span class="name">' + escHtml(rName) + ' (' + ranch.rows.length + ')' + (done ? ' \u2713' : '') + '</span>' +
-        '<span class="del" title="Archive">x</span>';
-      item.addEventListener('click', e => {
-        if (e.target.classList.contains('del')) { archiveRanch(orgName, rName); return; }
-        selectRanch(orgName, rName);
-      });
-      item.addEventListener('contextmenu', e => {
-        e.preventDefault();
-        showRanchCtxMenu(e.clientX, e.clientY, orgName, rName);
-      });
-      list.appendChild(item);
-    });
-
-    // Add ranch input
-    const addRow = document.createElement('div');
-    addRow.className = 'sidebar-input-row';
-    addRow.innerHTML = '<input class="input-field" style="flex:1;padding:4px 6px;font-size:11px;background:var(--sidebar-hover);color:#ccc;border-color:var(--border-sidebar);" placeholder="New ranch...">' +
-      '<button class="btn btn-primary btn-sm" style="padding:4px 8px;">+</button>';
-    addRow.querySelector('button').addEventListener('click', () => {
-      const input = addRow.querySelector('input');
-      const name = input.value.trim();
-      if (!name) return;
-      const s = getStore();
-      if (!s.orgs[orgName]) return;
-      if (s.orgs[orgName].ranches[name]) { alert('Ranch exists.'); return; }
-      s.orgs[orgName].ranches[name] = { rows: [], progress: {} };
-      saveStore(s);
-      input.value = '';
-      currentOrg = orgName; currentRanch = name;
-      renderMergeSidebar(); renderMergeMain();
-    });
-    addRow.querySelector('input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') addRow.querySelector('button').click();
-    });
-    list.appendChild(addRow);
-    container.appendChild(list);
-  });
-
-  // Quick import from imported sheets
-  const sheets = getSheetNames();
-  if (sheets.length > 0) {
-    const section = document.createElement('div');
-    section.style.cssText = 'border-top:1px solid var(--border-sidebar);padding:6px 0;margin-top:4px;';
-    section.innerHTML = '<div class="sidebar-label">Import from Sheets</div>';
-    sheets.forEach(name => {
-      const s = getSheet(name);
-      const item = document.createElement('div');
-      item.className = 'sb-item';
-      item.title = 'Load "' + name + '" into Table Merge';
-      item.innerHTML = '<span class="name">' + escHtml(name) + '</span><span class="count">' + (s?s.rowCount:'') + '</span>';
-      item.addEventListener('click', () => {
-        if (!currentOrg) { alert('Select or create an org first.'); return; }
-        const sheet = getSheet(name);
-        if (sheet) processSheet([sheet.headers, ...sheet.rows]);
-      });
-      section.appendChild(item);
-    });
-    container.appendChild(section);
-  }
-
-  // New org button
-  const newOrgBtn = document.getElementById('newOrgBtn');
-  if (newOrgBtn && !newOrgBtn._bound) {
-    newOrgBtn._bound = true;
-    newOrgBtn.addEventListener('click', () => {
-      const input = document.getElementById('newOrgName');
-      const name = input.value.trim();
-      if (!name) return;
-      if (createOrg(name)) { currentOrg = name; input.value = ''; renderMergeSidebar(); }
-      else alert('Org exists.');
-    });
-  }
-}
-
-function toggleMergeOrg(orgName) {
-  currentOrg = currentOrg === orgName ? null : orgName;
-  currentRanch = null;
-  renderMergeSidebar(); renderMergeMain();
-}
-
-function selectRanch(orgName, ranchName) {
-  currentOrg = orgName; currentRanch = ranchName;
-  sortCol = -1; sortAsc = true;
-  renderMergeSidebar(); renderMergeMain();
-}
-
-function isRanchComplete(ranch) {
-  if (!ranch || !ranch.rows.length) return false;
-  return ranch.rows.every((row, ri) => {
-    const req = row.reduce((cols, c, ci) => { if (c !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-    const done = new Set((ranch.progress || {})[ri] || []);
-    return req.every(ci => done.has(ci));
-  });
-}
+function initMergePage() { renderMergeMain(); }
 
 // ═══ Main Table ═══
 function renderMergeMain() {
@@ -161,63 +31,54 @@ function renderMergeMain() {
   const tbody = document.getElementById('mergeTbody');
   const empty = document.getElementById('mergeEmpty');
   const bc = document.getElementById('mergeBreadcrumb');
-  const toolbar = document.getElementById('mergeToolbar');
+  if (!thead) return;
   thead.innerHTML = ''; tbody.innerHTML = ''; copiedCells = {};
 
-  // Toolbar button visibility
-  const hasOrg = !!currentOrg;
-  const hasRanch = !!currentRanch;
-  ['mergeUploadBtn','mergeHeaderBtn','mergePasteBtn'].forEach(id => document.getElementById(id).style.display = hasOrg ? '' : 'none');
-  ['mergeDoneAllBtn','mergeResetBtn','mergeClearBtn'].forEach(id => document.getElementById(id).style.display = hasRanch ? '' : 'none');
+  const hasRows = mergeRows.length > 0;
+  ['mergeDoneAllBtn','mergeResetBtn','mergeClearBtn'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = hasRows ? '' : 'none';
+  });
 
-  if (!hasOrg || !hasRanch) {
-    bc.innerHTML = hasOrg ? escHtml(currentOrg) + ' — select a ranch' : 'Select a project';
-    empty.style.display = ''; hideStatsBar(); return;
+  if (!hasRows) {
+    bc.textContent = '';
+    empty.style.display = ''; hideStatsBar();
+    updateMergeMapping();
+    return;
   }
-
-  bc.innerHTML = '<span style="color:var(--text-3)">' + escHtml(currentOrg) + ' ›</span> ' + escHtml(currentRanch);
-  const store = getStore();
-  const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-  if (!ranch || !ranch.rows.length) { empty.style.display = ''; hideStatsBar(); return; }
+  bc.textContent = mergeFileName ? mergeFileName + ' · ' + mergeRows.length + ' rows' : mergeRows.length + ' rows';
   empty.style.display = 'none';
 
-  // Auto-mark None/0/empty as done
-  let autoMarked = false;
-  ranch.rows.forEach((row, ri) => {
-    const prog = new Set((ranch.progress || {})[ri] || []);
+  // Cells that carry nothing to copy (None / 0 / blank) count as done up front.
+  mergeRows.forEach((row, ri) => {
+    const prog = new Set(mergeProgress[ri] || []);
     row.forEach((cell, ci) => {
-      if ((cell === 'None' || cell === '0' || cell === '') && !prog.has(ci)) { prog.add(ci); autoMarked = true; }
+      if (cell === 'None' || cell === '0' || cell === '') prog.add(ci);
     });
-    if (!ranch.progress) ranch.progress = {};
-    ranch.progress[ri] = [...prog];
+    mergeProgress[ri] = [...prog];
   });
-  if (autoMarked) saveStore(store);
 
-  // Render headers
   HEADERS.forEach((h, ci) => {
     const th = document.createElement('th');
-    let arrow = '<span style="margin-left:3px;font-size:8px;opacity:0.3;">\u25B2</span>';
-    if (sortCol === ci) { arrow = '<span style="margin-left:3px;font-size:8px;">' + (sortAsc ? '\u25B2' : '\u25BC') + '</span>'; th.classList.add('sort-active'); }
+    let arrow = '<span style="margin-left:3px;font-size:8px;opacity:0.3;">▲</span>';
+    if (sortCol === ci) { arrow = '<span style="margin-left:3px;font-size:8px;">' + (sortAsc ? '▲' : '▼') + '</span>'; th.classList.add('sort-active'); }
     th.innerHTML = escHtml(h) + arrow;
     th.addEventListener('click', () => { if (sortCol === ci) sortAsc = !sortAsc; else { sortCol = ci; sortAsc = true; } renderMergeMain(); });
     thead.appendChild(th);
   });
 
-  // Sort
-  const indices = ranch.rows.map((_, i) => i);
+  const indices = mergeRows.map((_, i) => i);
   if (sortCol >= 0) {
     indices.sort((a, b) => {
-      let va = ranch.rows[a][sortCol] || '', vb = ranch.rows[b][sortCol] || '';
+      let va = mergeRows[a][sortCol] || '', vb = mergeRows[b][sortCol] || '';
       if (NUMERIC_COLS.has(sortCol)) { va = parseFloat(va) || 0; vb = parseFloat(vb) || 0; return sortAsc ? va - vb : vb - va; }
       return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
     });
   }
 
-  // Render rows
-  const progress = ranch.progress || {};
   indices.forEach(ri => {
-    const row = ranch.rows[ri];
-    copiedCells[ri] = new Set(progress[ri] || []);
+    const row = mergeRows[ri];
+    copiedCells[ri] = new Set(mergeProgress[ri] || []);
     const nonEmpty = row.filter((c, i) => c !== '' && !SKIP_FOR_DONE.has(i)).length;
     const tr = document.createElement('tr');
 
@@ -230,26 +91,25 @@ function renderMergeMain() {
       td.addEventListener('click', () => {
         if (cell === '') return;
         clickCount++;
-        if (clickCount === 1) {
-          setTimeout(() => {
-            if (clickCount === 1) {
-              navigator.clipboard.writeText(cell).then(() => {
-                const prev = document.querySelector('#mergeTbody .cell-clicked');
-                if (prev) prev.classList.remove('cell-clicked');
-                td.classList.add('cell-highlighted', 'cell-clicked');
-                copiedCells[ri].add(ci);
-                saveMergeProgress();
-                checkMergeRowDone(tr, ri, row, nonEmpty);
-              });
-            } else {
-              td.classList.remove('cell-highlighted', 'cell-clicked');
-              copiedCells[ri].delete(ci);
+        if (clickCount !== 1) return;
+        setTimeout(() => {
+          if (clickCount === 1) {
+            navigator.clipboard.writeText(cell).then(() => {
+              const prev = document.querySelector('#mergeTbody .cell-clicked');
+              if (prev) prev.classList.remove('cell-clicked');
+              td.classList.add('cell-highlighted', 'cell-clicked');
+              copiedCells[ri].add(ci);
               saveMergeProgress();
               checkMergeRowDone(tr, ri, row, nonEmpty);
-            }
-            clickCount = 0;
-          }, 200);
-        }
+            });
+          } else {
+            td.classList.remove('cell-highlighted', 'cell-clicked');
+            copiedCells[ri].delete(ci);
+            saveMergeProgress();
+            checkMergeRowDone(tr, ri, row, nonEmpty);
+          }
+          clickCount = 0;
+        }, 200);
       });
       tr.appendChild(td);
     });
@@ -259,6 +119,7 @@ function renderMergeMain() {
     tbody.appendChild(tr);
   });
 
+  updateMergeMapping();
   renderMergeStats();
 }
 
@@ -267,7 +128,7 @@ function checkMergeRowDone(tr, ri, row, nonEmpty) {
   const blockCell = tr.querySelector('td');
   if (done >= nonEmpty && nonEmpty > 0) {
     tr.classList.add('row-done');
-    if (!blockCell.querySelector('.badge')) { blockCell.insertAdjacentHTML('beforeend', '<span class="badge">\u2713 Done</span>'); }
+    if (!blockCell.querySelector('.badge')) blockCell.insertAdjacentHTML('beforeend', '<span class="badge">✓ Done</span>');
   } else {
     tr.classList.remove('row-done');
     const badge = blockCell?.querySelector('.badge'); if (badge) badge.remove();
@@ -275,65 +136,46 @@ function checkMergeRowDone(tr, ri, row, nonEmpty) {
 }
 
 function saveMergeProgress() {
-  if (!currentOrg || !currentRanch) return;
-  const store = getStore();
-  const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-  if (!ranch) return;
   const obj = {};
   for (const key in copiedCells) obj[key] = [...copiedCells[key]];
-  ranch.progress = obj;
-  saveStore(store);
-  renderMergeSidebar();
+  mergeProgress = obj;
   renderMergeStats();
 }
 
 function renderMergeStats() {
-  if (!currentOrg || !currentRanch) { hideStatsBar(); return; }
-  const store = getStore();
-  const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-  if (!ranch || !ranch.rows.length) { hideStatsBar(); return; }
-  let total = ranch.rows.length, done = 0;
-  ranch.rows.forEach((row, ri) => {
+  if (!mergeRows.length) { hideStatsBar(); return; }
+  let total = mergeRows.length, done = 0;
+  mergeRows.forEach((row, ri) => {
     const req = row.reduce((cols, c, ci) => { if (c !== '' && !SKIP_FOR_DONE.has(ci)) cols.push(ci); return cols; }, []);
-    const d = new Set((ranch.progress || {})[ri] || []);
+    const d = new Set(mergeProgress[ri] || []);
     if (req.every(ci => d.has(ci))) done++;
   });
   showStatsBar(total, done);
 }
 
-// ═══ Toolbar Actions ═══
+// ═══ Toolbar ═══
 function initMergeToolbarEvents() {
   document.getElementById('mergeDoneAllBtn').addEventListener('click', () => {
-    if (!currentOrg || !currentRanch) return;
-    const store = getStore();
-    const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-    if (!ranch) return;
-    ranch.rows.forEach((row, ri) => {
-      ranch.progress[ri] = row.map((_, ci) => ci).filter(ci => row[ci] !== '');
+    mergeRows.forEach((row, ri) => {
+      mergeProgress[ri] = row.map((_, ci) => ci).filter(ci => row[ci] !== '');
     });
-    saveStore(store); renderMergeMain(); renderMergeSidebar();
+    renderMergeMain();
   });
 
   document.getElementById('mergeResetBtn').addEventListener('click', () => {
-    if (!currentRanch || !confirm('Reset progress for "' + currentRanch + '"?')) return;
-    const store = getStore();
-    const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-    if (!ranch) return;
-    ranch.progress = {};
-    saveStore(store); renderMergeMain(); renderMergeSidebar();
+    if (!confirm('Reset all copy progress?')) return;
+    mergeProgress = {};
+    renderMergeMain();
   });
 
   document.getElementById('mergeClearBtn').addEventListener('click', () => {
-    if (!currentRanch || !confirm('Archive all data from "' + currentRanch + '"?')) return;
-    const store = getStore();
-    const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-    if (!ranch || !ranch.rows.length) return;
-    archiveItem('rows', currentRanch, JSON.parse(JSON.stringify(ranch)), currentOrg);
-    ranch.rows = []; ranch.progress = {};
-    saveStore(store); renderMergeMain(); renderMergeSidebar();
+    if (!confirm('Clear all ' + mergeRows.length + ' rows?')) return;
+    mergeRows = []; mergeProgress = {}; mergeFileName = '';
+    sortCol = -1; sortAsc = true;
+    renderMergeMain();
   });
 
-  // Header setup
+  // Header mapping
   document.getElementById('mergeHeaderBtn').addEventListener('click', () => {
     const box = document.getElementById('mergeHeaderSetup');
     box.style.display = box.style.display === 'none' ? '' : 'none';
@@ -341,13 +183,12 @@ function initMergeToolbarEvents() {
   document.getElementById('mergeHeaderCancel').addEventListener('click', () => { document.getElementById('mergeHeaderSetup').style.display = 'none'; });
   document.getElementById('mergeHeaderConfirm').addEventListener('click', () => {
     const text = document.getElementById('mergeHeaderArea').value.trim();
-    if (!text || !currentOrg) return;
+    if (!text) return;
     const lines = text.split(/\r?\n/).filter(l => l.trim());
     if (!lines.length) return;
-    const fileHeaders = lines[0].split('\t').map(h => h.trim());
     document.getElementById('mergeHeaderSetup').style.display = 'none';
     document.getElementById('mergeHeaderArea').value = '';
-    showMergeColumnMapper(fileHeaders);
+    showMergeColumnMapper(lines[0].split('\t').map(h => h.trim()));
   });
 
   // Paste
@@ -358,49 +199,56 @@ function initMergeToolbarEvents() {
   document.getElementById('mergePasteCancel').addEventListener('click', () => { document.getElementById('mergePasteBox').style.display = 'none'; });
   document.getElementById('mergePasteConfirm').addEventListener('click', () => {
     const text = document.getElementById('mergePasteArea').value.trim();
-    if (!text || !currentOrg) return;
-    const store = getStore();
-    const mapping = store.orgs[currentOrg]?.columnMapping;
-    if (!mapping) { alert('Set up header mapping first.'); return; }
-    const lines = text.split(/\r?\n/).filter(l => l.trim());
-    const parsed = lines.map(l => l.split('\t').map(c => c.trim()));
+    if (!text) return;
+    if (!mergeMapping) { alert('Set up header mapping first (Headers), or upload a file.'); return; }
+    const parsed = text.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t').map(c => c.trim()));
     document.getElementById('mergePasteBox').style.display = 'none';
     document.getElementById('mergePasteArea').value = '';
-    importMergeRows(parsed, mapping);
+    importMergeRows(parsed, mergeMapping);
   });
 
-  // File upload
+  // Upload
   document.getElementById('mergeFileInput').addEventListener('change', async e => {
     const file = e.target.files[0];
-    if (!file || !currentOrg) return;
+    if (!file) return;
     e.target.value = '';
     try {
       const result = await readUploadedFile(file);
-      if (result.sheets.length === 1) {
-        processSheet([result.sheets[0].headers, ...result.sheets[0].rows]);
+      if (!result.sheets.length) { alert('No sheets found in that file.'); return; }
+      mergeFileName = file.name;
+      if (result.sheets.length > 1) {
+        const names = result.sheets.map((s, i) => (i + 1) + '. ' + s.name).join('\n');
+        const pick = prompt('This file has ' + result.sheets.length + ' sheets. Which one?\n\n' + names, '1');
+        const idx = Math.max(0, Math.min(result.sheets.length - 1, (parseInt(pick, 10) || 1) - 1));
+        processSheet([result.sheets[idx].headers, ...result.sheets[idx].rows]);
       } else {
-        // Multi-sheet: show picker (reuse global import approach)
-        alert('Multi-sheet file: use Import Data button for multi-sheet files. Importing first sheet.');
         processSheet([result.sheets[0].headers, ...result.sheets[0].rows]);
       }
-    } catch(err) { alert('Error: ' + err.message); }
+    } catch (err) { alert('Error: ' + err.message); }
   });
 
-  // Paste listener (Ctrl+V on page)
+  // Ctrl+V straight onto the page
   document.addEventListener('paste', e => {
     if (!document.getElementById('page-merge').classList.contains('active')) return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-    if (!currentOrg) return;
-    const store = getStore();
-    const mapping = store.orgs[currentOrg]?.columnMapping;
-    if (!mapping) return;
+    if (!mergeMapping) return;
     e.preventDefault();
     let parsed = null;
     const html = e.clipboardData.getData('text/html');
-    if (html) { const doc = new DOMParser().parseFromString(html, 'text/html'); const rows = doc.querySelectorAll('tr'); if (rows.length) { parsed = []; rows.forEach(tr => { const cells = []; tr.querySelectorAll('td,th').forEach(c => cells.push(c.textContent.trim())); if (cells.length) parsed.push(cells); }); } }
-    if (!parsed) { const text = e.clipboardData.getData('text/plain'); if (text) parsed = text.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t').map(c => c.trim())); }
-    if (parsed && parsed.length) importMergeRows(parsed, mapping);
+    if (html) {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const rows = doc.querySelectorAll('tr');
+      if (rows.length) {
+        parsed = [];
+        rows.forEach(tr => { const cells = []; tr.querySelectorAll('td,th').forEach(c => cells.push(c.textContent.trim())); if (cells.length) parsed.push(cells); });
+      }
+    }
+    if (!parsed) {
+      const text = e.clipboardData.getData('text/plain');
+      if (text) parsed = text.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t').map(c => c.trim()));
+    }
+    if (parsed && parsed.length) importMergeRows(parsed, mergeMapping);
   });
 }
 
@@ -408,7 +256,7 @@ function initMergeToolbarEvents() {
 function showMergeColumnMapper(fileHeaders) {
   const mapper = document.getElementById('mergeColumnMapper');
   let html = '<div class="panel-box"><h3 style="font-size:14px;margin-bottom:10px;">Map columns</h3>' +
-    '<p class="text-muted small" style="margin-bottom:8px;">Headers: ' + fileHeaders.join(', ') + '</p>';
+    '<p class="text-muted small" style="margin-bottom:8px;">Headers: ' + escHtml(fileHeaders.join(', ')) + '</p>';
   HEADERS.forEach((h, i) => {
     html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;"><label style="width:100px;font-size:12px;font-weight:500;">' + h + '</label><select class="input-field" data-target="' + i + '" style="flex:1;">';
     html += '<option value="-1">(skip)</option>';
@@ -421,15 +269,13 @@ function showMergeColumnMapper(fileHeaders) {
   document.getElementById('mapperConfirm').addEventListener('click', () => {
     const mapping = [];
     mapper.querySelectorAll('select').forEach(sel => mapping.push(parseInt(sel.value)));
-    const store = getStore();
-    if (!store.orgs[currentOrg]) return;
-    store.orgs[currentOrg].columnMapping = mapping;
-    store.orgs[currentOrg].fileHeaders = fileHeaders;
-    saveStore(store);
+    mergeMapping = mapping;
+    mergeSrcHeaders = fileHeaders;
     mapper.style.display = 'none';
-    updateMergeMapping();
+    if (pendingSheetRows) { const rows = pendingSheetRows; pendingSheetRows = null; importMergeRows(rows, mapping); }
+    else updateMergeMapping();
   });
-  document.getElementById('mapperCancel').addEventListener('click', () => { mapper.style.display = 'none'; });
+  document.getElementById('mapperCancel').addEventListener('click', () => { mapper.style.display = 'none'; pendingSheetRows = null; });
 }
 
 function autoMatch(target, source) {
@@ -442,36 +288,34 @@ function autoMatch(target, source) {
 
 function updateMergeMapping() {
   const el = document.getElementById('mergeMapping');
-  if (!currentOrg) { el.innerHTML = ''; return; }
-  const store = getStore();
-  const org = store.orgs[currentOrg];
-  if (org?.columnMapping) {
-    const fh = (org.fileHeaders || []).filter(h => h).slice(0, 6);
-    const extra = (org.fileHeaders || []).filter(h => h).length > 6 ? ' +' + ((org.fileHeaders || []).filter(h=>h).length - 6) + ' more' : '';
-    el.innerHTML = '<span class="text-muted small">Mapped: ' + fh.join(', ') + extra + ' <a href="#" onclick="clearMergeMapping();return false;" style="color:var(--red);">Reset</a></span>';
+  if (!el) return;
+  if (mergeMapping) {
+    const fh = mergeSrcHeaders.filter(h => h).slice(0, 6);
+    const extra = mergeSrcHeaders.filter(h => h).length > 6 ? ' +' + (mergeSrcHeaders.filter(h => h).length - 6) + ' more' : '';
+    el.innerHTML = '<span class="text-muted small">Mapped: ' + escHtml(fh.join(', ')) + extra +
+      ' <a href="#" onclick="clearMergeMapping();return false;" style="color:var(--red);">Reset</a></span>';
   } else {
     el.innerHTML = '<span style="color:var(--amber);font-size:11px;">No headers set</span>';
   }
 }
 
 function clearMergeMapping() {
-  if (!currentOrg || !confirm('Clear header mapping?')) return;
-  const store = getStore();
-  delete store.orgs[currentOrg].columnMapping;
-  delete store.orgs[currentOrg].fileHeaders;
-  saveStore(store);
+  if (!confirm('Clear header mapping?')) return;
+  mergeMapping = null; mergeSrcHeaders = [];
   updateMergeMapping();
 }
 
-// ═══ Import Rows ═══
+// ═══ Import ═══
+let pendingSheetRows = null;   // data rows waiting on the user to confirm a mapping
+
 function processSheet(sheetRows) {
   const filtered = sheetRows.filter(r => r.some(c => String(c).trim() !== ''));
   if (filtered.length < 2) { alert('No data rows.'); return; }
-  const store = getStore();
-  const mapping = store.orgs[currentOrg]?.columnMapping;
-  if (mapping) {
-    importMergeRows(filtered.slice(1), mapping);
+  if (mergeMapping) {
+    importMergeRows(filtered.slice(1), mergeMapping);
   } else {
+    // Hold the rows so the mapper can import them the moment it's confirmed.
+    pendingSheetRows = filtered.slice(1);
     showMergeColumnMapper(filtered[0].map(h => String(h).trim()));
   }
 }
@@ -484,187 +328,50 @@ function importMergeRows(dataRows, mapping) {
   })).filter(r => r.some(c => c));
   if (!newRows.length) { alert('No rows.'); return; }
 
-  // Safety: swap acreage/plant count if both > 0 and acreage > plant count
+  // Acreage and Plant Count get swapped often enough to be worth correcting:
+  // acreage above plant count is almost always the two columns reversed.
   newRows.forEach(row => {
     const a = parseFloat(row[ACREAGE_COL]), p = parseFloat(row[PLANTCOUNT_COL]);
     if (!isNaN(a) && !isNaN(p) && a > 0 && p > 0 && a > p) { row[ACREAGE_COL] = row[PLANTCOUNT_COL]; row[PLANTCOUNT_COL] = String(a); }
   });
 
-  // Group by ranch
-  const grouped = {};
-  newRows.forEach(row => { const r = row[RANCH_COL] || 'Unknown'; if (!grouped[r]) grouped[r] = []; grouped[r].push(row); });
-
-  // Show import destination modal
-  showImportDestModal(grouped);
-}
-
-function showImportDestModal(grouped) {
-  const store = getStore();
-  const existing = Object.keys(store.orgs[currentOrg]?.ranches || {}).sort();
-  const incoming = Object.keys(grouped).sort();
-  const allTargets = [...new Set([...existing, ...incoming])].sort();
-  const list = document.getElementById('importDestList');
-  list.innerHTML = '';
-
-  incoming.forEach(srcName => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:8px;background:var(--bg-alt);border-radius:var(--radius);';
-    const label = document.createElement('div');
-    label.innerHTML = '<strong style="font-size:12px;">' + escHtml(srcName) + '</strong><br><span class="text-muted small">' + grouped[srcName].length + ' row(s)</span>';
-    const select = document.createElement('select');
-    select.className = 'input-field'; select.style.flex = '1'; select.dataset.src = srcName;
-    select.innerHTML = '<option value="__keep__">Keep as "' + escHtml(srcName) + '"</option>';
-    // New incoming first
-    allTargets.filter(r => r !== srcName && !existing.includes(r)).forEach(r => { select.innerHTML += '<option value="' + escHtml(r) + '">Merge into "' + escHtml(r) + '" (new)</option>'; });
-    existing.forEach(r => { if (r !== srcName) select.innerHTML += '<option value="' + escHtml(r) + '">Merge into "' + escHtml(r) + '"</option>'; });
-    row.appendChild(label); row.appendChild(select);
-    list.appendChild(row);
+  const startIdx = mergeRows.length;
+  newRows.forEach((row, i) => {
+    mergeRows.push(row);
+    mergeProgress[startIdx + i] = [];
   });
-
-  document.getElementById('importDestModal').classList.add('show');
-  document.getElementById('importDestCancel').onclick = () => document.getElementById('importDestModal').classList.remove('show');
-  document.getElementById('importDestConfirm').onclick = () => {
-    const store = getStore();
-    let firstNew = null;
-    document.querySelectorAll('#importDestList select').forEach(sel => {
-      const srcName = sel.dataset.src, target = sel.value;
-      const rows = grouped[srcName]; if (!rows) return;
-      const destName = target === '__keep__' ? srcName : target;
-      const isMerge = target !== '__keep__';
-      rows.forEach(r => { r[RANCH_COL] = destName; });
-      if (!store.orgs[currentOrg].ranches[destName]) store.orgs[currentOrg].ranches[destName] = { rows: [], progress: {} };
-      const ranch = store.orgs[currentOrg].ranches[destName];
-      const startIdx = ranch.rows.length;
-      rows.forEach((row, i) => {
-        ranch.rows.push(row);
-        if (isMerge) { ranch.progress[startIdx + i] = []; }
-        else { const allCols = []; row.forEach((c, ci) => { if (c) allCols.push(ci); }); ranch.progress[startIdx + i] = allCols; }
-      });
-      if (!firstNew && isMerge) firstNew = destName;
-    });
-    saveStore(store);
-    document.getElementById('importDestModal').classList.remove('show');
-    if (firstNew) currentRanch = firstNew;
-    else if (!currentRanch) { const r = Object.keys(store.orgs[currentOrg].ranches).sort(); if (r.length) currentRanch = r[0]; }
-    renderMergeSidebar(); renderMergeMain();
-  };
+  sortCol = -1; sortAsc = true;
+  renderMergeMain();
 }
 
-// ═══ Context Menus ═══
+// ═══ Row context menu ═══
 function showRowCtxMenu(x, y, ri) {
   const menu = document.getElementById('ctxMenu');
-  menu.innerHTML = '<div data-action="move">Move to another ranch</div><div data-action="delete">Archive row</div>';
+  menu.innerHTML = '<div data-action="delete">Remove row</div>';
   menu.style.display = 'block'; menu.style.left = x + 'px'; menu.style.top = y + 'px';
   menu.onclick = e => {
     menu.style.display = 'none';
-    if (e.target.dataset.action === 'move') openMoveRowModal(ri);
-    else if (e.target.dataset.action === 'delete') archiveRow(ri);
+    if (e.target.dataset.action === 'delete') removeMergeRow(ri);
   };
 }
 
-function showRanchCtxMenu(x, y, orgName, ranchName) {
-  const menu = document.getElementById('ctxMenu');
-  menu.innerHTML = '<div data-action="rename">Rename</div><div data-action="merge">Merge into another</div>';
-  menu.style.display = 'block'; menu.style.left = x + 'px'; menu.style.top = y + 'px';
-  menu.onclick = e => {
-    menu.style.display = 'none';
-    if (e.target.dataset.action === 'rename') renameRanch(orgName, ranchName);
-    else if (e.target.dataset.action === 'merge') mergeRanchPrompt(orgName, ranchName);
-  };
-}
+document.addEventListener('click', () => {
+  const m = document.getElementById('ctxMenu');
+  if (m) m.style.display = 'none';
+});
 
-document.addEventListener('click', () => { document.getElementById('ctxMenu').style.display = 'none'; });
-
-// ═══ Row/Ranch Operations ═══
-function archiveOrg(name) {
-  if (!confirm('Archive "' + name + '"?')) return;
-  const store = getStore();
-  archiveItem('org', name, store.orgs[name]);
-  delete store.orgs[name];
-  saveStore(store);
-  if (currentOrg === name) { currentOrg = null; currentRanch = null; }
-  renderMergeSidebar(); renderMergeMain();
-}
-
-function archiveRanch(orgName, ranchName) {
-  if (!confirm('Archive "' + ranchName + '"?')) return;
-  const store = getStore();
-  archiveItem('ranch', ranchName, store.orgs[orgName].ranches[ranchName], orgName);
-  delete store.orgs[orgName].ranches[ranchName];
-  saveStore(store);
-  if (currentRanch === ranchName) currentRanch = null;
-  renderMergeSidebar(); renderMergeMain();
-}
-
-function archiveRow(ri) {
-  if (!confirm('Archive this row?')) return;
-  const store = getStore();
-  const ranch = store.orgs[currentOrg]?.ranches?.[currentRanch];
-  if (!ranch) return;
-  const row = ranch.rows.splice(ri, 1)[0];
-  archiveItem('row', currentRanch, { row, progress: ranch.progress[ri] || [] }, currentOrg);
+function removeMergeRow(ri) {
+  if (!confirm('Remove this row?')) return;
+  mergeRows.splice(ri, 1);
+  // Progress is keyed by row index, so everything after the gap shifts down.
   const np = {};
-  Object.keys(ranch.progress).forEach(k => { const ki = parseInt(k); if (ki < ri) np[ki] = ranch.progress[ki]; else if (ki > ri) np[ki-1] = ranch.progress[ki]; });
-  ranch.progress = np;
-  saveStore(store); renderMergeMain(); renderMergeSidebar();
-}
-
-function openMoveRowModal(ri) {
-  const store = getStore();
-  const select = document.getElementById('moveRowTarget');
-  select.innerHTML = '';
-  Object.keys(store.orgs).sort().forEach(orgName => {
-    Object.keys(store.orgs[orgName].ranches).sort().forEach(rName => {
-      if (orgName === currentOrg && rName === currentRanch) return;
-      select.innerHTML += '<option value="' + escHtml(orgName) + '|||' + escHtml(rName) + '">' + escHtml(orgName) + ' > ' + escHtml(rName) + '</option>';
-    });
+  Object.keys(mergeProgress).forEach(k => {
+    const ki = parseInt(k);
+    if (ki < ri) np[ki] = mergeProgress[ki];
+    else if (ki > ri) np[ki - 1] = mergeProgress[ki];
   });
-  if (!select.options.length) { alert('No other ranches.'); return; }
-  document.getElementById('moveRowModal').classList.add('show');
-  document.getElementById('moveRowCancel').onclick = () => document.getElementById('moveRowModal').classList.remove('show');
-  document.getElementById('moveRowConfirm').onclick = () => {
-    const [tOrg, tRanch] = select.value.split('|||');
-    const store = getStore();
-    const src = store.orgs[currentOrg].ranches[currentRanch];
-    const dst = store.orgs[tOrg].ranches[tRanch];
-    const row = src.rows.splice(ri, 1)[0];
-    row[RANCH_COL] = tRanch;
-    dst.rows.push(row); dst.progress[dst.rows.length - 1] = src.progress[ri] || [];
-    const np = {};
-    Object.keys(src.progress).forEach(k => { const ki = parseInt(k); if (ki < ri) np[ki] = src.progress[ki]; else if (ki > ri) np[ki-1] = src.progress[ki]; });
-    src.progress = np;
-    saveStore(store);
-    document.getElementById('moveRowModal').classList.remove('show');
-    renderMergeSidebar(); renderMergeMain();
-  };
-}
-
-function renameRanch(orgName, ranchName) {
-  const newName = prompt('Rename "' + ranchName + '" to:', ranchName);
-  if (!newName || !newName.trim() || newName.trim() === ranchName) return;
-  const store = getStore();
-  if (store.orgs[orgName].ranches[newName.trim()]) { alert('Name exists. Use Merge.'); return; }
-  store.orgs[orgName].ranches[newName.trim()] = store.orgs[orgName].ranches[ranchName];
-  delete store.orgs[orgName].ranches[ranchName];
-  store.orgs[orgName].ranches[newName.trim()].rows.forEach(r => { r[RANCH_COL] = newName.trim(); });
-  saveStore(store);
-  if (currentRanch === ranchName) currentRanch = newName.trim();
-  renderMergeSidebar(); renderMergeMain();
-}
-
-function mergeRanchPrompt(orgName, srcName) {
-  const store = getStore();
-  const others = Object.keys(store.orgs[orgName].ranches).filter(r => r !== srcName).sort();
-  if (!others.length) { alert('No other ranches.'); return; }
-  const target = prompt('Merge "' + srcName + '" into which ranch?\n\n' + others.join('\n'));
-  if (!target || !others.includes(target)) return;
-  const src = store.orgs[orgName].ranches[srcName];
-  const dst = store.orgs[orgName].ranches[target];
-  src.rows.forEach((row, i) => { row[RANCH_COL] = target; dst.rows.push(row); dst.progress[dst.rows.length - 1] = src.progress[i] || []; });
-  delete store.orgs[orgName].ranches[srcName];
-  saveStore(store);
-  if (currentRanch === srcName) currentRanch = target;
-  renderMergeSidebar(); renderMergeMain();
+  mergeProgress = np;
+  renderMergeMain();
 }
 
 // ═══ Init events (called once) ═══

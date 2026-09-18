@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IM Tools</title>
-  <link rel="stylesheet" href="styles.css?v=28">
+  <link rel="stylesheet" href="styles.css?v=39">
 </head>
 <body>
 
@@ -15,53 +15,57 @@
     <span class="topbar-title">IM Tools</span>
   </div>
   <div class="topbar-tabs" id="topbarTabs">
-    <button class="topbar-tab active" data-page="merge">&#8644; Table Merge</button>
-    <button class="topbar-tab" data-page="ocr">&#128065; Image to Text</button>
-    <button class="topbar-tab" data-page="orgdata">&#128194; Org Data</button>
-    <button class="topbar-tab" data-page="review">&#9745; Variant Review</button>
-    <button class="topbar-tab" data-page="coleditor">&#9998; Column Editor</button>
-    <button class="topbar-tab" data-page="tracker">&#9744; Data Progress</button>
-    <button class="topbar-tab" data-page="compare">&#8651; Bulk Templates</button>
-  </div>
-  <div class="topbar-right">
-    <button class="topbar-import" id="btnGlobalImport">&#43; Import</button>
-    <button class="topbar-icon-btn" id="btnSave" title="Save to file">&#128190;</button>
-    <label class="topbar-icon-btn" title="Load from file">&#128194;<input type="file" id="loadFileInput" accept=".json" hidden></label>
-    <span class="save-status" id="saveStatus"></span>
+    <button class="topbar-tab topbar-tab-primary active" data-page="build">Build an upload file</button>
+    <span class="topbar-group">Prep</span>
+    <button class="topbar-tab" data-page="ocr">Image to Text</button>
+    <button class="topbar-tab" data-page="review">Variant Review</button>
+    <button class="topbar-tab" data-page="coleditor">Column Editor</button>
+    <button class="topbar-tab" data-page="merge">Table Merge</button>
+    <button class="topbar-tab" data-page="tracker">Data Progress</button>
   </div>
 </nav>
 
-<!-- ═══ App Body (sidebar + main) ═══ -->
+<!-- ═══ App Body ═══
+     No global sidebar and no shared import: every tool takes its own file
+     upload and holds its own data for the session. -->
 <div class="app-body">
-
-  <!-- Sidebar -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-dynamic" id="sidebarDynamic">
-      <!-- Populated per-tool by switchPage() -->
-    </div>
-    <div class="sidebar-sheets">
-      <div class="sidebar-label">Imported Sheets</div>
-      <div id="sheetList"><div class="sidebar-empty">No data imported</div></div>
-    </div>
-  </aside>
 
   <!-- Main Content -->
   <div class="main-content">
 
+    <!-- Names the current tool and, in one line, the situation you reach for it
+         in. Replaces the per-pane <h2> + description blocks. Filled by setContext(). -->
+    <div class="context-strip" id="contextStrip">
+      <span class="ctx-name" id="ctxName"></span>
+      <span class="ctx-situation" id="ctxSituation"></span>
+    </div>
+
+    <!-- The four ways to produce an upload file. Rendered by renderBuildPicker();
+         each card explains what it takes and returns on hover / focus. -->
+    <div class="build-picker" id="buildPicker"></div>
+
+    <!-- What the chosen builder writes. Sits under the picker so the page reads
+         in the order you decide: which tool, then which template, then the work. -->
+    <div class="entity-bar" id="entityBar">
+      <span class="entity-bar-label">Building</span>
+      <span class="ctx-entity" id="ctxEntity"></span>
+    </div>
+
+
     <!-- ─── Page: Table Merge ─── -->
     <div class="page active" id="page-merge">
       <div class="page-toolbar" id="mergeToolbar">
-        <span class="breadcrumb" id="mergeBreadcrumb">Select a project</span>
-        <label class="btn btn-ghost" id="mergeUploadBtn" style="display:none;">&#8679; Upload<input type="file" id="mergeFileInput" accept=".xlsx,.xls,.csv" hidden></label>
-        <button class="btn btn-ghost" id="mergeHeaderBtn" style="display:none;">&#9776; Headers</button>
-        <button class="btn btn-ghost" id="mergePasteBtn" style="display:none;">&#9112; Paste</button>
+        <label class="btn btn-primary">&#8679; Upload file<input type="file" id="mergeFileInput" accept=".xlsx,.xls,.csv" hidden></label>
+        <button class="btn btn-ghost" id="mergeHeaderBtn">&#9776; Headers</button>
+        <button class="btn btn-ghost" id="mergePasteBtn">&#9112; Paste</button>
+        <span class="breadcrumb" id="mergeBreadcrumb"></span>
         <button class="btn btn-success" id="mergeDoneAllBtn" style="display:none;">&#10003; All Done</button>
         <button class="btn btn-warning" id="mergeResetBtn" style="display:none;">&#8634; Reset</button>
         <button class="btn btn-danger" id="mergeClearBtn" style="display:none;">&#10005; Clear</button>
       </div>
       <div class="page-infobar" id="mergeInfobar">
         <div class="hint-text">
-          <kbd>Click</kbd> copy <kbd>Dbl-click</kbd> undo <kbd>Right-click</kbd> move <kbd>Ctrl+V</kbd> paste
+          <kbd>Click</kbd> copy <kbd>Dbl-click</kbd> undo <kbd>Right-click</kbd> remove row <kbd>Ctrl+V</kbd> paste
         </div>
         <div id="mergeMapping"></div>
       </div>
@@ -88,14 +92,13 @@
           <tbody id="mergeTbody"></tbody>
         </table>
       </div>
-      <div class="empty-state" id="mergeEmpty">Select a ranch from the sidebar, or import data to get started.</div>
+      <div class="empty-state" id="mergeEmpty">Upload a file, or paste rows, to get started.</div>
     </div>
 
     <!-- ─── Page: Image to Text (OCR) ─── -->
     <div class="page" id="page-ocr">
       <div class="ocr-page">
         <div class="ocr-header">
-          <h2>Image to Text</h2>
           <p>Upload or paste a screenshot to extract text. Works entirely in your browser.</p>
         </div>
         <div class="ocr-layout" id="ocrLayout">
@@ -160,7 +163,6 @@
               </div>
               <button class="ocr-copy-btn" id="ocrToggleEmptyBtn" onclick="toggleHideEmptyOCRCols()" title="Hide columns whose data cells are all empty">Hide Empty Cols</button>
               <button class="ocr-panel-close-btn" onclick="closeOCRPanel()" title="Close panel">&#x2715;</button>
-              <button class="ocr-copy-btn" id="ocrSaveBtn" onclick="showSaveToOrg()" style="display:none;">Save to Org</button>
               <button class="ocr-copy-btn" id="ocrCopyBtn" onclick="copyOCRText()" style="display:none;">Copy All</button>
             </div>
             <div class="ocr-tab-content active" id="ocrTabTable">
@@ -189,41 +191,22 @@
       </div>
     </div>
 
-    <!-- ─── Page: Org Data ─── -->
-    <div class="page" id="page-orgdata">
-      <div class="orgdata-layout">
-        <!-- The in-page sidenav was replaced by sidebar content rendered from buildSidebar('orgdata').
-             The orgDataSelect / orgDataNav elements live in the global sidebar now. -->
-        <!-- Right content panel -->
-        <div class="orgdata-panel">
-          <div class="page-toolbar" id="orgdataToolbar"></div>
-          <div class="table-wrap" id="orgdataContent">
-            <p class="empty-state">Select an organization and section.</p>
-          </div>
-          <!-- Full tracker is transplanted here when a data item is selected -->
-          <div id="orgdata-tracker-host" style="display:contents;"></div>
-        </div>
-      </div>
-    </div>
 
     <!-- ─── Page: Variant Review ─── -->
     <div class="page" id="page-review">
       <div id="rv-setup" class="rv-setup">
         <div class="rv-setup-inner">
-          <h2>Variant Review</h2>
-          <p>Select an imported sheet or upload a file, then map your columns.</p>
+          <p>Upload a file, then map your columns.</p>
           <div class="rv-setup-row">
             <div class="rv-setup-section">
               <label>Data Source</label>
-              <select id="rv-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
-              <span class="text-muted small">Or upload directly:</span>
+              <span class="text-muted small">Upload a file:</span>
               <input type="file" id="rv-file-upload" accept=".xlsx,.xls,.csv" class="input-file">
               <span id="rv-file-name" class="text-muted"></span>
             </div>
             <div class="rv-setup-section">
               <label>Database File <em class="text-muted">(optional)</em></label>
-              <select id="rv-db-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
-              <span class="text-muted small">Or upload directly:</span>
+              <span class="text-muted small">Upload a file:</span>
               <input type="file" id="rv-db-upload" accept=".xlsx,.xls,.csv" class="input-file">
               <span id="rv-db-name" class="text-muted"></span>
             </div>
@@ -309,8 +292,7 @@
         <div class="ce-file-bar">
           <div class="ce-file-slot">
             <label>Data Source</label>
-            <select id="ce-sheet-select" class="input-field" style="width:100%;margin-bottom:6px;"><option value="">-- Select imported sheet --</option></select>
-            <span class="text-muted small">Or upload CSV:</span>
+            <span class="text-muted small">Upload a CSV or Excel file:</span>
             <span id="ce-target-name" class="text-muted">No file loaded</span>
             <input type="file" id="ce-file-target" accept=".csv,.xlsx,.xls" class="input-file">
           </div>
@@ -358,26 +340,11 @@
     <div class="page" id="page-tracker">
       <div id="trk-setup" class="rv-setup">
         <div class="rv-setup-inner">
-          <h2>Data Progress Tracker</h2>
           <p>Load any sheet and track cell-by-cell completion. Drag columns to reorder.</p>
-
-          <!-- Saved Sessions -->
-          <div id="trk-saved-wrap" class="trk-saved-wrap">
-            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Saved Sessions</label>
-            <select id="trk-saved-org" class="input-field" style="width:100%;margin-bottom:8px;">
-              <option value="">-- Select organization --</option>
-            </select>
-            <div id="trk-saved-list" class="trk-saved-list"></div>
-          </div>
-
-          <div style="margin:16px 0;border-top:1px solid var(--border);padding-top:16px;">
-            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Or load new data</label>
-          </div>
 
           <div class="rv-setup-section">
             <label>Data Source</label>
-            <select id="trk-sheet-select" class="input-field"><option value="">-- Select imported sheet --</option></select>
-            <span class="text-muted small">Or upload directly:</span>
+            <span class="text-muted small">Upload a file:</span>
             <input type="file" id="trk-file-upload" accept=".xlsx,.xls,.csv" class="input-file">
             <span id="trk-file-name" class="text-muted"></span>
             <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-muted);cursor:pointer;" title="When ON (default), rows with a yellow cell fill are dropped as example rows. Turn OFF when your real data is yellow-highlighted.">
@@ -386,20 +353,8 @@
             </label>
           </div>
           <div id="trk-name-wrap" style="margin-top:12px;">
-            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-              <div style="flex:1;min-width:200px;">
-                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Sheet Name</label>
-                <input type="text" id="trk-staging-name" class="input-field" placeholder="Name for this sheet..." style="width:100%;">
-              </div>
-              <div style="flex:1;min-width:200px;">
-                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Save to Organization</label>
-                <select id="trk-save-org" class="input-field" style="width:100%;"></select>
-              </div>
-              <div style="min-width:160px;">
-                <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Or new org</label>
-                <input type="text" id="trk-save-new-org" class="input-field" placeholder="New org name..." style="width:100%;">
-              </div>
-            </div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Sheet Name</label>
+            <input type="text" id="trk-staging-name" class="input-field" placeholder="Name for this sheet..." style="width:100%;max-width:420px;">
           </div>
           <div id="trk-col-list" style="display:none;margin-top:16px;">
             <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">Column Order <span class="text-muted small">(drag to reorder)</span></label>
@@ -595,7 +550,7 @@
       <!-- Quick Add Sheet Modal -->
       <div id="trk-quickadd-overlay" class="modal-overlay">
         <div class="modal modal-md">
-          <h3>Add Sheet <span id="trk-quickadd-org" class="text-muted" style="font-weight:500;font-size:13px;"></span></h3>
+          <h3>Add Sheet</h3>
           <p>Pick an imported sheet or upload a file — it will be added to the current org and opened as a new tab.</p>
           <label class="panel-label">From Imported Data</label>
           <div id="trk-quickadd-list" class="trk-saved-list" style="max-height:220px;overflow:auto;margin-bottom:12px;"></div>
@@ -609,17 +564,16 @@
       </div>
     </div>
 
-    <!-- ─── Page: Block Compare ─── -->
+    <!-- ─── Build pages ───
+         One shell for all four Build tools. Which combination of .cmp-page
+         panes is visible is decided by showBuild() in the router below, driven
+         by the topbar tab plus the entity picker — the old .cmp-mode-pills row,
+         the Employees sub-tabs and the Locations/Sites domain pills are all
+         replaced by that one control. The panes themselves are untouched. -->
     <div class="page" id="page-compare">
-      <div class="cmp-mode-pills">
-        <button class="cmp-mode-pill cmp-mode-active" data-mode="compare">&#8651; Block Compare</button>
-        <button class="cmp-mode-pill" data-mode="standardize">&#9783; Template Standardize</button>
-        <button class="cmp-mode-pill" data-mode="employees">&#128101; Employees</button>
-      </div>
 
       <div class="cmp-page" id="cmp-mode-compare">
         <div class="cmp-header">
-          <h2>Block Compare</h2>
           <p>Reconcile your organization database against the locations to be added and removed. Review changes, then export an updated XLSX.</p>
         </div>
 
@@ -630,7 +584,6 @@
               <span>&#8679; Upload DB File</span>
               <input type="file" id="cmp-db-file" accept=".xlsx,.xls,.csv" hidden>
             </label>
-            <button class="btn btn-ghost cmp-upload-btn" id="cmp-db-from-org" type="button">&#128229; Import from Org Data</button>
             <div class="cmp-filename" id="cmp-db-name">No file selected</div>
             <div class="cmp-meta" id="cmp-db-meta"></div>
             <div class="cmp-slot-hint">Set <b>Records</b> filter to <b>ALL RECORDS</b> in PickTrace before exporting.</div>
@@ -703,16 +656,6 @@
 
         <div class="cmp-summary" id="cmp-summary" style="display:none;"></div>
 
-        <div class="cmp-export-modal" id="cmp-org-import-modal" style="display:none;">
-          <div class="cmp-export-modal-inner">
-            <h3>Import from Org Data → Database</h3>
-            <p>Rows from <b>Org Data</b> ranches and <b>Data Progress</b> tracker saves are merged and loaded as the <b>Database</b> (slot 1). Then upload the <b>Bulk Create Template</b> (slot 4) and/or <b>Bulk Update Template</b> (slot 6) to format columns exactly to those templates.</p>
-            <div id="cmp-org-import-list" class="cmp-org-list"></div>
-            <div class="cmp-export-modal-actions">
-              <button class="btn btn-ghost" id="cmp-org-import-cancel">Cancel</button>
-            </div>
-          </div>
-        </div>
 
         <div class="cmp-export-modal" id="cmp-export-modal" style="display:none;">
           <div class="cmp-export-modal-inner">
@@ -865,14 +808,7 @@
       <!-- ═══ Template Standardize mode ═══ -->
       <div class="cmp-page" id="cmp-mode-standardize" style="display:none;">
         <div class="cmp-header">
-          <h2>Template Standardize</h2>
-          <p>Format an Excel/CSV file or saved Org Data into a personalized PickTrace bulk template (Create or Update). Auto-maps columns by name; flags Sites and Crop&nbsp;&amp; Variety values that don't exist in your template's dropdown so you can create them in PickTrace before uploading. All required (*) cells must be filled.</p>
-        </div>
-
-        <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
-          <span style="font-weight:600;color:var(--text-muted,#6b7280);">Standardize into:</span>
-          <button type="button" class="btn btn-sm ts-domain-pill ts-domain-active" data-domain="locations">&#128205; Locations</button>
-          <button type="button" class="btn btn-sm ts-domain-pill" data-domain="sites">&#127968; Sites</button>
+          <p>Format an Excel/CSV file into a personalized PickTrace bulk template (Create or Update). Auto-maps columns by name; flags Sites and Crop&nbsp;&amp; Variety values that don't exist in your template's dropdown so you can create them in PickTrace before uploading. All required (*) cells must be filled.</p>
         </div>
 
         <div id="ts-loc-wrap">
@@ -883,7 +819,6 @@
               <span>&#8679; Upload Excel/CSV</span>
               <input type="file" id="ts-src-file" accept=".xlsx,.xls,.csv" hidden>
             </label>
-            <button class="btn btn-ghost cmp-upload-btn" id="ts-src-from-org" type="button">&#128229; Import from Org Data</button>
             <div class="cmp-filename" id="ts-src-name">No file selected</div>
             <div class="cmp-meta" id="ts-src-meta"></div>
             <div class="cmp-slot-hint">Any Excel/CSV with row data. Columns matching the template by name auto-map; unmatched columns can be assigned manually.</div>
@@ -933,6 +868,10 @@
           <label style="display:flex;align-items:center;gap:6px;margin-left:12px;font-size:13px;color:var(--text-muted,#6b7280);" title="PickTrace rejects a subvariety inside Crop & Variety. This moves the part after ' - ' into the Clone/Subvariety column.">
             <input type="checkbox" id="ts-crop-split" checked>
             Split subvariety from Crop &amp; Variety &rarr; Clone/Subvariety
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted,#6b7280);" title="Data templates often list one row per unnamed block inside a ranch, repeating the same Site + Name. PickTrace needs one row per location.">
+            <input type="checkbox" id="ts-merge-dupes" checked>
+            Collapse duplicate Site + Name rows into one
           </label>
         </div>
 
@@ -990,6 +929,17 @@
             <div class="table-wrap"><table class="data-table" id="ts-existing-table"></table></div>
           </section>
 
+          <section class="cmp-section" id="ts-section-merged" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-merged-title">Merged Duplicates</h3>
+            </header>
+            <p class="cmp-sites-hint">These <b>Site + Name</b> values appeared on more than one source row &mdash; typically one row per unnamed block inside a ranch &mdash; and were folded into a <b>single location</b>. <b>Acreage</b> keeps the largest value in the group; every other column keeps the first non-empty value. Where two rows disagreed, the column is listed under <b>Conflicting columns</b> with the value that was kept. Use <b>Unmerge</b> to keep one name expanded (then rename the rows in Name Collisions below), or clear the checkbox above to turn merging off entirely. (Showing up to 200.)</p>
+            <div style="margin-bottom:8px;">
+              <button class="btn btn-ghost btn-sm" id="ts-merged-restore" style="display:none;"></button>
+            </div>
+            <div class="table-wrap"><table class="data-table" id="ts-merged-table"></table></div>
+          </section>
+
           <section class="cmp-section" id="ts-section-collisions" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="ts-collisions-title">Name Collisions</h3>
@@ -1027,7 +977,7 @@
           </section>
         </div>
 
-        <div class="empty-state" id="ts-empty">Upload a source file (or import from Org Data) AND a personalized bulk template to start.</div>
+        <div class="empty-state" id="ts-empty">Upload a source file AND a personalized bulk template to start.</div>
         </div><!-- /ts-loc-wrap -->
 
         <!-- ═══ Sites domain ═══ -->
@@ -1039,7 +989,6 @@
                 <span>&#8679; Upload Excel/CSV</span>
                 <input type="file" id="tss-src-file" accept=".xlsx,.xls,.csv" hidden>
               </label>
-              <button class="btn btn-ghost cmp-upload-btn" id="tss-src-from-org" type="button">&#128229; Import from Org Data</button>
               <div class="cmp-filename" id="tss-src-name">No file selected</div>
               <div class="cmp-meta" id="tss-src-meta"></div>
               <div class="cmp-slot-hint">The <b>Sites</b> tab of your implementation template, or any Excel/CSV of sites. A combined <b>Address</b> cell is auto-split into Address1 / City / State / Zip / Country.</div>
@@ -1129,22 +1078,16 @@
             </section>
           </div>
 
-          <div class="empty-state" id="tss-empty">Upload a source file (or import from Org Data) AND a personalized bulk <b>Sites</b> template to start.</div>
+          <div class="empty-state" id="tss-empty">Upload a source file AND a personalized bulk <b>Sites</b> template to start.</div>
         </div><!-- /ts-site-wrap -->
       </div><!-- /cmp-mode-standardize -->
 
       <!-- ═══ Employees mode (Standardize & Dedupe + Legacy Migration sub-tabs) ═══ -->
       <div class="cmp-page" id="cmp-mode-employees" style="display:none;">
-        <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
-          <span style="font-weight:600;color:var(--text-muted,#6b7280);">Employee tool:</span>
-          <button type="button" class="btn btn-sm ts-domain-pill emp-subtab ts-domain-active" data-sub="empstd">&#128101; Standardize &amp; Dedupe</button>
-          <button type="button" class="btn btn-sm ts-domain-pill emp-subtab" data-sub="empmig">&#8594; Legacy &rarr; 3.0 Migration</button>
-        </div>
 
       <!-- ─── Sub-tab: Legacy → 3.0 Employee Migration ─── -->
       <div class="cmp-page" id="cmp-mode-empmig" style="display:none;">
         <div class="cmp-header">
-          <h2>Legacy &#8594; 3.0 Employee Migration</h2>
           <p>Convert a Legacy employee CSV export into the 3.0 Employee Bulk
           Create template. Keeps only valid employees (<b>Is Valid</b> = true),
           resolves each employee's employer from the contractor file by
@@ -1282,7 +1225,6 @@
       <!-- ─── Sub-tab: Employee Standardize & Dedupe (default) ─── -->
       <div class="cmp-page" id="cmp-mode-empstd">
         <div class="cmp-header">
-          <h2>Employee Standardize &amp; Dedupe</h2>
           <p>Take a PickTrace Implementation <b>Data Template</b> (the new hires
           to add), cross-reference your existing 3.0 employee export to drop
           duplicates, then map every column onto the <b>3.0 Employee Bulk
@@ -1404,20 +1346,434 @@
         <div class="empty-state" id="es-empty">Upload the Data Template and the Bulk Create template (Existing Employees is optional) to start.</div>
       </div>
       </div><!-- /cmp-mode-employees -->
+
+      <!-- ─── Mode: Bulk Template Standardize ─── -->
+      <div class="cmp-page" id="cmp-mode-datatemplate" style="display:none;">
+        <div class="cmp-header">
+          <p>Fill every personalized bulk-create template from one set of PickTrace account exports, instead of running the Sites, Locations and Employees tabs one at a time. Each domain exports its own file with <code>DATA ENTRY</code>, <code>DROP-DOWN INPUTS</code> and all validations intact. Values pass through raw so they match the dropdown lists; dates are normalized to <code>YYYY-MM-DD</code> and archived rows are dropped.</p>
+        </div>
+
+        <div class="cmp-uploads cmp-uploads-tpl">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">Load everything at once</div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Exports + Templates</span>
+              <input type="file" id="dt-bulk-file" accept=".csv,.xlsx,.xls" multiple hidden>
+            </label>
+            <div class="cmp-filename">Select any number of files</div>
+            <div class="cmp-slot-hint">Each file is routed by its header row. A workbook with a <code>DATA ENTRY</code> sheet is treated as a template; anything else is treated as an export. Unrecognized files are reported so you can place them by hand.</div>
+          </div>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Employees</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Export</span>
+              <input type="file" id="dt-employees-src-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-employees-src-name">No export</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Template</span>
+              <input type="file" id="dt-employees-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-employees-tpl-name">No template</div>
+            <div class="cmp-slot-hint">Bulk employee create template. Its dropdowns validate Employer, Crew, Gender, Title, Language and H2A.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Locations</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Export</span>
+              <input type="file" id="dt-locations-src-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-locations-src-name">No export</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Template</span>
+              <input type="file" id="dt-locations-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-locations-tpl-name">No template</div>
+            <div class="cmp-slot-hint">Near 1:1 &mdash; every export column but <code>Is Archived</code> carries straight over.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Sites</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Export</span>
+              <input type="file" id="dt-sites-src-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-sites-src-name">No export</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Template</span>
+              <input type="file" id="dt-sites-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-sites-tpl-name">No template</div>
+            <div class="cmp-slot-hint">The export is one row per location, so it is de-duplicated to unique site names. Columns whose dropdown offers a single choice are auto-filled.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Jobs <span class="cmp-opt">(no template)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Export</span>
+              <input type="file" id="dt-jobs-src-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-jobs-src-name">No export</div>
+            <div class="cmp-slot-hint">Jobs have no bulk-create template, so this is written as a plain <code>DATA ENTRY</code> sheet using the export's own columns.</div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="dt-dl-all" disabled>&#8615; Download All</button>
+          <button class="btn btn-primary" id="dt-dl-employees" disabled>&#8615; Employees</button>
+          <button class="btn btn-primary" id="dt-dl-locations" disabled>&#8615; Locations</button>
+          <button class="btn btn-primary" id="dt-dl-sites" disabled>&#8615; Sites</button>
+          <button class="btn btn-primary" id="dt-dl-jobs" disabled>&#8615; Jobs</button>
+          <button class="btn btn-ghost" id="dt-reset">&#8634; Reset</button>
+          <label style="display:flex;align-items:center;gap:6px;margin-left:12px;font-size:13px;color:var(--text-muted,#6b7280);" title="When the destination template allows exactly one value for a column, rewrite off-list values to it. This is what moves employees from the org they were exported from to the org the template belongs to.">
+            <input type="checkbox" id="dt-migrate" checked>
+            Migrate values to the template's org
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted,#6b7280);" title="Stamp every location's Start Date with today's date, replacing the season dates the source account recorded. Employee dates are not touched.">
+            <input type="checkbox" id="dt-today" checked>
+            Locations Start Date = today
+          </label>
+        </div>
+
+        <div class="cmp-summary" id="dt-summary" style="display:none;"></div>
+        <div class="dt-build" id="dt-build-banner" style="display:none;"></div>
+
+        <div class="cmp-results" id="dt-results">
+          <section class="cmp-section" id="dt-section-underage" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-underage-title">Under Minimum Age</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Employees whose Date of Birth puts them under 12 &mdash; nearly always a typo'd birth year. Set the correct date per row, or fill one date below and apply it to everyone listed. Nothing is changed until you enter a value.</div>
+            <div class="ts-addr-all-wrap" style="margin-bottom:10px;">
+              <input type="date" id="dt-age-all" class="input-field" style="width:170px;">
+              <button class="btn btn-primary btn-sm" id="dt-age-apply">Apply to all listed</button>
+              <button class="btn btn-ghost btn-sm" id="dt-age-clear">Clear corrections</button>
+            </div>
+            <div class="table-wrap"><table class="data-table" id="dt-underage-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-preview" style="display:none;">
+            <header class="cmp-section-head">
+              <h3>Preview</h3>
+            </header>
+            <div id="dt-preview-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;"></div>
+            <div class="cmp-meta" id="dt-preview-note" style="margin-bottom:8px;"></div>
+            <div class="table-wrap"><table class="data-table" id="dt-preview-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-smartfix" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-smartfix-title">Smart Fixes</h3>
+              <div class="cmp-bulk-actions"><button class="btn btn-primary btn-sm" id="dt-smartfix-all">Apply all suggested</button></div>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values that don't exist in the template's dropdown. Pick what to write instead &mdash; the closest match is pre-selected. Anything left as-is is written verbatim and <b>PickTrace will reject those rows</b>.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-smartfix-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-fill" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-fill-title">Column Fill</h3>
+              <div class="cmp-bulk-actions">
+                <input type="text" id="dt-fill-filter" class="input-field" placeholder="Filter columns&hellip;" style="width:150px;">
+                <select id="dt-fill-scope" class="input-field" style="width:150px;">
+                  <option value="all">All columns</option>
+                  <option value="req">Required only</option>
+                  <option value="empty">Has empty cells</option>
+                  <option value="filled">Fully filled</option>
+                </select>
+                <button class="btn btn-ghost btn-sm" id="dt-fill-reset">Undo all fills</button>
+              </div>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Bulk-set <b>any</b> column of the previewed domain &mdash; switch domains with the preview pills, and type in the filter box to jump to one. <b>All rows</b> overwrites everything, <b>Blanks</b> only writes where the cell is empty, <b>Clear</b> empties the column. Where the template has a dropdown, pick from it so the value matches exactly; where it doesn't, type an override.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-fill-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-fills" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-fills-title">Column Fills Applied</h3>
+            </header>
+            <div class="table-wrap"><table class="data-table" id="dt-fills-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-derived" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-derived-title">Derived Columns</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">The source packed several template fields into one column, so they were split out. Names are title-cased; addresses are parsed into street / city / state / zip.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-derived-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-fuzzy" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-fuzzy-title">Fuzzy Column Matches</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">These source columns didn't match a template column by name, so they were paired by similarity &mdash; a misspelled header like <code>ADRESS</code>, for instance. Check each one; anything wrong here silently lands in the wrong column.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-fuzzy-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-addrflag" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-addrflag-title">Addresses Needing a Look</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">The city couldn't be identified in these addresses &mdash; the street line was written whole and City left blank. Fill them in the exported file.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-addrflag-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-phonebad" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-phonebad-title">Phone Numbers PickTrace Will Reject</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">PickTrace requires a phone to start with <code>1</code> or <code>52</code> followed by 10 digits. These couldn't be made to fit, so they were left exactly as they are &mdash; correct them in the source or clear the column.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-phonebad-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-mismatch" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-mismatch-title">Off-Dropdown Values</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values that don't appear in the template's <code>DROP-DOWN INPUTS</code> list for that column. PickTrace will reject them &mdash; create them in PickTrace and re-download the template, or correct the export.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-mismatch-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-remap" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-remap-title">Migrated Values</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">The export's value wasn't in the template's list, and the template allows exactly one value &mdash; so it was rewritten. This is the org-to-org move. Uncheck <b>Migrate values</b> above to write the export's originals instead.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-remap-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-nooptions" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-nooptions-title">Needs Building in PickTrace</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">The template's dropdown for this column is <b>empty</b>, so there is nothing to migrate to. Create each value below in PickTrace and re-download the template. The files still download either way.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-nooptions-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-autofill" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-autofill-title">Auto-Filled Columns</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Columns with no source data whose dropdown offers exactly one choice, so that choice was written to every row.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-autofill-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-required" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-required-title">Empty Required Columns</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Template columns marked <code>*</code> that no export supplies. Fill these before uploading.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-required-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-unmapped" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-unmapped-title">Unmapped Source Columns</h3>
+            </header>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Export columns holding data that the template has no column for. Nothing here is written.</div>
+            <div class="table-wrap"><table class="data-table" id="dt-unmapped-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="dt-section-dropped" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="dt-dropped-title">Dropped Rows</h3>
+            </header>
+            <div class="table-wrap"><table class="data-table" id="dt-dropped-table"></table></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="dt-empty">Upload an export plus its bulk-create template to start. Each domain works on its own &mdash; you don't need all four.</div>
+      </div><!-- /cmp-mode-datatemplate -->
+
+      <!-- ═══ Legacy → 3.0 Sites & Locations Migration ═══ -->
+      <div class="cmp-page" id="cmp-mode-sitesloc" style="display:none;">
+        <div class="cmp-header">
+          <p>Convert a Legacy locations export (<code>pt_locations.csv</code>) plus a
+          Legacy sites export into the two 3.0 bulk-create workbooks. Legacy stores
+          Site, Crop and Location Type as bare numeric IDs: <b>site_id</b> is joined
+          against the sites export, while <b>crop_id</b> and <b>location_type_id</b>
+          are resolved in the mapping panels below. Archived rows
+          (<b>is_archived</b> = true) are dropped.</p>
+        </div>
+
+        <div class="cmp-uploads">
+          <div class="cmp-slot cmp-slot-db">
+            <div class="cmp-slot-label">1. Legacy locations CSV <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Locations CSV</span>
+              <input type="file" id="lm-loc-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-loc-name">No file selected</div>
+            <div class="cmp-meta" id="lm-loc-meta"></div>
+            <div class="cmp-slot-hint">The <code>pt_locations</code> export. Rows with <b>is_archived</b> = true are skipped.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">2. Legacy sites export <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Sites Export</span>
+              <input type="file" id="lm-sites-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-sites-name">No file selected</div>
+            <div class="cmp-meta" id="lm-sites-meta"></div>
+            <div class="cmp-slot-hint">Needs <b>ID</b> and <b>Site</b> (or <b>Name</b>) columns. Resolves each location's <b>site_id</b> and doubles as the source for the Sites workbook.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3. Legacy crops lookup <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Crops CSV</span>
+              <input type="file" id="lm-croplk-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-croplk-name">No file selected</div>
+            <div class="cmp-meta" id="lm-croplk-meta"></div>
+            <div class="cmp-slot-hint">Optional <b>ID</b> &#8594; <b>Name</b> list. Without it, crop suggestions are inferred from each ID's own location names &mdash; far less reliable.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">4. Legacy location types lookup <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Types CSV</span>
+              <input type="file" id="lm-typelk-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-typelk-name">No file selected</div>
+            <div class="cmp-meta" id="lm-typelk-meta"></div>
+            <div class="cmp-slot-hint">Optional <b>ID</b> &#8594; <b>Name</b> list. Legacy usually leaves <b>location_type_id</b> as <code>-1</code>, so this is normally just one dropdown pick in the panel below.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">5. Already in 3.0 (cross-reference) <span class="cmp-meta">(optional)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload 3.0 Sites</span>
+              <input type="file" id="lm-migrated-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-migrated-name">No file selected</div>
+            <div class="cmp-meta" id="lm-migrated-meta"></div>
+            <div class="cmp-slot-hint">Optional. A 3.0 sites export &mdash; any Legacy site whose <b>Name</b> already appears here is skipped to avoid duplicates.</div>
+          </div>
+        </div>
+
+        <div class="cmp-uploads cmp-uploads-tpl">
+          <div class="cmp-slot cmp-slot-tpl">
+            <div class="cmp-slot-label">6. 3.0 Locations template <span class="cmp-req">(required)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Locations Template</span>
+              <input type="file" id="lm-loctpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-loctpl-name">No file selected</div>
+            <div class="cmp-meta" id="lm-loctpl-meta"></div>
+            <div class="cmp-slot-hint">Its <code>DROP-DOWN INPUTS</code> sheet supplies the Site, Location Type and Crop &amp; Variety lists; every validation is preserved in the output.</div>
+          </div>
+
+          <div class="cmp-slot cmp-slot-tpl">
+            <div class="cmp-slot-label">7. 3.0 Sites template <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Sites Template</span>
+              <input type="file" id="lm-sitetpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="lm-sitetpl-name">No file selected</div>
+            <div class="cmp-meta" id="lm-sitetpl-meta"></div>
+            <div class="cmp-slot-hint">Skip &#8594; no Sites workbook is produced; the sites export is then used only to resolve <b>Site*</b>.</div>
+          </div>
+
+          <div class="cmp-slot cmp-slot-tpl">
+            <div class="cmp-slot-label">Options</div>
+            <div style="padding-top:8px;">
+              <label class="cmp-export-option" style="margin-bottom:8px;">
+                <input type="checkbox" id="lm-refonly" checked>
+                <span>Only export sites the locations file references</span>
+              </label>
+              <div class="cmp-slot-hint" style="margin-bottom:10px;">Off &#8594; every site in the export is migrated, which can be thousands of rows.</div>
+              <div class="cmp-slot-label" style="margin-bottom:4px;">Max rows per file</div>
+              <input type="number" id="lm-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
+              <div class="cmp-slot-hint">Larger sets split into numbered files: <b>&hellip; (1 of N)</b>.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp-actions">
+          <button class="btn btn-success" id="lm-run" disabled>&#9654; Build Preview</button>
+          <button class="btn btn-primary" id="lm-export" disabled>&#8615; Export XLSX</button>
+          <button class="btn btn-ghost" id="lm-reset">&#8634; Reset</button>
+        </div>
+
+        <div class="cmp-summary" id="lm-summary" style="display:none;"></div>
+
+        <div id="lm-preset-banner" style="display:none;margin:10px 0;padding:10px 12px;border:1px solid #6ee7b7;border-radius:6px;background:#ecfdf5;"></div>
+
+        <div class="cmp-results" id="lm-results">
+          <section class="cmp-section" id="lm-section-sitemap" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-sitemap-title">Site Mapping</h3>
+            </header>
+            <p class="cmp-sites-hint">Each legacy <b>site_id</b> and the 3.0 <b>Site*</b> it becomes. The legacy name from the sites export is used by default; where that name isn't in the template's Site dropdown the row is flagged and the upload would be rejected, so pick a real 3.0 Site (or type an override). Picks are sticky across re-runs.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-sitemap-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-type" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-type-title">Location Type Mapping</h3>
+              <button class="btn btn-ghost btn-sm" id="lm-type-accept-all">&#10003; Accept all suggestions</button>
+            </header>
+            <p class="cmp-sites-hint">Legacy's <b>location_type_id</b> is usually <code>-1</code> (never set), so this is normally a single pick applied to every row. Choose the 3.0 <b>Location Type*</b> each legacy ID becomes. Picks are sticky across re-runs.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-type-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-crop" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-crop-title">Crop Mapping</h3>
+              <button class="btn btn-ghost btn-sm" id="lm-crop-accept-all">&#10003; Accept all suggestions</button>
+            </header>
+            <p class="cmp-sites-hint">Legacy exports <b>crop_id</b> with no name attached. Upload a crops lookup (slot 3) for reliable suggestions; otherwise each suggestion is inferred from that ID's own location names and is shown with a confidence score &mdash; <b>check the low-confidence ones</b>. Note that Legacy often tags non-crop locations (an office, a shop) with a crop ID; those rows still need a <b>Crop &amp; Variety*</b> value, and their <b>Location Type*</b> is better set per-row in the preview.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-crop-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-create-title">Sites to Create in 3.0</h3>
+              <button class="btn btn-ghost btn-sm" id="lm-create-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">These site names are referenced by the locations but aren't in the Locations template's <b>Site</b> dropdown yet. Upload the Sites workbook first, or <b>click a site to copy its name and check it off</b> as you create it in PickTrace &mdash; otherwise the locations upload is rejected with &ldquo;Site not found&rdquo;.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-bulk" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-bulk-title">Bulk Edit Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">Set a value for an entire column across all (non-removed) rows of the domain selected below. Legacy carries no <b>Site Type</b>, <b>Employer</b> or address parts for sites, so those required columns are filled here. Bulk values stick through re-runs until cleared.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-bulk-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-preview" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-preview-title">Preview</h3>
+              <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;">
+                <button type="button" class="btn btn-sm ts-domain-pill lm-domain-pill ts-domain-active" data-domain="locations">&#128205; Locations</button>
+                <button type="button" class="btn btn-sm ts-domain-pill lm-domain-pill" data-domain="sites">&#127970; Sites</button>
+              </div>
+            </header>
+            <p class="cmp-sites-hint">Editable &mdash; click a cell, type, then click away to save.</p>
+            <div id="lm-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
+              <b id="lm-sel-count">0 cells selected</b>
+              <input type="text" id="lm-sel-val" class="input-field" placeholder="Value for all selected cells" style="width:240px;">
+              <button class="btn btn-primary btn-sm" id="lm-sel-apply">Apply to selected</button>
+              <button class="btn btn-ghost btn-sm" id="lm-sel-clear">Clear contents</button>
+              <button class="btn btn-ghost btn-sm" id="lm-sel-deselect">Deselect</button>
+            </div>
+            <div class="table-wrap"><table class="data-table ts-edit-grid" id="lm-preview-table"></table></div>
+          </section>
+        </div>
+
+        <div class="empty-state" id="lm-empty">Upload the Legacy locations CSV, the Legacy sites export, and the 3.0 Locations template to start.</div>
+      </div><!-- /cmp-mode-sitesloc -->
     </div>
 
-    <!-- ─── Page: Sheet Preview ─── -->
-    <div class="page" id="page-sheetpreview">
-      <div class="page-toolbar" id="sheetPreviewToolbar">
-        <span class="breadcrumb" id="sheetPreviewTitle">Sheet</span>
-        <input type="text" id="sheetPreviewFilter" class="input-field" placeholder="Filter..." style="width:180px;">
-        <button class="btn btn-primary" id="sheetSendMerge">&#8644; Send to Table Merge</button>
-        <button class="btn btn-ghost" id="sheetOpenReview">Open in Review</button>
-        <button class="btn btn-ghost" id="sheetOpenEditor">Open in Editor</button>
-        <button class="btn btn-danger" id="sheetDeleteBtn">Delete</button>
-      </div>
-      <div class="table-wrap" id="sheetPreviewContent"></div>
-    </div>
 
   </div><!-- end main-content -->
 </div><!-- end app-body -->
@@ -1427,84 +1783,9 @@
 
 <!-- ═══ Modals ═══ -->
 
-<!-- Global Import -->
-<div class="modal-overlay" id="globalImportModal">
-  <div class="modal modal-md">
-    <h3>Import Data</h3>
-    <div id="importStep1">
-      <p class="text-muted">Upload an Excel or CSV file. Select sheets and assign to an organization.</p>
-      <div class="import-dropzone" id="importDropzone">
-        <div class="import-drop-icon">&#128196;</div>
-        <p><strong>Drop a file here</strong> or click to browse</p>
-        <p class="text-muted small">.xlsx, .xls, .csv</p>
-      </div>
-      <input type="file" id="importFileInput" accept=".xlsx,.xls,.csv" hidden>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-muted);cursor:pointer;" title="When ON (default), rows with a yellow cell fill are dropped as example rows. Turn OFF when your real data is yellow-highlighted.">
-        <input type="checkbox" id="importSkipYellowToggle" checked>
-        <span>Skip yellow-highlighted rows as examples</span>
-      </label>
-    </div>
-    <div id="importStep2" style="display:none;">
-      <div id="importFileName" class="text-muted small"></div>
-      <div id="importSheetList"></div>
-      <label class="panel-label">Assign to Organization</label>
-      <div class="row-flex gap-sm">
-        <select id="importOrgSelect" class="input-field flex-1"></select>
-        <input type="text" id="importNewOrg" class="input-field flex-1" placeholder="Or create new...">
-      </div>
-      <div id="importSuccess" class="alert alert-success" style="display:none;"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="importBackBtn" style="display:none;">Back</button>
-      <button class="btn btn-ghost" id="importCloseBtn">Close</button>
-    </div>
-  </div>
-</div>
 
-<!-- Move Row -->
-<div class="modal-overlay" id="moveRowModal">
-  <div class="modal">
-    <h3>Move row to another ranch</h3>
-    <select id="moveRowTarget" class="input-field"></select>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="moveRowCancel">Cancel</button>
-      <button class="btn btn-primary" id="moveRowConfirm">Move</button>
-    </div>
-  </div>
-</div>
 
-<!-- Import Destination (merge) -->
-<div class="modal-overlay" id="importDestModal">
-  <div class="modal modal-md">
-    <h3>Choose where to import each ranch</h3>
-    <div id="importDestList"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="importDestCancel">Cancel</button>
-      <button class="btn btn-primary" id="importDestConfirm">Import</button>
-    </div>
-  </div>
-</div>
 
-<!-- Save to Org (OCR) -->
-<div class="modal-overlay" id="saveToOrgModal">
-  <div class="modal">
-    <h3>Save to Organization</h3>
-    <label class="panel-label">Organization</label>
-    <div class="row-flex gap-sm" style="margin-bottom:10px;">
-      <select id="saveToOrgSelect" class="input-field flex-1" style="width:auto;"></select>
-      <input type="text" id="saveToOrgNewOrg" class="input-field flex-1" placeholder="Or type new org...">
-    </div>
-    <label class="panel-label">Name / Label</label>
-    <div id="saveToOrgExisting" style="margin-bottom:6px;"></div>
-    <input type="text" id="saveToOrgName" class="input-field" style="width:100%;margin-bottom:10px;" placeholder="e.g. Break Prep Jobs...">
-    <label class="panel-label">Source</label>
-    <input type="text" id="saveToOrgSource" class="input-field" value="Image to Text" readonly style="width:100%;opacity:0.6;margin-bottom:10px;">
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="saveToOrgCancel">Cancel</button>
-      <button class="btn btn-primary" id="saveToOrgConfirm">Save</button>
-    </div>
-  </div>
-</div>
 
 <!-- Context Menu -->
 <div class="ctx-menu" id="ctxMenu" style="display:none;"></div>
@@ -1512,117 +1793,197 @@
 <!-- ═══ Scripts ═══ -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="gcv-ocr.js"></script>
+<!-- data-store.js defines sessionPrefs (the in-memory stand-in for localStorage),
+     so it loads before every module that reads or writes a preference. -->
+<script src="data-store.js?v=4"></script>
+<script src="gcv-ocr.js?v=2"></script>
 <script src="utils.js?v=2"></script>
-<script src="data-store.js"></script>
-<script src="global-import.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 <script src="review-data.js"></script>
 <script src="review-logic.js"></script>
 <script src="coleditor.js"></script>
-<script src="tracker-logic.js"></script>
-<script src="compare-logic.js?v=69"></script>
-<script src="template-standardize.js?v=23"></script>
-<script src="sites-standardize.js?v=4"></script>
+<script src="tracker-logic.js?v=3"></script>
+<script src="compare-logic.js?v=71"></script>
+<script src="template-standardize.js?v=24"></script>
+<script src="sites-standardize.js?v=5"></script>
 <script src="employee-migrate.js?v=16"></script>
-<script src="employee-standardize.js?v=8"></script>
+<script src="employee-standardize.js?v=9"></script>
+<script src="data-template.js?v=11"></script>
+<script src="locations-migrate.js?v=3"></script>
 <script>
-// ═══ Page Switching ═══
+// ═══ Router ═══
+// The topbar holds one entry per destination: Build, then the prep tools.
+// Everything that produces a PickTrace upload file lives under Build, because
+// choosing between them is a decision about YOUR SITUATION, not a place to
+// navigate to — so it's made once, in the Build page's own selector, where
+// each option can explain itself on hover.
+//
+// Two maps, one job each:
+//   BUILD_TOOLS — the four ways to produce an upload file, and the copy that
+//                 tells you which one you're in. Adding a builder = one row.
+//   PAGES       — the topbar entries and which page shell each activates.
+const BUILD_TOOLS = {
+  standardize: {
+    name: 'Template Standardize',
+    situation: 'One template, from a client file',
+    give: 'Any Excel or CSV, plus your personalized bulk template',
+    get:  'One filled template',
+    when: 'A client sent you a spreadsheet and none of it is in PickTrace yet. The column layout is unknown, so you map it here — and you get the duplicate collapsing, name-collision renaming and editable preview that the bulk version doesn’t have.',
+    entities: [
+      { key: 'locations', label: 'Locations' },
+      { key: 'sites',     label: 'Sites' },
+      { key: 'employees', label: 'Employees' }
+    ]
+  },
+  bundle: {
+    name: 'Bulk Template Standardize',
+    situation: 'Every template, from account exports',
+    give: 'PickTrace account exports and their templates — drop them all at once',
+    get:  'Four filled templates: employees, locations, sites, jobs',
+    when: 'Standing up a new account from an existing one. The export shape is known, so columns carry across almost 1:1 and there is no mapping step. Faster than the single version, with less control.'
+  },
+  compare: {
+    name: 'Block Compare',
+    situation: 'Update a live account',
+    give: 'An ALL RECORDS export, plus the locations to add and to remove',
+    get:  'One workbook — create, update, archive and unarchive sheets',
+    when: 'The account is already running. This is the only builder that reconciles against what PickTrace already holds, so it can tell a new block from a changed one.'
+  },
+  legacy: {
+    name: 'Legacy → 3.0',
+    situation: 'Convert a Legacy export',
+    give: 'A Legacy CSV export and the matching 3.0 template',
+    get:  'Filled 3.0 templates',
+    when: 'Migrating off Legacy PickTrace. Resolves Legacy’s numeric site, crop and type IDs back to names.',
+    entities: [
+      { key: 'sitesloc',  label: 'Sites & Locations' },
+      { key: 'employees', label: 'Employees' }
+    ]
+  }
+};
+
+const PAGES = {
+  build:     { name: 'Build', shell: 'compare' },
+  ocr:       { name: 'Image to Text',  situation: 'Pull a table out of a screenshot or photo', shell: 'ocr' },
+  review:    { name: 'Variant Review', situation: 'Reconcile spelling variants of the same name', shell: 'review' },
+  coleditor: { name: 'Column Editor',  situation: 'Reshape a sheet’s columns before building', shell: 'coleditor' },
+  merge:     { name: 'Table Merge',    situation: 'Track what you’ve copied across, cell by cell', shell: 'merge' },
+  tracker:   { name: 'Data Progress',  situation: 'Track row-by-row progress through a sheet', shell: 'tracker' }
+};
+
+let activePage = 'build';
+let activeBuild = 'standardize';          // which builder, while on the Build page
+const activeEntity = {};                  // builder → entity key, for this session
+
 document.getElementById('topbarTabs').addEventListener('click', e => {
   const tab = e.target.closest('.topbar-tab');
   if (!tab) return;
   switchPage(tab.dataset.page);
 });
 
-function switchPage(pageName) {
-  // Move trk-main back to its home page before switching away from orgdata
-  if (pageName !== 'orgdata' && typeof odUnmountTracker === 'function') {
-    odUnmountTracker();
-    const c = document.getElementById('orgdataContent');
-    if (c) c.style.display = '';
-  }
+// Builder selector — the sub-section on the Build page.
+document.getElementById('buildPicker').addEventListener('click', e => {
+  const card = e.target.closest('.build-card');
+  if (!card) return;
+  activeBuild = card.dataset.build;
+  switchPage('build');
+});
 
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.topbar-tab').forEach(t => t.classList.remove('active'));
-  const page = document.getElementById('page-' + pageName);
+// Entity picker sits in the context strip and re-renders the same builder.
+document.getElementById('ctxEntity').addEventListener('click', e => {
+  const btn = e.target.closest('.ctx-entity-btn');
+  if (!btn) return;
+  activeEntity[activeBuild] = btn.dataset.entity;
+  switchPage(activePage);
+});
+
+function switchPage(pageName) {
+  if (!PAGES[pageName]) pageName = 'build';
+  activePage = pageName;
+  const p = PAGES[pageName];
+
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.topbar-tab').forEach(el => el.classList.remove('active'));
+  const page = document.getElementById('page-' + p.shell);
   const tab = document.querySelector('.topbar-tab[data-page="' + pageName + '"]');
   if (page) page.classList.add('active');
   if (tab) tab.classList.add('active');
-  try { localStorage.setItem('imtool_activePage', pageName); } catch (e) {}
+  try { sessionPrefs.setItem('imtool_activePage', pageName); } catch (e) {}
 
-  // Build sidebar content per tool
-  buildSidebar(pageName);
+  const onBuild = pageName === 'build';
+  document.getElementById('buildPicker').style.display = onBuild ? '' : 'none';
+  const entity = setContext(pageName);
+  if (onBuild) { renderBuildPicker(); showBuild(activeBuild, entity); }
 
   // Tool-specific init
   if (pageName === 'merge' && typeof initMergePage === 'function') initMergePage();
   if (pageName === 'ocr') { hideStatsBar(); updateOCREngineButtons(); restoreOCRSession(); }
-  if (pageName === 'review') { hideStatsBar(); populateSheetSelects(); if (typeof rvInit === 'function') rvInit(); }
-  if (pageName === 'coleditor') { hideStatsBar(); populateSheetSelects(); }
-  if (pageName === 'tracker') { hideStatsBar(); populateSheetSelects(); if (typeof trkInit === 'function') trkInit(); }
-  if (pageName === 'compare') { hideStatsBar(); if (typeof cmpInit === 'function') cmpInit(); }
-  if (pageName === 'sheetpreview') hideStatsBar();
+  if (pageName === 'review') { hideStatsBar(); if (typeof rvInit === 'function') rvInit(); }
+  if (pageName === 'coleditor') hideStatsBar();
+  if (pageName === 'tracker') { hideStatsBar(); if (typeof trkInit === 'function') trkInit(); }
+  if (onBuild) { hideStatsBar(); if (typeof cmpInit === 'function') cmpInit(); }
 }
 
-function buildSidebar(pageName) {
-  const dyn = document.getElementById('sidebarDynamic');
-  // Reset the global-sidebar visibility on every page switch — the orgdata branch
-  // re-applies the hidden state for itself; every other page wants the sidebar shown.
-  const sidebar = document.getElementById('sidebar');
-  sidebar.classList.remove('sidebar-hidden');
-  sidebar.style.removeProperty('display');
-
-  if (pageName === 'merge') {
-    dyn.innerHTML = '<div class="sidebar-label">Projects</div><div id="mergeOrgList"></div><div id="mergeArchive"></div>' +
-      '<div class="sidebar-input-row"><input type="text" id="newOrgName" class="input-field" placeholder="New org..."><button class="btn btn-primary btn-sm" id="newOrgBtn">+</button></div>';
-    if (typeof renderMergeSidebar === 'function') renderMergeSidebar();
-
-  } else if (pageName === 'orgdata') {
-    // Render the orgdata controls (org picker + section nav) into the global sidebar so
-    // the in-page .orgdata-sidenav can be hidden — that empty in-page sidenav is the
-    // "blank sidebar" you've been seeing. The corresponding HTML in the page is left as
-    // markup and hidden via CSS so we don't break anything else.
-    dyn.innerHTML =
-      '<div class="orgdata-org-picker">' +
-        '<label class="orgdata-org-label">Organization</label>' +
-        '<select id="orgDataSelect" class="input-field" style="width:100%;"></select>' +
-      '</div>' +
-      '<div id="orgDataNav"></div>';
-    if (typeof initOrgDataPage === 'function') initOrgDataPage();
-
-  } else if (pageName === 'review' || pageName === 'coleditor' || pageName === 'tracker') {
-    // Show imported sheets as quick-load in sidebar
-    const names = getSheetNames();
-    let html = '<div class="sidebar-label">Quick Load Sheet</div>';
-    if (names.length === 0) {
-      html += '<div class="sidebar-empty">Import data first</div>';
-    } else {
-      names.forEach(n => {
-        const s = getSheet(n);
-        html += '<div class="sb-item" onclick="quickLoadSheet(\'' + escJs(n) + '\',\'' + pageName + '\')" title="' + escHtml(n) + '">' +
-          '<span class="name">' + escHtml(n) + '</span><span class="count">' + (s?s.rowCount:'?') + '</span></div>';
-      });
-    }
-    dyn.innerHTML = html;
-
-  } else {
-    dyn.innerHTML = '';
-  }
+// Render the four builder cards. Each states its situation on the face and the
+// full give/get/when on hover or keyboard focus, so choosing between them never
+// requires already knowing what they do.
+function renderBuildPicker() {
+  const box = document.getElementById('buildPicker');
+  box.innerHTML = Object.entries(BUILD_TOOLS).map(([key, t]) =>
+    '<button type="button" class="build-card' + (key === activeBuild ? ' is-on' : '') +
+      '" data-build="' + key + '">' +
+      '<span class="build-card-name">' + escHtml(t.name) + '</span>' +
+      '<span class="build-card-sit">' + escHtml(t.situation) + '</span>' +
+      '<span class="build-tip" role="tooltip">' +
+        '<span class="build-tip-row"><b>You give it</b>' + escHtml(t.give) + '</span>' +
+        '<span class="build-tip-row"><b>You get</b>' + escHtml(t.get) + '</span>' +
+        '<span class="build-tip-row"><b>Use when</b>' + escHtml(t.when) + '</span>' +
+      '</span>' +
+    '</button>').join('');
 }
 
-function quickLoadSheet(name, tool) {
-  const sheet = getSheet(name);
-  if (!sheet) return;
-  // Highlight active
-  document.querySelectorAll('#sidebarDynamic .sb-item').forEach(el => el.classList.remove('active'));
-  event?.target?.closest?.('.sb-item')?.classList.add('active');
+// Fill the strip under the topbar; returns the entity in effect, or null.
+function setContext(pageName) {
+  const onBuild = pageName === 'build';
+  const t = onBuild ? BUILD_TOOLS[activeBuild] : PAGES[pageName];
+  document.getElementById('ctxName').textContent = t.name;
+  document.getElementById('ctxSituation').textContent = t.situation || '';
+  const box = document.getElementById('ctxEntity');
+  const bar = document.getElementById('entityBar');
+  // Bulk Template Standardize and Block Compare write every template at once,
+  // so there is nothing to choose — the row goes away rather than sitting
+  // there empty.
+  if (!t.entities) { box.innerHTML = ''; bar.style.display = 'none'; return null; }
+  bar.style.display = '';
+  const entity = activeEntity[activeBuild] || t.entities[0].key;
+  activeEntity[activeBuild] = entity;
+  box.innerHTML = t.entities.map(e =>
+    '<button type="button" class="ctx-entity-btn' + (e.key === entity ? ' is-on' : '') +
+    '" data-entity="' + e.key + '">' + escHtml(e.label) + '</button>').join('');
+  return entity;
+}
 
-  if (tool === 'review' && typeof rvLoadSheetData === 'function') {
-    rvLoadSheetData(sheet.headers, sheet.rows);
-  } else if (tool === 'coleditor' && typeof ceLoadSheetData === 'function') {
-    ceLoadSheetData(sheet.headers, sheet.rows);
-  } else if (tool === 'tracker' && typeof trkLoadSheetData === 'function') {
-    trkLoadSheetData(sheet.headers, sheet.rows, name);
-  }
+// Show exactly the panes this tool+entity needs. Replaces the old
+// .cmp-mode-pill, .emp-subtab and .ts-domain-pill switchers.
+function showBuild(tool, entity) {
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  const stdEmp = tool === 'standardize' && entity === 'employees';
+  const legEmp = tool === 'legacy' && entity === 'employees';
+
+  show('cmp-mode-compare',      tool === 'compare');
+  show('cmp-mode-datatemplate', tool === 'bundle');
+  show('cmp-mode-standardize',  tool === 'standardize' && !stdEmp);
+  show('ts-loc-wrap',           tool === 'standardize' && entity === 'locations');
+  show('ts-site-wrap',          tool === 'standardize' && entity === 'sites');
+  // #cmp-mode-employees is the wrapper holding both employee panes; it stays
+  // in the DOM where it is and is shown for whichever one is in play.
+  show('cmp-mode-employees',    stdEmp || legEmp);
+  show('cmp-mode-empstd',       stdEmp);
+  show('cmp-mode-empmig',       legEmp);
+  show('cmp-mode-sitesloc',     tool === 'legacy' && entity === 'sitesloc');
+
+  if (tool === 'bundle' && typeof window.dtInit === 'function') window.dtInit();
+  if (tool === 'legacy' && entity === 'sitesloc' && typeof window.locMigInit === 'function') window.locMigInit();
 }
 
 // ═══ Shared Helpers ═══
@@ -1637,23 +1998,6 @@ function showStatsBar(total, done) {
     '<span class="stat"><strong class="text-accent">' + pct + '%</strong><span class="progress-mini"><span class="progress-mini-fill" style="width:' + pct + '%"></span></span></span>';
 }
 
-var populateToolSheetSelects; // alias for review-logic.js
-function populateSheetSelects() {
-  const names = getSheetNames();
-  ['rv-sheet-select', 'rv-db-sheet-select', 'ce-sheet-select', 'trk-sheet-select'].forEach(id => {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">-- Select imported sheet --</option>';
-    names.forEach(n => {
-      const s = getSheet(n);
-      const opt = document.createElement('option');
-      opt.value = n; opt.textContent = n + ' (' + (s ? s.rowCount : '?') + ' rows)';
-      if (n === cur) opt.selected = true;
-      sel.appendChild(opt);
-    });
-  });
-}
 
 
 // ─── OCR Tool ───
@@ -2202,8 +2546,6 @@ async function runColumnOCR() {
   if (fillEl) fillEl.style.width = '100%';
   if (ptextEl) ptextEl.textContent = 'Done (' + chunkCount + ' chunks).';
   if (copyBtn) copyBtn.style.display = '';
-  const saveBtn = document.getElementById('ocrSaveBtn');
-  if (saveBtn) saveBtn.style.display = '';
   document.getElementById('ocrExtractBtn').disabled = false;
   console.log('[OCR Debug] runColumnOCR — finished. Final output length=' + (outputEl ? outputEl.value.length : 0) + ' chars');
 }
@@ -2212,9 +2554,9 @@ async function runColumnOCR() {
 // 'desktop' calls the original desktop-ocr pipeline (works best on high-resolution
 // screenshots with clear column gaps). 'laptop' calls the laptop-ocr pipeline
 // (handles narrow gaps, sort-arrow glyphs, ATTEST=Y continuations, pagination footers).
-// Stored per-machine in localStorage so each device remembers its choice.
+// Held for the session only (see data-store.js) — the choice resets on reload.
 function getOCREngine() {
-  const stored = localStorage.getItem('ocrEngine');
+  const stored = sessionPrefs.getItem('ocrEngine');
   if (stored === 'desktop' || stored === 'laptop' || stored === 'cloud') return stored;
   // First-run auto-detect: large screen → desktop; otherwise → laptop.
   const w = window.screen.width || window.innerWidth || 0;
@@ -2222,7 +2564,7 @@ function getOCREngine() {
 }
 function setOCREngine(engine) {
   if (engine !== 'desktop' && engine !== 'laptop' && engine !== 'cloud') return;
-  localStorage.setItem('ocrEngine', engine);
+  sessionPrefs.setItem('ocrEngine', engine);
   updateOCREngineButtons();
 }
 function updateOCREngineButtons() {
@@ -2320,7 +2662,6 @@ async function doMultiColumnOCR(imageData) {
       ? 'Done (fallback to raw OCR — cleaner stripped the cleaned result).'
       : 'Done (fallback to single-column).';
     copyBtn.style.display = '';
-    document.getElementById('ocrSaveBtn').style.display = '';
     document.getElementById('ocrExtractBtn').disabled = false;
     openOCRPanel();
   };
@@ -2978,7 +3319,6 @@ async function doMultiColumnOCR(imageData) {
     fill.style.width = '100%';
     ptext.textContent = 'Done! Detected ' + headers.length + ' columns, ' + dataRows.length + ' rows.';
     copyBtn.style.display = '';
-    document.getElementById('ocrSaveBtn').style.display = '';
     openOCRPanel();
   } catch (err) {
     ptext.textContent = 'Error: ' + err.message;
@@ -3294,7 +3634,6 @@ async function doOCR(imageData, opts) {
     fill.style.width = '100%';
     ptext.textContent = 'Done!';
     copyBtn.style.display = '';
-    document.getElementById('ocrSaveBtn').style.display = '';
     openOCRPanel();
   } catch (err) {
     ptext.textContent = 'Error: ' + err.message;
@@ -3718,7 +4057,7 @@ function updateOCRProgressUI() {
 }
 
 function saveOCRSession() {
-  // Debounce by 300ms so rapid clicks don't thrash localStorage.
+  // Debounce by 300ms so rapid clicks don't thrash the session store.
   if (_ocrSaveTimer) clearTimeout(_ocrSaveTimer);
   _ocrSaveTimer = setTimeout(_saveOCRSessionNow, 300);
 }
@@ -3738,7 +4077,7 @@ function _saveOCRSessionNow() {
     hideEmptyCols: ocrHideEmptyCols,
     savedAt: Date.now()
   };
-  try { localStorage.setItem(OCR_SESSION_KEY, JSON.stringify(payload)); }
+  try { sessionPrefs.setItem(OCR_SESSION_KEY, JSON.stringify(payload)); }
   catch (e) { /* quota exceeded — ignore silently */ }
 }
 function clearOCRSession() {
@@ -3747,13 +4086,13 @@ function clearOCRSession() {
   ocrSessionStart = null;
   ocrETATimestamps = [];
   if (_ocrSaveTimer) { clearTimeout(_ocrSaveTimer); _ocrSaveTimer = null; }
-  try { localStorage.removeItem(OCR_SESSION_KEY); } catch (e) {}
+  try { sessionPrefs.removeItem(OCR_SESSION_KEY); } catch (e) {}
 }
 function restoreOCRSession() {
   // Silent auto-resume: only restore if there is no live table currently rendered.
   if (ocrRowsAll && ocrRowsAll.length > 0) return;
   let raw;
-  try { raw = localStorage.getItem(OCR_SESSION_KEY); } catch (e) { return; }
+  try { raw = sessionPrefs.getItem(OCR_SESSION_KEY); } catch (e) { return; }
   if (!raw) return;
   let p;
   try { p = JSON.parse(raw); } catch (e) { return; }
@@ -3777,8 +4116,6 @@ function restoreOCRSession() {
   // Reveal the output-side controls so the user can interact immediately.
   const copyBtn = document.getElementById('ocrCopyBtn');
   if (copyBtn) copyBtn.style.display = '';
-  const saveBtn = document.getElementById('ocrSaveBtn');
-  if (saveBtn) saveBtn.style.display = '';
   if (typeof openOCRPanel === 'function') openOCRPanel();
 }
 
@@ -4544,7 +4881,6 @@ async function doMultiColumnOCR_desktop(imageData) {
       ? 'Done (fallback to raw OCR — cleaner stripped the cleaned result).'
       : 'Done (fallback to single-column).';
     copyBtn.style.display = '';
-    document.getElementById('ocrSaveBtn').style.display = '';
     document.getElementById('ocrExtractBtn').disabled = false;
     openOCRPanel();
   };
@@ -5017,7 +5353,6 @@ async function doMultiColumnOCR_desktop(imageData) {
     fill.style.width = '100%';
     ptext.textContent = 'Done! Detected ' + keepCols.length + ' columns, ' + dataRows.length + ' rows.';
     copyBtn.style.display = '';
-    document.getElementById('ocrSaveBtn').style.display = '';
     openOCRPanel();
   } catch (err) {
     ptext.textContent = 'Error: ' + err.message;
@@ -5421,7 +5756,6 @@ function clearOCR() {
   document.getElementById('ocrProgress').style.display = 'none';
   document.getElementById('ocrOutput').value = '';
   document.getElementById('ocrCopyBtn').style.display = 'none';
-  document.getElementById('ocrSaveBtn').style.display = 'none';
   document.getElementById('ocrTableWrap').innerHTML = '<p class="ocr-placeholder">Extracted data will appear here as a clickable table...</p>';
   ocrTableDone = {};
   ocrHeadersAll = [];
@@ -5436,309 +5770,13 @@ function clearOCR() {
   closeOCRPanel();
 }
 
-// ═══ Save to Org (OCR bridge) ═══
-function showSaveToOrg() {
-  const select = document.getElementById('saveToOrgSelect');
-  const orgNames = getAllOrgNames();
-  select.innerHTML = '<option value="">-- Select org --</option>';
-  orgNames.forEach(n => {
-    const o = document.createElement('option');
-    o.value = n; o.textContent = n;
-    select.appendChild(o);
-  });
-  // Auto-select first org if only one
-  if (orgNames.length === 1) select.value = orgNames[0];
-  document.getElementById('saveToOrgNewOrg').value = '';
-  document.getElementById('saveToOrgName').value = '';
-
-  const existing = document.getElementById('saveToOrgExisting');
-  const updateExisting = () => {
-    const org = select.value;
-    if (!org) { existing.innerHTML = ''; return; }
-    const saves = getOcrSaves(org);
-    if (!saves.length) { existing.innerHTML = '<span class="text-muted small">No existing saves for this org.</span>'; return; }
-    existing.innerHTML = saves.map(s =>
-      '<button type="button" class="btn btn-ghost btn-sm" style="margin:2px;" onclick="document.getElementById(\'saveToOrgName\').value=\'' + escJs(s.name) + '\'">' +
-      escHtml(s.name) + ' <span class="text-muted">(' + s.rows.length + ')</span></button>'
-    ).join('');
-  };
-  select.onchange = updateExisting;
-  updateExisting();
-  document.getElementById('saveToOrgModal').classList.add('show');
-}
-
-document.getElementById('saveToOrgCancel')?.addEventListener('click', () => {
-  document.getElementById('saveToOrgModal').classList.remove('show');
-});
-
-document.getElementById('saveToOrgConfirm')?.addEventListener('click', () => {
-  const selectVal = document.getElementById('saveToOrgSelect').value;
-  const newOrg = document.getElementById('saveToOrgNewOrg').value.trim();
-  const org = newOrg || selectVal;
-  const name = document.getElementById('saveToOrgName').value.trim();
-
-  if (!org) { alert('Select an organization or type a new name.'); return; }
-  if (!name) { alert('Enter a name/label for this save.'); return; }
-
-  // Create org if new
-  if (newOrg) createOrg(newOrg);
-
-  const wrap = document.getElementById('ocrTableWrap');
-  const headers = [];
-  wrap.querySelectorAll('thead tr:first-child th').forEach(th => {
-    const label = th.querySelector('.ocr-sort-label');
-    headers.push(label ? label.textContent.trim() : th.textContent.replace(/\u283f|\u25b2|\u25bc/g, '').trim());
-  });
-  const rows = [], doneCells = [], archived = [];
-  wrap.querySelectorAll('tbody tr').forEach(tr => {
-    const row = [], rd = [], ra = [];
-    tr.querySelectorAll('td').forEach((td, ci) => {
-      row.push(td.textContent.replace(/\u2713 Done/g, '').trim());
-      if (td.classList.contains('ocr-cell-done')) rd.push(ci);
-      if (td.classList.contains('ocr-cell-archived')) ra.push(ci);
-    });
-    if (row.some(c => c)) { rows.push(row); doneCells.push(rd); archived.push(ra); }
-  });
-
-  if (!rows.length) { alert('No data to save.'); return; }
-
-  saveOcrData(org, {
-    name, source: 'Image to Text', headers, rows,
-    doneCells, archived, savedAt: new Date().toISOString()
-  });
-
-  document.getElementById('saveToOrgModal').classList.remove('show');
-  alert('Saved "' + name + '" to ' + org + ' (' + rows.length + ' rows)');
-});
-
-// ═══ Org Data ═══
-let orgDataView = null;
-function initOrgDataPage() {
-  const select = document.getElementById('orgDataSelect');
-  if (!select) return;
-  const cur = select.value;
-  select.innerHTML = '<option value="">-- Select Org --</option>';
-  getAllOrgNames().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; if (n === cur) o.selected = true; select.appendChild(o); });
-  select.onchange = renderOrgDataNav;
-  renderOrgDataNav();
-}
-
-function renderOrgDataNav() {
-  const org = document.getElementById('orgDataSelect')?.value;
-  const nav = document.getElementById('orgDataNav');
-  if (!nav) return;
-  if (!org) { nav.innerHTML = ''; document.getElementById('orgdataContent').innerHTML = '<p class="empty-state">Select an organization.</p>'; hideStatsBar(); return; }
-
-  const store = getStore();
-  const orgData = store.orgs[org];
-  const ocrSaves = store.ocrSaves[org] || [];
-  const ranches = orgData ? Object.keys(orgData.ranches || {}).sort() : [];
-  const sheets = Object.keys(store.sheets || {}).filter(n => store.sheets[n].orgName === org).sort();
-  const trkSessions = store.trackerSaves?.[org] ? Object.keys(store.trackerSaves[org]).sort() : [];
-
-  function navSection(id, label, count, items, emptyLabel) {
-    const open = localStorage.getItem('od_' + id) !== 'closed';
-    let h = '<div class="orgdata-nav-group">';
-    h += '<div class="orgdata-nav-label" onclick="toggleOrgdataSection(\'' + id + '\')">';
-    h += '<span class="arrow' + (open ? ' open' : '') + '" id="odArrow_' + id + '">&#9654;</span> ';
-    h += label + ' <span class="count">' + count + '</span></div>';
-    h += '<div class="orgdata-nav-list' + (open ? ' open' : '') + '" id="odList_' + id + '">';
-    if (items.length) { h += items; } else { h += '<div class="sb-item" style="opacity:0.4;cursor:default;"><span class="name">' + emptyLabel + '</span></div>'; }
-    h += '</div></div>';
-    return h;
-  }
-
-  let html = '';
-
-  // Sites (merge tool)
-  const siteItems = '<div class="sb-item' + (orgDataView==='sites'?' active':'') + '" onclick="showOrgData(\'sites\')"><span class="name">All Sites</span><span class="count">' + ranches.length + '</span></div>' +
-    ranches.map(r => '<div class="sb-item' + (orgDataView==='r-'+r?' active':'') + '" onclick="showOrgData(\'r-' + escJs(r) + '\')" title="' + escHtml(r) + '"><span class="name">' + escHtml(r) + '</span><span class="count">' + (orgData.ranches[r].rows?.length||0) + '</span></div>').join('');
-  html += navSection('sites', 'Sites', ranches.length, ranches.length ? siteItems : '', 'None');
-
-  // Jobs (OCR image-to-text saves)
-  const jobItems = ocrSaves.map((s, i) => '<div class="sb-item' + (orgDataView==='ocr-'+i?' active':'') + '" onclick="showOrgData(\'ocr-'+i+'\')" title="' + escHtml(s.name) + '"><span class="name">' + escHtml(s.name) + '</span><span class="count">' + s.rows.length + '</span></div>').join('');
-  html += navSection('jobs', 'Jobs (Image→Text)', ocrSaves.length, jobItems, 'None');
-
-  // Tracker sessions
-  const trkItems = trkSessions.map(k => {
-    const s = store.trackerSaves[org][k];
-    const rowCount = (s.rows || []).length;
-    return '<div class="sb-item' + (orgDataView==='trk-'+k?' active':'') + '" onclick="showOrgData(\'trk-' + escJs(k) + '\')" title="' + escHtml(s.name||k) + '"><span class="name">' + escHtml(s.name||k) + '</span><span class="count">' + rowCount + '</span></div>';
-  }).join('');
-  html += navSection('tracker', 'Tracker', trkSessions.length, trkItems, 'None');
-
-  // Imported sheets
-  const sheetItems = sheets.map(n => '<div class="sb-item' + (orgDataView==='s-'+n?' active':'') + '" onclick="showOrgData(\'s-' + escJs(n) + '\')" title="' + escHtml(n) + '"><span class="name">' + escHtml(n) + '</span><span class="count">' + (store.sheets[n].rowCount||0) + '</span></div>').join('');
-  html += navSection('ods', 'Sheets', sheets.length, sheetItems, 'None');
-
-  nav.innerHTML = html;
-
-  // Pick a sensible default view for this org
-  if (!orgDataView) {
-    if (ocrSaves.length) orgDataView = 'ocr-0';
-    else if (trkSessions.length) orgDataView = 'trk-' + trkSessions[0];
-    else if (ranches.length) orgDataView = 'sites';
-    else if (sheets.length) orgDataView = 's-' + sheets[0];
-    else orgDataView = 'sites';
-  }
-  showOrgData(orgDataView);
-}
-
-function toggleOrgdataSection(id) {
-  const l = document.getElementById('odList_'+id), a = document.getElementById('odArrow_'+id);
-  if (l) l.classList.toggle('open'); if (a) a.classList.toggle('open');
-  localStorage.setItem('od_'+id, l?.classList.contains('open')?'open':'closed');
-}
-
-// Move trk-main into the Org Data panel so the full tracker renders there.
-// Stores the original parent so we can move it back when leaving Org Data.
-let _trkMainOrigParent = null;
-
-function odMountTracker() {
-  const trkMain = document.getElementById('trk-main');
-  const panel   = document.getElementById('orgdata-tracker-host');
-  if (!trkMain || !panel) return;
-  if (trkMain.parentElement === panel) return;       // already mounted
-  _trkMainOrigParent = trkMain.parentElement;
-  panel.appendChild(trkMain);
-  trkMain.style.display = 'flex';
-}
-
-function odUnmountTracker() {
-  const trkMain = document.getElementById('trk-main');
-  if (!trkMain || !_trkMainOrigParent) return;
-  if (trkMain.parentElement === _trkMainOrigParent) return; // already back
-  _trkMainOrigParent.appendChild(trkMain);
-  trkMain.style.display = 'none';
-  _trkMainOrigParent = null;
-}
-
-function showOrgData(view) {
-  orgDataView = view;
-  const org = document.getElementById('orgDataSelect')?.value;
-  if (!org) return;
-  const store = getStore();
-
-  // Update nav active state
-  document.querySelectorAll('#orgDataNav .sb-item').forEach(el => el.classList.remove('active'));
-  const activeEl = document.querySelector('#orgDataNav .sb-item[onclick*=\'' + view.replace(/'/g,"\\'") + '\']');
-  if (activeEl) activeEl.classList.add('active');
-
-  // Sites summary view — no tracker, just a simple overview table
-  if (view === 'sites') {
-    odUnmountTracker();
-    const content = document.getElementById('orgdataContent');
-    const toolbar = document.getElementById('orgdataToolbar');
-    toolbar.innerHTML = '<span class="breadcrumb">All Sites</span>';
-    const orgData = store.orgs[org];
-    let html = '';
-    if (orgData && Object.keys(orgData.ranches||{}).length) {
-      html = '<table class="data-table" id="odTable"><thead><tr><th>Site</th><th>Rows</th><th>Complete</th></tr></thead><tbody>';
-      Object.keys(orgData.ranches||{}).sort().forEach(r => {
-        const ranch = orgData.ranches[r]; const t = ranch.rows.length; let d = 0;
-        ranch.rows.forEach((row,ri) => { const req = row.reduce((c,v,ci)=>{if(v!==''&&!SKIP_FOR_DONE.has(ci))c.push(ci);return c;},[]); const dn = new Set((ranch.progress||{})[ri]||[]); if(req.every(ci=>dn.has(ci)))d++; });
-        html += '<tr style="cursor:pointer" onclick="showOrgData(\'r-'+escJs(r)+'\')"><td>' + escHtml(r) + '</td><td>' + t + '</td><td>' + (t>0?Math.round(d/t*100):0) + '%</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
-    content.innerHTML = html || '<p class="empty-state">No sites for this org.</p>';
-    return;
-  }
-
-  // All other views load data into the full embedded tracker
-  odMountTracker();
-
-  // Hide the plain content area while tracker is mounted
-  document.getElementById('orgdataContent').style.display = 'none';
-  document.getElementById('orgdataToolbar').innerHTML = '';
-
-  let items = null;
-
-  if (view.startsWith('r-')) {
-    const rName = view.substring(2);
-    const ranch = store.orgs[org]?.ranches?.[rName];
-    if (ranch?.rows?.length) {
-      items = [{ name: rName, headers: HEADERS, rows: ranch.rows,
-        key: 'od_r_' + rName.replace(/[^a-z0-9]/gi,'_').toLowerCase() }];
-    }
-  } else if (view.startsWith('ocr-')) {
-    const idx = parseInt(view.substring(4));
-    const item = (store.ocrSaves[org]||[])[idx];
-    if (item) {
-      // Convert OCR doneCells format to trkTouched-compatible keys
-      const key = 'od_ocr_' + idx + '_' + (item.name||'').replace(/[^a-z0-9]/gi,'_').toLowerCase();
-      const touched = {};
-      (item.rows||[]).forEach((row, ri) => {
-        (item.doneCells?.[ri]||[]).forEach(ci => { touched['trk-' + key + '-' + ri + '-' + ci] = true; });
-      });
-      items = [{ name: item.name, headers: item.headers||[], rows: item.rows||[], key, touched }];
-    }
-  } else if (view.startsWith('s-')) {
-    const sName = view.substring(2);
-    const sheet = store.sheets[sName];
-    if (sheet) {
-      items = [{ name: sName, headers: sheet.headers||[], rows: sheet.rows||[],
-        key: 'od_s_' + sName.replace(/[^a-z0-9]/gi,'_').toLowerCase() }];
-    }
-  } else if (view.startsWith('trk-')) {
-    const key = view.substring(4);
-    const session = store.trackerSaves?.[org]?.[key];
-    if (session) {
-      items = [{ key, name: session.name||key, headers: session.headers||[],
-        rows: session.rows||[], rids: session.rids,
-        colOrder: session.colOrder, hiddenCols: session.hiddenCols,
-        colWidths: session.colWidths, touched: session.touched,
-        flags: session.flags, notes: session.notes }];
-    }
-  }
-
-  if (items && typeof trkLoadDirect === 'function') {
-    trkLoadDirect(org, items);
-  } else if (!items) {
-    odUnmountTracker();
-    document.getElementById('orgdataContent').style.display = '';
-    document.getElementById('orgdataContent').innerHTML = '<p class="empty-state">No data.</p>';
-  }
-}
-
-function filterOrgdataTable(q) {
-  const table = document.getElementById('odTable');
-  if (!table) return; q = q.toLowerCase().trim();
-  table.querySelectorAll('tbody tr').forEach(tr => { tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none'; });
-}
-
-// ═══ Tool Bridges (Review + Column Editor) ═══
-document.getElementById('rv-sheet-select')?.addEventListener('change', e => {
-  const name = e.target.value; if (!name) return;
-  const sheet = getSheet(name);
-  if (sheet && typeof rvLoadSheetData === 'function') rvLoadSheetData(sheet.headers, sheet.rows);
-});
-document.getElementById('rv-db-sheet-select')?.addEventListener('change', e => {
-  const name = e.target.value; if (!name) return;
-  const sheet = getSheet(name);
-  if (sheet && typeof rvLoadDbData === 'function') rvLoadDbData(sheet.headers, sheet.rows);
-});
-document.getElementById('ce-sheet-select')?.addEventListener('change', e => {
-  const name = e.target.value; if (!name) return;
-  const sheet = getSheet(name);
-  if (sheet && typeof ceLoadSheetData === 'function') ceLoadSheetData(sheet.headers, sheet.rows);
-});
-
-document.getElementById('trk-sheet-select')?.addEventListener('change', e => {
-  const name = e.target.value; if (!name) return;
-  const sheet = getSheet(name);
-  if (sheet && typeof trkLoadSheetData === 'function') trkLoadSheetData(sheet.headers, sheet.rows, name);
-});
-
 // Alias for review-logic.js compatibility
-populateToolSheetSelects = populateSheetSelects;
 
 // ═══ Init ═══
-initGlobalImport();
 (function () {
-  let last = 'merge';
-  try { last = localStorage.getItem('imtool_activePage') || 'merge'; } catch (e) {}
-  if (!document.querySelector('.topbar-tab[data-page="' + last + '"]')) last = 'merge';
+  let last = 'build';
+  try { last = sessionPrefs.getItem('imtool_activePage') || last; } catch (e) {}
+  if (!PAGES[last]) last = 'build';
   switchPage(last);
 })();
 </script>
