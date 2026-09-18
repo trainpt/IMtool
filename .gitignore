@@ -87,5 +87,3 @@ $RECYCLE.BIN/
 # ─── Browser / runtime ───
 .cache-loader/
 *.pid
-</content>
-</invoke>

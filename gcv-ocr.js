@@ -1,22 +1,27 @@
 // ═══ Google Cloud Vision OCR adapter ═══
 // Returns the same shape as Tesseract.recognize() so callers don't branch on shape:
 //   { data: { text, words: [{text, confidence, bbox:{x0,y0,x1,y1}}], lines, confidence } }
-// Free tier: 1000 DOCUMENT_TEXT_DETECTION calls/month. Key sits in localStorage and
-// rides the URL of every request — the user MUST restrict the key in Google Cloud
+// Free tier: 1000 DOCUMENT_TEXT_DETECTION calls/month. The key is held in memory
+// for the session only (nothing this app holds outlives the page — see
+// data-store.js), so it has to be re-entered after every reload. It still rides
+// the URL of every request, so the key MUST be restricted in Google Cloud
 // Console to (a) Cloud Vision API only, (b) referrer matching the file's origin.
+//
+// The monthly call counter resets with the session too, which means it now
+// undercounts across reloads. Google's own quota page is authoritative.
 
 (function () {
   'use strict';
 
   // ─── Key storage ───
   function gcvGetApiKey() {
-    return (localStorage.getItem('gcvApiKey') || '').trim();
+    return (sessionPrefs.getItem('gcvApiKey') || '').trim();
   }
   function gcvSetApiKey(k) {
-    if (k && k.trim()) localStorage.setItem('gcvApiKey', k.trim());
-    else localStorage.removeItem('gcvApiKey');
+    if (k && k.trim()) sessionPrefs.setItem('gcvApiKey', k.trim());
+    else sessionPrefs.removeItem('gcvApiKey');
   }
-  function gcvClearApiKey() { localStorage.removeItem('gcvApiKey'); }
+  function gcvClearApiKey() { sessionPrefs.removeItem('gcvApiKey'); }
 
   // ─── Monthly usage counter (local-only — Google's bill is authoritative) ───
   function _currentMonth() {
@@ -25,7 +30,7 @@
   }
   function gcvGetMonthlyCount() {
     try {
-      const raw = localStorage.getItem('gcvUsage');
+      const raw = sessionPrefs.getItem('gcvUsage');
       if (!raw) return 0;
       const obj = JSON.parse(raw);
       if (!obj || obj.month !== _currentMonth()) return 0;
@@ -35,7 +40,7 @@
   function gcvBumpCount() {
     const month = _currentMonth();
     let count = gcvGetMonthlyCount() + 1;
-    localStorage.setItem('gcvUsage', JSON.stringify({ month: month, count: count }));
+    sessionPrefs.setItem('gcvUsage', JSON.stringify({ month: month, count: count }));
     _refreshUsageUI();
     return count;
   }

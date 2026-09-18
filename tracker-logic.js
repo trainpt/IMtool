@@ -9,10 +9,13 @@ const TRK_SHEETS   = "dpt_sheets_v2";
 const TRK_SHEETS_FULL = "dpt_sheets_full_v1";
 const TRK_ACTIVE   = "dpt_active_v1";
 
+// Session-scoped, not localStorage — nothing this app holds outlives the page
+// (see data-store.js). Row progress is kept for the session and reset on
+// reload; trkStorageOk stays true so the "progress won't be saved" warnings
+// don't fire on every load.
 let trkStorageOk = true;
-function sGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch(e) { trkStorageOk = false; return null; } }
-function sSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) { trkStorageOk = false; } }
-try { localStorage.setItem("__trktest__","1"); if (localStorage.getItem("__trktest__")!=="1") throw 0; localStorage.removeItem("__trktest__"); } catch(e) { trkStorageOk = false; }
+function sGet(k) { try { return JSON.parse(sessionPrefs.getItem(k)); } catch(e) { return null; } }
+function sSet(k, v) { try { sessionPrefs.setItem(k, JSON.stringify(v)); } catch(e) {} }
 
 let trkTouched = sGet(TRK_STORAGE) || {};
 let trkFlags   = sGet(TRK_FLAGS) || {};
@@ -90,8 +93,7 @@ function trkSaveSheetsMeta() {
       rids,
       colOrder: s.colOrder,
       hiddenCols: hidden,
-      colWidths: s.colWidths || {},
-      orgName: s.orgName || ''
+      colWidths: s.colWidths || {}
     };
   });
   sSet(TRK_SHEETS, meta);
@@ -120,8 +122,7 @@ function trkRestoreFromLocal() {
       rows: rows,
       colOrder: s.colOrder || s.headers.map((_, i) => i),
       hiddenCols: new Set(s.hiddenCols || []),
-      colWidths: s.colWidths || {},
-      orgName: s.orgName || ''
+      colWidths: s.colWidths || {}
     };
   });
 
@@ -161,187 +162,6 @@ function trkGetRids(rows) { return rows.map(r => r._rid !== undefined ? r._rid :
 function trkRowId(row) { return row._rid !== undefined ? row._rid : 0; }
 function trkCellUid(sheetKey, row, ci) { return `trk-${sheetKey}-${trkRowId(row)}-${ci}`; }
 
-// ══════════════════════════════════════════
-// ── Persistent session save/load (unified data store) ──
-// ══════════════════════════════════════════
-
-function trkGetSessionStore() {
-  const store = typeof getStore === 'function' ? getStore() : {};
-  if (!store.trackerSaves) store.trackerSaves = {};
-  return store;
-}
-
-// Save all current tracker sheets + progress to an org
-function trkSaveSession(orgName) {
-  if (!orgName) return;
-  orgName = orgName.trim();
-  const store = trkGetSessionStore();
-  if (!store.trackerSaves) store.trackerSaves = {};
-  if (!store.trackerSaves[orgName]) store.trackerSaves[orgName] = {};
-
-  // Save each loaded sheet
-  Object.keys(trkSheets).forEach(key => {
-    const s = trkSheets[key];
-    const hidden = s.hiddenCols instanceof Set ? [...s.hiddenCols] : [...(s.hiddenCols || [])];
-    // Collect progress for this sheet
-    const prefix = `trk-${key}-`;
-    const touched = {}, flags = {}, notes = {};
-    Object.keys(trkTouched).forEach(k => { if (k.startsWith(prefix)) touched[k] = trkTouched[k]; });
-    Object.keys(trkFlags).forEach(k => { if (k.startsWith(prefix)) flags[k] = trkFlags[k]; });
-    Object.keys(trkNotes).forEach(k => { if (k.startsWith(prefix)) notes[k] = trkNotes[k]; });
-
-    store.trackerSaves[orgName][key] = {
-      name: s.name, headers: s.headers, rows: s.rows, rids: trkGetRids(s.rows),
-      colOrder: s.colOrder, hiddenCols: hidden, colWidths: s.colWidths || {},
-      touched, flags, notes,
-      savedAt: new Date().toISOString()
-    };
-  });
-
-  if (typeof saveStore === 'function') saveStore(store);
-}
-
-// Load a saved session from an org (returns array of sheet objects)
-function trkLoadSession(orgName) {
-  const store = trkGetSessionStore();
-  const sessions = store.trackerSaves?.[orgName];
-  if (!sessions) return [];
-  return Object.keys(sessions).map(key => ({ key, ...sessions[key] }));
-}
-
-// Delete a saved session sheet
-function trkDeleteSavedSheet(orgName, key) {
-  const store = trkGetSessionStore();
-  if (store.trackerSaves?.[orgName]?.[key]) {
-    delete store.trackerSaves[orgName][key];
-    if (Object.keys(store.trackerSaves[orgName]).length === 0) delete store.trackerSaves[orgName];
-    if (typeof saveStore === 'function') saveStore(store);
-  }
-}
-
-// Get all org names that have tracker saves
-function trkSavedOrgNames() {
-  const store = trkGetSessionStore();
-  const names = new Set();
-  Object.keys(store.trackerSaves || {}).forEach(n => {
-    if (Object.keys(store.trackerSaves[n]).length > 0) names.add(n);
-  });
-  return [...names].sort();
-}
-
-// Populate the saved sessions UI on setup screen
-function trkPopulateSavedSessions() {
-  const orgSel = $('trk-saved-org');
-  const list = $('trk-saved-list');
-
-  // Populate org dropdown
-  const savedOrgs = trkSavedOrgNames();
-  const allOrgs = typeof getAllOrgNames === 'function' ? getAllOrgNames() : [];
-  const orgs = [...new Set([...savedOrgs, ...allOrgs])].sort();
-  orgSel.innerHTML = '<option value="">-- Select organization --</option>';
-  orgs.forEach(n => {
-    const hasSaves = savedOrgs.includes(n);
-    orgSel.innerHTML += '<option value="' + n.replace(/"/g, '&quot;') + '">' + esc(n) + (hasSaves ? ' ●' : '') + '</option>';
-  });
-
-  // Also populate the "save to org" dropdown
-  const saveSel = $('trk-save-org');
-  if (saveSel) {
-    saveSel.innerHTML = '<option value="">-- Select --</option>';
-    orgs.forEach(n => {
-      saveSel.innerHTML += '<option value="' + n.replace(/"/g, '&quot;') + '">' + esc(n) + '</option>';
-    });
-  }
-
-  list.innerHTML = '';
-  trkRenderSavedList();
-}
-
-function trkRenderSavedList() {
-  const orgName = $('trk-saved-org').value;
-  const list = $('trk-saved-list');
-  if (!orgName) { list.innerHTML = '<div class="trk-saved-empty">Select an organization to see saved sessions.</div>'; return; }
-
-  const sessions = trkLoadSession(orgName);
-  if (sessions.length === 0) {
-    list.innerHTML = '<div class="trk-saved-empty">No saved sessions for this organization.</div>';
-    return;
-  }
-
-  list.innerHTML = '';
-  sessions.forEach(s => {
-    // Calculate progress
-    const hidden = new Set(s.hiddenCols || []);
-    let done = 0, total = 0;
-    (s.rows || []).forEach((row, ri) => {
-      (s.colOrder || s.headers.map((_, i) => i)).forEach(ci => {
-        if (hidden.has(ci)) return;
-        total++;
-        if (s.touched?.[`trk-${s.key}-${ri}-${ci}`]) done++;
-      });
-    });
-    const pct = total > 0 ? Math.round(done / total * 100) : 0;
-    const date = s.savedAt ? new Date(s.savedAt).toLocaleDateString() : '';
-
-    const item = document.createElement('div');
-    item.className = 'trk-saved-item';
-    item.innerHTML =
-      '<span class="trk-saved-item-name">' + esc(s.name) + '</span>' +
-      '<span class="trk-saved-item-meta">' + (s.rows?.length || 0) + ' rows · ' + date + '</span>' +
-      '<span class="trk-saved-item-pct' + (pct >= 100 ? ' complete' : '') + '">' + pct + '%</span>' +
-      '<span class="trk-saved-item-del" title="Delete saved session">×</span>';
-
-    item.querySelector('.trk-saved-item-name').addEventListener('click', () => trkRestoreSession(orgName, s));
-    item.querySelector('.trk-saved-item-del').addEventListener('click', e => {
-      e.stopPropagation();
-      if (!confirm('Delete saved session "' + s.name + '"?')) return;
-      trkDeleteSavedSheet(orgName, s.key);
-      trkRenderSavedList();
-    });
-    list.appendChild(item);
-  });
-
-  // "Load All" button if multiple sessions
-  if (sessions.length > 1) {
-    const loadAll = document.createElement('button');
-    loadAll.className = 'btn btn-primary btn-sm'; loadAll.style.marginTop = '8px';
-    loadAll.textContent = 'Load All (' + sessions.length + ' sheets)';
-    loadAll.addEventListener('click', () => {
-      sessions.forEach(s => trkRestoreSession(orgName, s, true));
-      if (Object.keys(trkSheets).length > 0) {
-        trkSwitchToSheet(Object.keys(trkSheets)[0]);
-        $('trk-setup').style.display = 'none'; $('trk-main').style.display = 'flex';
-      }
-    });
-    list.appendChild(loadAll);
-  }
-}
-
-function trkRestoreSession(orgName, session, silent) {
-  const key = session.key;
-  trkSheets[key] = {
-    name: session.name,
-    headers: session.headers,
-    rows: trkTagRows(session.rows.map(r => r.map(c => String(c))), session.rids),
-    colOrder: session.colOrder || session.headers.map((_, i) => i),
-    hiddenCols: new Set(session.hiddenCols || []),
-    colWidths: session.colWidths || {},
-    orgName: orgName
-  };
-  // Restore progress
-  if (session.touched) Object.assign(trkTouched, session.touched);
-  if (session.flags) Object.assign(trkFlags, session.flags);
-  if (session.notes) Object.assign(trkNotes, session.notes);
-  trkSaveSheetsMeta();
-  trkSave();
-
-  if (!silent) {
-    trkSwitchToSheet(key);
-    $('trk-setup').style.display = 'none'; $('trk-main').style.display = 'flex';
-  }
-}
-
-$('trk-saved-org').addEventListener('change', trkRenderSavedList);
 
 // ══════════════════════════════════════════
 // ── File upload / parse ──
@@ -682,15 +502,9 @@ function trkRenderSheetTabs() {
 // ══════════════════════════════════════════
 // ── Quick Add Sheet modal ──
 // ══════════════════════════════════════════
-function trkCurrentOrg() {
-  return Object.values(trkSheets).find(s => s.orgName)?.orgName || '';
-}
-
 function trkOpenQuickAdd() {
-  const org = trkCurrentOrg();
   const overlay = $('trk-quickadd-overlay');
   if (!overlay) return;
-  $('trk-quickadd-org').textContent = org ? '→ ' + org : '';
   trkRenderQuickAddList();
   $('trk-quickadd-file').value = '';
   overlay.classList.add('show');
@@ -701,54 +515,18 @@ function trkCloseQuickAdd() {
   if (overlay) overlay.classList.remove('show');
 }
 
+// The shared sheet library is gone — every tool takes its own upload now — so
+// there is nothing to quick-add from. Point the user at the upload instead.
 function trkRenderQuickAddList() {
   const list = $('trk-quickadd-list');
   if (!list) return;
-  const names = typeof getSheetNames === 'function' ? getSheetNames() : [];
-  if (names.length === 0) {
-    list.innerHTML = '<div class="trk-saved-empty">No imported sheets available. Use Import in the top bar or upload below.</div>';
-    return;
-  }
-  list.innerHTML = '';
-  names.forEach(n => {
-    const sheet = typeof getSheet === 'function' ? getSheet(n) : null;
-    const key = makeSheetKey(n);
-    const alreadyLoaded = !!trkSheets[key];
-    const item = document.createElement('div');
-    item.className = 'trk-saved-item';
-    item.style.cursor = alreadyLoaded ? 'default' : 'pointer';
-    item.style.opacity = alreadyLoaded ? '0.5' : '1';
-    item.innerHTML =
-      '<span class="trk-saved-item-name">' + esc(n) + '</span>' +
-      '<span class="trk-saved-item-meta">' + (sheet ? sheet.rowCount + ' rows' : '') + '</span>' +
-      (alreadyLoaded ? '<span class="trk-saved-item-pct">Already added</span>' : '<span class="trk-saved-item-pct" style="background:var(--accent-soft);color:var(--accent);">Add</span>');
-    if (!alreadyLoaded && sheet) {
-      item.addEventListener('click', () => {
-        // Route through the exact same entry point the full setup uses.
-        trkCloseQuickAdd();
-        trkGotoSetupWithOrg();
-        if (typeof window.trkLoadSheetData === 'function') {
-          window.trkLoadSheetData(sheet.headers, sheet.rows, n);
-        }
-      });
-    }
-    list.appendChild(item);
-  });
+  list.innerHTML = '<div class="trk-saved-empty">Upload a file below to get started.</div>';
 }
 
-// Switch the tracker to the setup screen and prefill the current org so the
-// user lands on the same staging flow as a normal manual load.
+// Switch the tracker back to the setup screen.
 function trkGotoSetupWithOrg() {
   $('trk-main').style.display = 'none';
   $('trk-setup').style.display = '';
-  trkPopulateSavedSessions();
-  const org = trkCurrentOrg();
-  if (org) {
-    const orgSel = $('trk-save-org');
-    if (orgSel) orgSel.value = org;
-    const newOrgInput = $('trk-save-new-org');
-    if (newOrgInput) newOrgInput.value = '';
-  }
 }
 
 // Wire up buttons once
@@ -859,54 +637,30 @@ function trkRenderPreview() {
 }
 
 $('trk-btn-build').addEventListener('click', () => {
-  // Determine org — required
-  const orgSel = $('trk-save-org');
-  const newOrg = $('trk-save-new-org').value.trim();
-  const orgName = newOrg || (orgSel ? orgSel.value : '') || '';
-  if (!orgName) {
-    alert('Please select or create an organization before starting.');
-    (orgSel || $('trk-save-new-org')).focus();
-    return;
-  }
-
-  // Load any existing saved sheets for this org first
-  if (orgName) {
-    const existingSessions = trkLoadSession(orgName);
-    existingSessions.forEach(s => {
-      if (!trkSheets[s.key]) trkRestoreSession(orgName, s, true);
-    });
-  }
-
   // Multi-sheet path
   if (trkStagedMulti && trkStagedMulti.length > 0) {
     // If only 1 sheet staged, use the renamed name from the input field
     const userRename = ($('trk-staging-name').value || '').trim();
-    const existingSessionKeys = new Set(
-      orgName ? trkLoadSession(orgName).map(s => s.key) : []
-    );
-    trkStagedMulti.forEach((sh, idx) => {
+    trkStagedMulti.forEach(sh => {
       const sheetName = (trkStagedMulti.length === 1 && userRename) ? userRename : sh.name;
       const key = makeSheetKey(sheetName);
-      // Fresh load → wipe any stale progress tied to this key unless there's
-      // an existing saved session we want to preserve.
-      if (!existingSessionKeys.has(key)) trkPurgeSheetProgress(key);
+      trkPurgeSheetProgress(key);
       const savedMeta = sGet(TRK_SHEETS) || {};
       const saved = savedMeta[key];
       const colOrder = saved?.colOrder?.length === sh.headers.length ? saved.colOrder : sh.headers.map((_, i) => i);
-      trkSheets[key] = { name: sheetName, headers: sh.headers, rows: trkTagRows(sh.rows), colOrder, hiddenCols: sh.hiddenCols || new Set(), colWidths: saved?.colWidths || {}, orgName };
+      trkSheets[key] = { name: sheetName, headers: sh.headers, rows: trkTagRows(sh.rows), colOrder, hiddenCols: sh.hiddenCols || new Set(), colWidths: saved?.colWidths || {} };
     });
     const firstName = (trkStagedMulti.length === 1 && userRename) ? userRename : trkStagedMulti[0].name;
     const firstKey = makeSheetKey(firstName);
     trkSaveSheetsMeta();
     trkSwitchToSheet(trkSheets[firstKey] ? firstKey : Object.keys(trkSheets)[0]);
     $('trk-setup').style.display = 'none'; $('trk-main').style.display = 'flex';
-    if (orgName) trkSaveSession(orgName);
     trkStagedMulti = null;
     return;
   }
 
   // Single-sheet path
-  if (!trkStagingHeaders.length || !trkStagingRows.length) { alert('Load data first'); return; }
+  if (!trkStagingHeaders.length || !trkStagingRows.length) { alert('Load a file first.'); return; }
   const name = ($('trk-staging-name').value || '').trim() || trkStagingName;
   const key = makeSheetKey(name);
   const hidden = new Set();
@@ -914,29 +668,12 @@ $('trk-btn-build').addEventListener('click', () => {
   if (hideBlankCb && hideBlankCb.checked) {
     findBlankCols(trkStagingHeaders, trkStagingRows).forEach(ci => hidden.add(ci));
   }
+  trkPurgeSheetProgress(key);
 
-  // Before adding, load any existing saved sheets for this org that aren't already loaded
-  const existingSessions = orgName ? trkLoadSession(orgName) : [];
-  if (orgName) {
-    existingSessions.forEach(s => {
-      if (!trkSheets[s.key]) trkRestoreSession(orgName, s, true);
-    });
-  }
-
-  // Fresh load → wipe stale progress tied to this key unless there's a saved
-  // session for it we want to preserve.
-  const hasSavedSession = existingSessions.some(s => s.key === key);
-  if (!hasSavedSession) trkPurgeSheetProgress(key);
-
-  trkSheets[key] = { name, headers: trkStagingHeaders, rows: trkTagRows(trkStagingRows.map(r => r.map(c => String(c)))), colOrder: [...trkStagingColOrder], hiddenCols: hidden, colWidths: {}, orgName };
-  // Ensure all loaded sheets share the same org
-  if (orgName) Object.values(trkSheets).forEach(s => { if (!s.orgName) s.orgName = orgName; });
+  trkSheets[key] = { name, headers: trkStagingHeaders, rows: trkTagRows(trkStagingRows.map(r => r.map(c => String(c)))), colOrder: [...trkStagingColOrder], hiddenCols: hidden, colWidths: {} };
   trkSaveSheetsMeta(); trkSwitchToSheet(key);
   $('trk-setup').style.display = 'none'; $('trk-main').style.display = 'flex';
   trkStagingHeaders = []; trkStagingRows = []; trkStagingColOrder = [];
-
-  // Auto-save all sheets to org
-  if (orgName) trkSaveSession(orgName);
 });
 
 $('trk-btn-back').addEventListener('click', () => {
@@ -1614,22 +1351,13 @@ if (trkCtxPaste) {
 }
 
 // ── Save button ──
+// Progress is written to the session store on every click already; this just
+// confirms it, since there's no longer anywhere else to save to.
 $('trk-btn-save').addEventListener('click', () => {
-  // Determine org to save to
-  let orgName = null;
-  // Check if any loaded sheet already has an org
-  Object.values(trkSheets).forEach(s => { if (s.orgName) orgName = s.orgName; });
-  if (!orgName) {
-    // Prompt
-    orgName = prompt('Save to which organization?');
-    if (!orgName) return;
-    // Assign to all loaded sheets
-    Object.values(trkSheets).forEach(s => { s.orgName = orgName; });
-  }
-  trkSaveSession(orgName);
+  trkSave();
   const el = $('trk-stat');
   const prev = el.textContent;
-  el.textContent = '💾 Saved to ' + orgName;
+  el.textContent = '💾 Progress saved for this session';
   setTimeout(() => { el.textContent = prev; }, 2000);
 });
 
@@ -2227,13 +1955,7 @@ $('trk-done-apply-btn').addEventListener('click', () => {
 });
 
 // ── Persistence ──
-window.addEventListener('beforeunload', () => {
-  trkSave(); trkBackup();
-  // Auto-save to org on close
-  const orgs = new Set();
-  Object.values(trkSheets).forEach(s => { if (s.orgName) orgs.add(s.orgName); });
-  orgs.forEach(org => trkSaveSession(org));
-});
+window.addEventListener('beforeunload', () => { trkSave(); trkBackup(); });
 setInterval(trkBackup, 30000);
 
 // ══════════════════════════════════════════
@@ -2247,37 +1969,9 @@ window.trkLoadSheetData = function(headers, rows, name) {
   $('trk-setup').style.display = ''; $('trk-main').style.display = 'none';
 };
 
-// Load one or more sessions directly into the tracker (bypasses setup screen).
-// items: array of { key?, name, headers, rows, rids?, touched?, flags?, notes?,
-//                   colOrder?, hiddenCols?, colWidths? }
-window.trkLoadDirect = function(orgName, items) {
-  if (!items || !items.length) return;
-  items.forEach(item => {
-    const key = item.key || makeSheetKey(item.name || 'Sheet');
-    trkSheets[key] = {
-      name: item.name || key,
-      headers: item.headers || [],
-      rows: trkTagRows((item.rows || []).map(r => r.map(c => String(c))), item.rids),
-      colOrder: item.colOrder || (item.headers || []).map((_, i) => i),
-      hiddenCols: new Set(item.hiddenCols || []),
-      colWidths: item.colWidths || {},
-      orgName: orgName || ''
-    };
-    if (item.touched) Object.assign(trkTouched, item.touched);
-    if (item.flags)   Object.assign(trkFlags,   item.flags);
-    if (item.notes)   Object.assign(trkNotes,   item.notes);
-  });
-  trkSaveSheetsMeta();
-  trkSave();
-  const firstKey = items[0].key || makeSheetKey(items[0].name || 'Sheet');
-  trkSwitchToSheet(trkSheets[firstKey] ? firstKey : Object.keys(trkSheets)[0]);
-  $('trk-setup').style.display = 'none';
-  $('trk-main').style.display = 'flex';
-};
 
 let trkRestored = false;
 window.trkInit = function() {
-  trkPopulateSavedSessions();
   if (!trkRestored && Object.keys(trkSheets).length === 0) {
     trkRestored = true;
     trkRestoreFromLocal();

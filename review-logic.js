@@ -8,10 +8,13 @@ const FLAGS_KEY = "orchard_flags_v1";
 const NOTES_KEY = "orchard_notes_v1";
 const BACKUP_KEY = "orchard_backup";
 
+// Session-scoped, not localStorage — nothing this app holds outlives the page
+// (see data-store.js). Review progress is kept for the session and reset on
+// reload; rvStorageAvailable stays true so the "progress won't be saved"
+// warnings don't fire on every load.
 let rvStorageAvailable = true;
-function rvStorageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch(e) { rvStorageAvailable = false; return null; } }
-function rvStorageSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) { rvStorageAvailable = false; } }
-try { localStorage.setItem("__rvtest__", "1"); if (localStorage.getItem("__rvtest__") !== "1") throw 0; localStorage.removeItem("__rvtest__"); } catch(e) { rvStorageAvailable = false; }
+function rvStorageGet(key) { try { return JSON.parse(sessionPrefs.getItem(key)); } catch(e) { return null; } }
+function rvStorageSet(key, val) { try { sessionPrefs.setItem(key, JSON.stringify(val)); } catch(e) {} }
 
 let touched = rvStorageGet(STORAGE_KEY) || {};
 let flags = rvStorageGet(FLAGS_KEY) || {};

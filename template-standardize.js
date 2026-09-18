@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-// Template Standardize — formats source rows (Excel/CSV or Org Data) into
+// Template Standardize — formats source rows (Excel/CSV) into
 // a personalized PickTrace bulk Create or Update template. Auto-maps
 // columns by name; surfaces Sites and Crop & Variety values that aren't
 // in the template's dropdown so the user can create them in PickTrace
@@ -77,11 +77,16 @@
   let previewIssuesOnly = false;  // preview toggle: show only rows with an errored cell
   let collisionKeys = new Set();  // locKeys flagged as collisions (set in rebuildFormattedRows)
   let existingTakenKeys = new Set(); // locKeys whose name is already used by a DIFFERENT block in PickTrace
+  let mergeDupes = true;          // collapse duplicate Site + Name rows into one location
+  let mergedRowIdxs = new Set();  // formattedRows indexes folded into a survivor (dropped from preview + export)
+  let mergeGroups = new Map();    // locKey → { keep, folded: [ri…], conflicts: Map<colIdx,[values]> }
+  let unmergedKeys = new Set();   // locKeys the user chose to keep expanded (sticky across rebuilds)
   let initialized = false;
 
-  // A row is excluded from preview + export if the user removed it OR it already
-  // exists in PickTrace (cross-referenced from the uploaded existing-locations file).
-  function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i); }
+  // A row is excluded from preview + export if the user removed it, it already
+  // exists in PickTrace (cross-referenced from the uploaded existing-locations
+  // file), or it was folded into a surviving duplicate.
+  function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i) || mergedRowIdxs.has(i); }
 
   // Location identity key — case/whitespace-insensitive Site + Name (block).
   const locNorm = s => String(s == null ? '' : s).toUpperCase().trim().replace(/\s+/g, ' ');
@@ -139,6 +144,41 @@
   }
 
   function activeSchemaHeaders() { return target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS; }
+
+  // ─── Numeric columns ───
+  // PickTrace's numeric columns must hold bare numbers, but source sheets carry
+  // the unit inline ("20.30 ac", "3549 Vines", "1,240 acres"), which would
+  // otherwise export as text and fail the numeric validation. Pull the first
+  // number out, ignoring grouping commas and any unit prefix or suffix. Returns
+  // null when there's no number at all.
+  function parseNum(v) {
+    const s = String(v == null ? '' : v).replace(/,/g, '').trim();
+    if (!s) return null;
+    const m = s.match(/-?\d+(?:\.\d+)?/);
+    if (!m) return null;
+    const n = parseFloat(m[0]);
+    return isFinite(n) ? n : null;
+  }
+  // Bulk columns that must reach PickTrace as a bare number.
+  const NUMERIC_HEADERS = new Set(['Acreage', 'Length', 'Plant Count', 'Stand Count',
+    'Row/Bed Count', 'Post Count', 'Percent Covered', 'Row Spacing, in.',
+    'Plant Spacing, in.', 'Post Spacing, in.', 'Bed Width, in.']);
+  // Acreage alone blanks out at 0 — a plot with 0 acres shouldn't carry a
+  // literal 0. Every other numeric column keeps a legitimate zero.
+  const BLANK_ON_ZERO = new Set(['Acreage']);
+  // Canonical numeric cell: the bare number as a string, or '' when it's absent
+  // (or zero, for the columns that blank at zero).
+  function numericCell(v, header) {
+    const n = parseNum(v);
+    if (n == null) return '';
+    if (n === 0 && BLANK_ON_ZERO.has(header)) return '';
+    return String(n);
+  }
+  // Indexes of the numeric columns in the active schema.
+  function numericColIdxs() {
+    const bulkHeaders = activeSchemaHeaders();
+    return bulkHeaders.map((h, i) => NUMERIC_HEADERS.has(h) ? i : -1).filter(i => i >= 0);
+  }
 
   // ─── Smart-match helpers (Smart Fixes panel) ───
   // Collapse to alphanumerics only — catches spacing/punctuation/case diffs
@@ -225,20 +265,10 @@
     return set && set.size ? [...set] : null;
   }
 
-  // ─── Mode-pill switcher ───
-  function attachModeSwitcher() {
-    document.querySelectorAll('.cmp-mode-pill').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const mode = btn.dataset.mode;
-        document.querySelectorAll('.cmp-mode-pill').forEach(b => b.classList.toggle('cmp-mode-active', b === btn));
-        $('cmp-mode-compare').style.display = mode === 'compare' ? '' : 'none';
-        $('cmp-mode-standardize').style.display = mode === 'standardize' ? '' : 'none';
-        // Employee Migration + Standardize/Dedupe now share one top-level tab
-        // ("Employees") with an internal sub-toggle (see employee-standardize.js).
-        const emp = $('cmp-mode-employees'); if (emp) emp.style.display = mode === 'employees' ? '' : 'none';
-      });
-    });
-  }
+  // Pane visibility is owned by showBuild() in index.html's router — this
+  // module no longer switches modes. Kept as a no-op so the init call below
+  // (and the matching ones in the other builder modules) stay uniform.
+  function attachModeSwitcher() {}
 
   // ─── Header-row detection ───
   // PickTrace implementation templates have 3-5 rows of metadata
@@ -413,6 +443,33 @@
     return { headers, dropdowns, fileName, rawBuffer: buf, sheetNames: wb.SheetNames };
   }
 
+  // ─── Template identification ───
+  // This module builds the Locations bulk template only — Sites and Employees
+  // each have their own tool. Loading the wrong template silently "works":
+  // rows are written positionally under whatever header row the file carries,
+  // so locations data poured into the Sites template puts Location Type under
+  // Employer*, Crop & Variety under Address1*, Acreage under City* and Start
+  // Date under Country*, and the result fails validation on upload. Identify
+  // the file on load so that never reaches an export.
+  //
+  // Signature columns are matched asterisk- and case-insensitively. Sites and
+  // Locations both have Name*, so each signature includes columns the other
+  // template doesn't have.
+  const TEMPLATE_KINDS = [
+    { kind: 'locations', label: 'Locations',
+      need: ['site', 'name', 'location type', 'crop & variety'] },
+    { kind: 'sites', label: 'Sites',
+      need: ['site type', 'employer', 'address1'] },
+    { kind: 'employees', label: 'Employees',
+      need: ['first name', 'last name', 'date of birth'] }
+  ];
+  // → { kind, label }; kind 'unknown' when no signature matches.
+  function identifyTemplate(headers) {
+    const have = new Set((headers || []).map(h => norm(h).replace(/\*+$/, '').trim()).filter(Boolean));
+    for (const t of TEMPLATE_KINDS) if (t.need.every(n => have.has(n))) return t;
+    return { kind: 'unknown', label: 'unrecognized' };
+  }
+
   // ─── Auto-mapping ───
   // Match each bulk header to a source-data column by:
   //   1. Exact case-insensitive header match
@@ -580,7 +637,7 @@
     const varSrcIdx = findSrcColByNames(['variety','varietal'], ['clone','subvariety','sub variety','sub-variety']);
     const synthesizeCv = cvIdx >= 0 && cropSrcIdx >= 0 && varSrcIdx >= 0 && cropSrcIdx !== varSrcIdx;
     const dateIdxs = dateColIdxs();
-    const acreageIdx = bulkHeaders.indexOf('Acreage');
+    const numIdxs = numericColIdxs();
 
     return srcData.rows.map(srcRow => {
       const out = new Array(bulkHeaders.length).fill('');
@@ -591,11 +648,9 @@
           if (v) out[bi] = v;
         }
       });
-      // Acreage of 0 → blank (a plot with 0 acres shouldn't carry a literal 0).
-      if (acreageIdx >= 0 && out[acreageIdx] !== '') {
-        const n = parseFloat(String(out[acreageIdx]).replace(/[, ]/g, ''));
-        if (!isNaN(n) && n === 0) out[acreageIdx] = '';
-      }
+      // Strip units off every numeric column so they land as bare numbers
+      // ("20.30 ac" → "20.3", "3549 Vines" → "3549"); 0 acres blanks entirely.
+      numIdxs.forEach(ci => { if (out[ci] !== '') out[ci] = numericCell(out[ci], bulkHeaders[ci]); });
       if (synthesizeCv) {
         const c = String(srcRow[cropSrcIdx] || '').trim();
         const v = String(srcRow[varSrcIdx] || '').trim();
@@ -689,13 +744,17 @@
       if (ci === nameIdx) return;
       if (formattedRows[ri]) formattedRows[ri][ci] = cellOverrides[k];
     });
+    // Collapse duplicate Site + Name rows into one location. Runs BEFORE
+    // existing-detection and collision-detection so folded rows never read as
+    // collisions and never get counted against the existing-locations file.
+    computeMerge(siteIdx, nameIdx);
     const rowNameKey = ri => locKey(formattedRows[ri][siteIdx], formattedRows[ri][nameIdx]);
     const rowBlockKey = ri => rowNameKey(ri) + '||' + locNorm(cvIdxR >= 0 ? formattedRows[ri][cvIdxR] : '');
     // Count how many source rows share each Site + Name (a within-file collision
     // protects against being silently dropped by a name-only existing file).
     const withinCounts = new Map();
     if (siteIdx >= 0 && nameIdx >= 0) formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (removedRows.has(ri) || mergedRowIdxs.has(ri)) return;
       const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
       const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
       if (!s || !n) return;
@@ -712,7 +771,7 @@
     if (existingData && existingData.keys && existingData.keys.size && siteIdx >= 0 && nameIdx >= 0) {
       const useBlock = !!(existingData.hasCrop && existingData.blockKeys);
       formattedRows.forEach((r, ri) => {
-        if (removedRows.has(ri)) return;
+        if (removedRows.has(ri) || mergedRowIdxs.has(ri)) return;
         const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
         const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
         if (!s || !n) return;
@@ -730,7 +789,7 @@
     if (siteIdx >= 0 && nameIdx >= 0) {
       const counts = new Map();
       formattedRows.forEach((r, ri) => {
-        if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+        if (excluded(ri)) return;
         const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
         const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
         if (!s || !n) return;
@@ -745,6 +804,72 @@
     }
   }
 
+  // ─── Duplicate collapsing ───
+  // Implementation Data Templates routinely list one row per (unnamed) block
+  // inside a ranch, so the same Site + Name repeats with only Acreage varying —
+  // a Locations tab of 6,368 rows describing 537 real locations is typical.
+  // PickTrace needs exactly one row per location, so fold each duplicate group
+  // into a single survivor (the first row in source order):
+  //   • Acreage   → the largest value in the group
+  //   • all other → the first non-empty value in the group
+  // A column where two rows hold DIFFERENT non-empty values is recorded as a
+  // conflict and surfaced in the Merged Duplicates panel rather than silently
+  // resolved. Site and Name are the group key, so they're never touched.
+  //
+  // Rows with a blank Site or Name never merge (there's no identity to merge
+  // on) and keys in unmergedKeys are left expanded, which is what the panel's
+  // Unmerge button toggles. Fully re-derived on every rebuild, like cropSplit
+  // and dateFill, so turning the feature off restores every folded row.
+  function computeMerge(siteIdx, nameIdx) {
+    mergedRowIdxs = new Set();
+    mergeGroups = new Map();
+    if (!mergeDupes || !formattedRows || siteIdx < 0 || nameIdx < 0) return;
+    const bulkHeaders = activeSchemaHeaders();
+    const acreageIdx = bulkHeaders.indexOf('Acreage');
+
+    // Bucket every still-live row by Site + Name, preserving source order.
+    const buckets = new Map();
+    formattedRows.forEach((r, ri) => {
+      if (removedRows.has(ri)) return;
+      const s = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
+      const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+      if (!s || !n) return;
+      const k = locKey(s, n);
+      const arr = buckets.get(k) || [];
+      arr.push(ri);
+      buckets.set(k, arr);
+    });
+
+    buckets.forEach((idxs, k) => {
+      if (idxs.length < 2 || unmergedKeys.has(k)) return;
+      const keep = idxs[0];
+      const survivor = formattedRows[keep];
+      const conflicts = new Map();
+      for (let c = 0; c < bulkHeaders.length; c++) {
+        if (c === siteIdx || c === nameIdx) continue;
+        if (c === acreageIdx) {
+          let max = null;
+          idxs.forEach(ri => {
+            const n = parseNum(formattedRows[ri][c]);
+            if (n != null && (max == null || n > max)) max = n;
+          });
+          survivor[c] = (max == null || max === 0) ? '' : String(max);
+          continue;
+        }
+        const seen = [];
+        idxs.forEach(ri => {
+          const v = String(formattedRows[ri][c] == null ? '' : formattedRows[ri][c]).trim();
+          if (v && !seen.includes(v)) seen.push(v);
+        });
+        survivor[c] = seen.length ? seen[0] : '';
+        if (seen.length > 1) conflicts.set(c, seen);
+      }
+      const folded = idxs.slice(1);
+      folded.forEach(ri => mergedRowIdxs.add(ri));
+      mergeGroups.set(k, { keep, folded, conflicts });
+    });
+  }
+
   // Groups the to-be-created rows that fall under a flagged collision name
   // (computed in rebuildFormattedRows). Returns Map<locKey, [rowIdx,…]>. A group
   // can have a single row when the name is taken by an existing PickTrace block
@@ -757,7 +882,7 @@
     const nameIdx = bulkHeaders.indexOf('Name*');
     if (siteIdx < 0 || nameIdx < 0) return out;
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+      if (excluded(ri)) return;
       const site = String(r[siteIdx] == null ? '' : r[siteIdx]).trim();
       const name = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
       if (!site || !name) return;
@@ -778,6 +903,7 @@
   function renderPreview() {
     if (!srcData || !tplData || !formattedRows) return;
     renderExisting();
+    renderMerged();
     renderCollisions();
     renderSmartFixes();
     renderDateFill();
@@ -1342,6 +1468,7 @@
       '<div class="cmp-stat"><b>' + visibleCount + '</b> rows' +
         (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + totalCount + ')</span>' : '') +
         '</div>' +
+      (mergedRowIdxs.size ? '<div class="cmp-stat"><b>' + mergedRowIdxs.size + '</b> duplicate rows merged <span class="text-muted small">(' + mergeGroups.size + ' locations)</span></div>' : '') +
       (existingCount ? '<div class="cmp-stat cmp-warn"><b>' + existingCount + '</b> already in PickTrace (dropped)</div>' : '') +
       (collisionRows ? '<div class="cmp-stat cmp-warn"><b>' + collisionRows + '</b> name collision rows</div>' : '') +
       '<div class="cmp-stat"><b>' + bulkHeaders.length + '</b> template columns</div>' +
@@ -1531,7 +1658,7 @@
   function doExport() {
     if (!formattedRows || !tplData) return;
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
-    const acreageIdx = bulkHeaders.indexOf('Acreage');
+    const numIdxs = numericColIdxs();
     // Case-canonicalize EVERY dropdown-backed column (Location Type, Production
     // Status, Organic Status, …) — not just Site / Crop & Variety. PickTrace is
     // case-sensitive on dropdown values, so "FIELD" is rejected where the list
@@ -1548,12 +1675,12 @@
             if (m.has(k)) r[i] = m.get(k);
           }
         });
-        // Acreage of 0 exports as blank (per request — a plot with 0 acres
-        // shouldn't carry a literal 0).
-        if (acreageIdx >= 0 && r[acreageIdx] !== '' && r[acreageIdx] != null) {
-          const n = parseFloat(String(r[acreageIdx]).replace(/[, ]/g, ''));
-          if (!isNaN(n) && n === 0) r[acreageIdx] = '';
-        }
+        // Numeric columns export as bare numbers (never "20.30 ac" / "3549
+        // Vines"), and 0 acres exports as blank. Re-applied here so manual cell
+        // edits are covered too.
+        numIdxs.forEach(ci => {
+          if (r[ci] !== '' && r[ci] != null) r[ci] = numericCell(r[ci], bulkHeaders[ci]);
+        });
         return r;
       });
 
@@ -1702,6 +1829,62 @@
     $('ts-existing-table').innerHTML = html;
   }
 
+  // ─── Merged duplicates (same Site + Name, folded into one location) ───
+  function renderMerged() {
+    const sec = $('ts-section-merged');
+    if (!sec) return;
+    const cb = $('ts-merge-dupes');
+    if (cb) cb.checked = mergeDupes;
+    // The panel is the only place the toggle lives, so keep it visible whenever
+    // there's something to merge — including when the user has turned it off.
+    const groups = mergeGroups;
+    const hasDupes = groups.size > 0 || unmergedKeys.size > 0 || !mergeDupes;
+    if (!formattedRows || !hasDupes) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const bulkHeaders = activeSchemaHeaders();
+    const siteIdx = bulkHeaders.indexOf('Site*');
+    const nameIdx = bulkHeaders.indexOf('Name*');
+    const acIdx = bulkHeaders.indexOf('Acreage');
+    const t = $('ts-merged-title');
+    if (t) {
+      t.textContent = mergeDupes
+        ? 'Merged Duplicates (' + groups.size + ' name' + (groups.size === 1 ? '' : 's') +
+          ' collapsed, ' + mergedRowIdxs.size + ' row' + (mergedRowIdxs.size === 1 ? '' : 's') + ' folded)'
+        : 'Merged Duplicates (off)';
+    }
+    if (!groups.size) { $('ts-merged-table').innerHTML = ''; return; }
+    let html = '<thead><tr><th>Site</th><th>Name</th><th>Rows merged</th>' +
+      '<th>Acreage kept</th><th>Conflicting columns</th><th></th></tr></thead><tbody>';
+    [...groups.entries()].slice(0, 200).forEach(([k, g]) => {
+      const r = formattedRows[g.keep];
+      const conf = [...g.conflicts.entries()]
+        .map(([ci, vals]) => escHtml(bulkHeaders[ci]) + ' <span class="text-muted small">(kept ' +
+          escHtml(vals[0]) + ' of ' + vals.length + ')</span>')
+        .join(', ');
+      html += '<tr>' +
+        '<td>' + escHtml(r[siteIdx]) + '</td>' +
+        '<td><b>' + escHtml(r[nameIdx]) + '</b></td>' +
+        '<td>' + (g.folded.length + 1) + ' &rarr; 1</td>' +
+        '<td>' + escHtml(acIdx >= 0 ? r[acIdx] : '') + '</td>' +
+        '<td>' + (conf || '<span class="text-muted small">none</span>') + '</td>' +
+        '<td><button class="btn btn-ghost btn-sm ts-merge-undo" data-key="' + escHtml(k) + '">Unmerge</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody>';
+    $('ts-merged-table').innerHTML = html;
+    $('ts-merged-table').querySelectorAll('.ts-merge-undo').forEach(btn => {
+      btn.addEventListener('click', e => {
+        unmergedKeys.add(e.target.dataset.key);
+        refreshAll();
+      });
+    });
+    const restore = $('ts-merged-restore');
+    if (restore) {
+      restore.style.display = unmergedKeys.size ? '' : 'none';
+      restore.textContent = 'Re-merge ' + unmergedKeys.size + ' unmerged name' + (unmergedKeys.size === 1 ? '' : 's');
+    }
+  }
+
   // ─── Name collisions (same Site + Name, different blocks) ───
   function renderCollisions() {
     const sec = $('ts-section-collisions');
@@ -1762,13 +1945,20 @@
     });
   }
 
-  function applyRename(ri, newName) {
-    nameOverrides[ri] = newName;
+  // Re-derive everything from source and repaint every panel. Used by any
+  // control that changes what the export will contain.
+  function refreshAll() {
+    if (!srcData || !tplData) return;
     rebuildFormattedRows();
     renderPreview();
     renderRequired();
     renderSitesAndCvToCreate();
     updateSummary();
+  }
+
+  function applyRename(ri, newName) {
+    nameOverrides[ri] = newName;
+    refreshAll();
   }
 
   function handleTplFile(file) {
@@ -1779,12 +1969,40 @@
         alert('Could not find DATA ENTRY sheet in this template.');
         return;
       }
+      // Wrong-template guard. A positively-identified OTHER template is
+      // refused outright — there's no case where formatting locations into it
+      // is correct. An unrecognized header row only warns, so a future or
+      // customized Locations template that misses the signature can still be
+      // used deliberately.
+      const kind = identifyTemplate(parsed.headers);
+      if (kind.kind === 'sites' || kind.kind === 'employees') {
+        alert('Wrong template — this is the ' + kind.label + ' bulk template.\n\n' +
+          'This tool builds the LOCATIONS template. Loading a ' + kind.label +
+          ' template writes location data under the wrong headers' +
+          (kind.kind === 'sites'
+            ? ' — Location Type lands in Employer*, Crop & Variety in Address1*, ' +
+              'Acreage in City* and Start Date in Country*'
+            : '') +
+          ', and the upload fails validation.\n\n' +
+          'Load the Locations bulk template instead' +
+          (kind.kind === 'sites' ? ', or use the Sites Standardize tool for sites.' : '.'));
+        return;
+      }
+      if (kind.kind === 'unknown') {
+        const ok = confirm('This doesn’t look like a PickTrace Locations bulk template — ' +
+          'the DATA ENTRY header row is missing Site, Name, Location Type or Crop & Variety.\n\n' +
+          'Rows are written positionally, so if the header row is wrong every column ' +
+          'lands in the wrong place.\n\nLoad it anyway?');
+        if (!ok) return;
+      }
       tplData = parsed;
       $('ts-tpl-name').textContent = file.name;
-      $('ts-tpl-meta').textContent =
+      $('ts-tpl-meta').innerHTML =
+        (kind.kind === 'locations' ? 'Locations template · ' : '') +
         parsed.headers.length + ' columns · ' +
         (parsed.dropdowns.get('site') ? parsed.dropdowns.get('site').size : 0) + ' sites · ' +
-        (parsed.dropdowns.get('crop & variety') ? parsed.dropdowns.get('crop & variety').size : 0) + ' C&V values';
+        (parsed.dropdowns.get('crop & variety') ? parsed.dropdowns.get('crop & variety').size : 0) + ' C&V values' +
+        (kind.kind === 'locations' ? '' : ' <span class="cmp-warn">⚠ not a Locations template</span>');
       // Detect target by header count if user hasn't picked.
       const hasArch = parsed.headers.some(h => norm(h) === 'is archived');
       const radioVal = document.querySelector('input[name="ts-target"]:checked').value;
@@ -1802,33 +2020,6 @@
     r.readAsArrayBuffer(file);
   }
 
-  // ─── Org-Data import — reuses Block Compare's aggregator if available ───
-  function importFromOrgData() {
-    if (typeof aggregateOrgData !== 'function' || typeof getAllOrgNames !== 'function') {
-      alert('Org Data store unavailable. Reload the page.');
-      return;
-    }
-    const names = getAllOrgNames();
-    if (!names.length) { alert('No saved orgs found.'); return; }
-    const pick = prompt('Type the org name to import:\n\n' + names.join('\n'));
-    if (!pick) return;
-    const found = names.find(n => n.toLowerCase() === pick.trim().toLowerCase());
-    if (!found) { alert('Org "' + pick + '" not found.'); return; }
-    const aggregated = aggregateOrgData(found);
-    if (!aggregated || !aggregated.rows.length) { alert('No rows for "' + found + '".'); return; }
-    srcData = {
-      headers: aggregated.headers,
-      rows: aggregated.rows,
-      fileName: '(Org Data: ' + found + ')',
-      sheetName: '(synthesized)'
-    };
-    $('ts-src-name').textContent = '(Org Data: ' + found + ')';
-    $('ts-src-meta').textContent = aggregated.rows.length + ' rows · ' + aggregated.headers.length + ' columns';
-    formattedRows = null;
-    $('ts-run').disabled = !(srcData && tplData);
-    if (srcData && tplData) runFormat();
-  }
-
   // ─── Reset ───
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
@@ -1837,6 +2028,8 @@
     dateFill = { mm: '', dd: '', range: 'first' };
     existingData = null; existingRowIdxs = new Set();
     nameOverrides = {}; cellOverrides = {}; collisionKeys = new Set(); existingTakenKeys = new Set();
+    mergeDupes = true; mergedRowIdxs = new Set(); mergeGroups = new Map(); unmergedKeys = new Set();
+    { const md = $('ts-merge-dupes'); if (md) md.checked = true; }
     $('ts-src-name').textContent = 'No file selected';
     $('ts-tpl-name').textContent = 'No file selected';
     $('ts-src-meta').textContent = '';
@@ -1845,7 +2038,7 @@
     { const em = $('ts-existing-meta'); if (em) em.textContent = ''; }
     { const ef = $('ts-existing-file'); if (ef) ef.value = ''; }
     $('ts-src-file').value = ''; $('ts-tpl-file').value = '';
-    ['ts-section-mapping','ts-section-smartfix','ts-section-sites-create','ts-section-cv-create','ts-section-required','ts-section-existing','ts-section-collisions','ts-section-datefill','ts-section-preview']
+    ['ts-section-mapping','ts-section-smartfix','ts-section-sites-create','ts-section-cv-create','ts-section-required','ts-section-existing','ts-section-merged','ts-section-collisions','ts-section-datefill','ts-section-preview']
       .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
     $('ts-summary').style.display = 'none';
     $('ts-empty').style.display = '';
@@ -1866,11 +2059,19 @@
       if (e.target.files[0]) handleTplFile(e.target.files[0]);
       e.target.value = '';
     });
-    $('ts-src-from-org').addEventListener('click', importFromOrgData);
     { const ef = $('ts-existing-file'); if (ef) ef.addEventListener('change', e => { if (e.target.files[0]) handleExistingFile(e.target.files[0]); e.target.value = ''; }); }
     { const cs = $('ts-crop-split'); if (cs) cs.addEventListener('change', e => {
         cropSplit = !!e.target.checked;
-        if (srcData && tplData) { rebuildFormattedRows(); renderPreview(); renderRequired(); renderSitesAndCvToCreate(); updateSummary(); }
+        refreshAll();
+      }); }
+    { const md = $('ts-merge-dupes'); if (md) md.addEventListener('change', e => {
+        mergeDupes = !!e.target.checked;
+        if (mergeDupes) unmergedKeys = new Set();  // re-enabling starts clean
+        refreshAll();
+      }); }
+    { const mr = $('ts-merged-restore'); if (mr) mr.addEventListener('click', () => {
+        unmergedKeys = new Set();
+        refreshAll();
       }); }
     { const a = $('ts-datefill-apply'); if (a) a.addEventListener('click', applyDateFill); }
     { const c = $('ts-datefill-clear'); if (c) c.addEventListener('click', clearDateFill); }

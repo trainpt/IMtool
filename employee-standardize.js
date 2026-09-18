@@ -42,19 +42,10 @@
   let previewOrder = [];
   let initialized = false;
 
-  // ─── Mode-pill switcher (manages only this module's pane) ───
-  function attachModeSwitcher() {
-    // Sub-toggle within the "Employees" top-level tab: swap between
-    // Standardize & Dedupe (#cmp-mode-empstd) and Legacy Migration (#cmp-mode-empmig).
-    document.querySelectorAll('.emp-subtab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const sub = btn.dataset.sub;
-        document.querySelectorAll('.emp-subtab').forEach(b => b.classList.toggle('ts-domain-active', b === btn));
-        const es = $('cmp-mode-empstd'); if (es) es.style.display = sub === 'empstd' ? '' : 'none';
-        const em = $('cmp-mode-empmig'); if (em) em.style.display = sub === 'empmig' ? '' : 'none';
-      });
-    });
-  }
+  // Pane visibility is owned by showBuild() in index.html's router — the old
+  // Employees sub-tabs are gone (Standardize & Dedupe now sits under Template
+  // Standardize → Employees, Legacy Migration under Legacy → 3.0 → Employees).
+  function attachModeSwitcher() {}
 
   // 'MM/DD/YYYY' / Date / ISO → 'YYYY-MM-DD'. Non-matching values pass through.
   function normDate(s) {
