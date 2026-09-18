@@ -4,13 +4,23 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IM Tools</title>
-  <link rel="stylesheet" href="styles.css?v=39">
+  <!-- Favicon: SVG for browsers that take it (sharp at every size); the
+       180px PNG covers Safari, iOS home screens and anything older. -->
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=1">
+  <link rel="icon" type="image/png" sizes="180x180" href="assets/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="assets/favicon.png?v=1">
+  <link rel="stylesheet" href="styles.css?v=40">
 </head>
 <body>
 
 <!-- ═══ Top Bar ═══ -->
 <nav class="topbar">
   <div class="topbar-brand">
+    <!-- Brand mark. If assets/logo.svg is missing or fails to load, the image
+         removes itself and the "IM" badge beside it shows instead. -->
+    <img class="topbar-logo-img" src="assets/logo.svg?v=1" alt=""
+         onload="this.nextElementSibling.hidden = true"
+         onerror="this.remove()">
     <span class="topbar-logo">IM</span>
     <span class="topbar-title">IM Tools</span>
   </div>
