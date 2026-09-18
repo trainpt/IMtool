@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="IM Tools">
+  <!-- Sprout cell: a 2 x 2 grid of spreadsheet cells where one has grown into a leaf.
+       Transparent ground — drawn for the dark top bar. -->
+  <rect x="5" y="5" width="25" height="25" rx="6.5" fill="#e4e4e7"/>
+  <rect x="5" y="34" width="25" height="25" rx="6.5" fill="#e4e4e7"/>
+  <rect x="34" y="34" width="25" height="25" rx="6.5" fill="#e4e4e7"/>
+  <path d="M34 30C34 16 43.5 6 59 5c0 15.5-10 25-25 25z" fill="#22c55e"/>
+  <path d="M37 27L51 13" stroke="#15803d" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+</svg>

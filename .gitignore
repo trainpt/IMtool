@@ -87,3 +87,6 @@ $RECYCLE.BIN/
 # ─── Browser / runtime ───
 .cache-loader/
 *.pid
+
+# Local design previews (not part of the site)
+logo-preview.html
