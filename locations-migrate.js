@@ -1393,6 +1393,119 @@
     if (!btn) return;
     const locVis = locRows ? locRows.filter((_, i) => !locRemoved.has(i)).length : 0;
     btn.disabled = !(ready() && locVis);
+    if (window.IMDebug) IMDebug.refresh('locations-migrate');
+  }
+
+  // ─── Debug dump ───
+  // This module emits TWO grids from one source, so `output` covers Locations
+  // (the primary) and `sitesOutput` covers the Sites companion file.
+  function collectDebug() {
+    if (!ready() || !locRows) return null;
+    const locKept = locRows.map((_, i) => i).filter(i => !locRemoved.has(i));
+    const siteKept = siteRows ? siteRows.map((_, i) => i).filter(i => !siteRemoved.has(i)) : [];
+
+    const emptyReqFor = (rows, H, removed) => H.map((h, i) => {
+      if (!/\*$/.test(h)) return null;
+      let n = 0;
+      (rows || []).forEach((r, ri) => { if (!removed.has(ri) && !r[i]) n++; });
+      return n ? { column: h, emptyRows: n } : null;
+    }).filter(Boolean);
+
+    const cropIds = collectIds('crop');
+    const typeIds = collectIds('type');
+    const unmappedCrop = [...cropIds.entries()].filter(([id]) => !cropMap[id]);
+    const unmappedType = [...typeIds.entries()].filter(([id]) => !typeMap[id]);
+    const pendingSites = pendingSitesToCreate();
+
+    const asked = [
+      IMDebug.ask('unmapped-location-types', 'data', 'Legacy location_type_id values with no 3.0 Location Type chosen', {
+        count: unmappedType.length, blocksExport: true,
+        detail: 'Rows carrying these IDs export with an empty Location Type*.',
+        items: unmappedType.map(([id, info]) => ({ legacyId: id, rows: info.count, samples: info.samples })) }),
+      IMDebug.ask('unmapped-crops', 'data', 'Legacy crop_id values with no Crop & Variety chosen', {
+        count: unmappedCrop.length, blocksExport: true,
+        detail: 'Rows carrying these IDs export with an empty Crop & Variety*.',
+        items: unmappedCrop.map(([id, info]) => ({ legacyId: id, rows: info.count, samples: info.samples })) }),
+      IMDebug.ask('sites-to-create', 'dropdown', 'Sites referenced by locations but not in PickTrace 3.0', {
+        count: pendingSites.length, blocksExport: true,
+        detail: 'Create these sites first — a location cannot be uploaded before its site exists.',
+        items: pendingSites.map(([name, info]) => ({ site: name, locations: info.count, legacySiteIds: [...info.ids] })) }),
+      IMDebug.ask('empty-required-locations', 'required', 'Required Location columns with empty cells', {
+        count: emptyReqFor(locRows, LOC_HEADERS, locRemoved).length, blocksExport: true,
+        items: emptyReqFor(locRows, LOC_HEADERS, locRemoved) }),
+      IMDebug.ask('empty-required-sites', 'required', 'Required Site columns with empty cells', {
+        count: emptyReqFor(siteRows, SITE_HEADERS, siteRemoved).length, blocksExport: true,
+        items: emptyReqFor(siteRows, SITE_HEADERS, siteRemoved) })
+    ];
+
+    const locOut = IMDebug.output(LOC_HEADERS, locKept.map(i => locRows[i]), {
+      note: 'Locations grid. exportedRowIndexes[n] is the locRows index behind exported row n.' });
+    locOut.exportedRowIndexes = locKept;
+    const siteOut = IMDebug.output(SITE_HEADERS, siteKept.map(i => siteRows[i]), {
+      note: 'Sites companion grid. exportedRowIndexes[n] is the siteRows index behind exported row n.' });
+    siteOut.exportedRowIndexes = siteKept;
+
+    return {
+      settings: {
+        activePane: domain,
+        sitesScope: refOnly ? 'only sites referenced by the locations' : 'every site in the export',
+        legacyCropPresetApplied: presetApplied
+      },
+      inputs: [
+        IMDebug.file('legacy locations export (pt_locations.csv)', locData),
+        IMDebug.file('legacy sites export', sitesData),
+        { role: 'crop id → legacy crop name lookup', loaded: !!cropLookup, entries: cropLookup ? cropLookup.size : null },
+        { role: 'location_type_id → legacy type name lookup', loaded: !!typeLookup, entries: typeLookup ? typeLookup.size : null },
+        { role: 'sites already in PickTrace 3.0', loaded: !!migratedSites, entries: migratedSites ? migratedSites.size : null },
+        IMDebug.file('personalized bulk Locations template', locTpl, {
+          dropdowns: locTpl && locTpl.dropdowns ? [...locTpl.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [] }),
+        IMDebug.file('personalized bulk Sites template', siteTpl, {
+          dropdowns: siteTpl && siteTpl.dropdowns ? [...siteTpl.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [] })
+      ],
+      mapping: {
+        note: 'This module applies a fixed legacy→3.0 field map plus three ID lookup tables, rather than auto-matching headers. ' +
+              'The lookup tables are under `derived`.',
+        locationColumns: LOC_HEADERS.map((h, i) => ({ index: i, header: h, required: /\*$/.test(h) })),
+        siteColumns: SITE_HEADERS.map((h, i) => ({ index: i, header: h, required: /\*$/.test(h) }))
+      },
+      derived: [
+        { kind: 'location type lookup', note: 'legacy location_type_id → the 3.0 Location Type you chose.',
+          resolved: Object.keys(typeMap).length, unresolved: unmappedType.length,
+          table: [...typeIds.entries()].map(([id, info]) => ({ legacyId: id, rows: info.count,
+            samples: info.samples, mappedTo: typeMap[id] || null })) },
+        { kind: 'crop lookup', note: 'legacy crop_id → the 3.0 Crop & Variety you chose.',
+          resolved: Object.keys(cropMap).length, unresolved: unmappedCrop.length,
+          legacyPresetApplied: presetApplied,
+          table: [...cropIds.entries()].map(([id, info]) => ({ legacyId: id, rows: info.count,
+            samples: info.samples, mappedTo: cropMap[id] || null })) },
+        { kind: 'site lookup', note: 'legacy site_id → the 3.0 Site name.',
+          resolved: Object.keys(siteMap).length,
+          table: Object.keys(siteMap).slice(0, 500).map(id => ({ legacySiteId: id, mappedTo: siteMap[id] })) }
+      ],
+      fills: Object.keys(locFills).map(i => ({ grid: 'locations', column: LOC_HEADERS[+i], value: locFills[i].val,
+          scope: locFills[i].mode === 'blank' ? 'blank cells only' : 'all rows', kind: 'column fill' }))
+        .concat(Object.keys(siteFills).map(i => ({ grid: 'sites', column: SITE_HEADERS[+i], value: siteFills[i].val,
+          scope: siteFills[i].mode === 'blank' ? 'blank cells only' : 'all rows', kind: 'column fill' }))),
+      edits: { cells: [], names: [],
+        note: 'Preview cells are edited in place; see provenance for cells that no longer match their source.' },
+      dropped: {
+        archived: { count: archivedCount, reason: 'is_archived was true in the legacy export.' },
+        alreadyInPickTrace: { count: alreadyMigratedCount, reason: 'Site already present in the 3.0 cross-reference file.' },
+        locationsRemovedByHand: { count: locRemoved.size, rowIndexes: [...locRemoved].slice(0, 500) },
+        sitesRemovedByHand: { count: siteRemoved.size, rowIndexes: [...siteRemoved].slice(0, 500) },
+        sitesNotReferenced: refOnly
+          ? { note: 'Sites scope is "referenced only" — sites no location points at are not emitted.' }
+          : null,
+        sitesTickedOffAsCreated: [...completedSites]
+      },
+      asked: asked,
+      output: locOut,
+      sitesOutput: siteOut,
+      provenance: IMDebug.deriveProvenance({
+        headers: LOC_HEADERS, rows: locRows, srcRows: locSrc, colToSrc: {}, fills: locFills }),
+      sitesProvenance: IMDebug.deriveProvenance({
+        headers: SITE_HEADERS, rows: siteRows || [], srcRows: siteSrc, colToSrc: {}, fills: siteFills })
+    };
   }
 
   // ═══ XLSX writing at the zip level ═══════════════════════════════════
@@ -1730,6 +1843,7 @@
     $('lm-empty').style.display = '';
     $('lm-run').disabled = true;
     $('lm-export').disabled = true;
+    if (window.IMDebug) IMDebug.refresh('locations-migrate');
   }
 
   // ─── Inline cell editing ───
@@ -1788,6 +1902,14 @@
     $('lm-run').addEventListener('click', runMigrate);
     $('lm-export').addEventListener('click', () => { doExport(); });
     $('lm-reset').addEventListener('click', reset);
+    if (window.IMDebug) {
+      IMDebug.register('locations-migrate', {
+        label: 'Locations & Sites Migrate (Legacy → 3.0)',
+        ready: () => !!(ready() && locRows),
+        collect: collectDebug
+      });
+      IMDebug.wire('lm-debug', 'locations-migrate');
+    }
 
     const copyBtn = $('lm-create-copy');
     if (copyBtn) copyBtn.addEventListener('click', () => {

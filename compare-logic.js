@@ -2926,14 +2926,22 @@ function exportXlsx() {
   }
 
   const fname = 'locations-updated-' + todayStr() + '.xlsx';
-  XLSX.writeFile(wb, fname, { cellStyles: true });
+  XLSX.writeFile(wb, fname, { cellStyles: true, bookSST: true });
 }
 
 // ─── Debug dump ───
 // Serializes the full diff state plus all input metadata into a JSON file
-// the user can download and inspect.
+// the user can download and inspect. Routed through window.IMDebug so it
+// carries the same envelope (summary / inputs / asked) as the other modules'
+// dumps; the diff-specific sections below are unique to this tool.
 function debugDump() {
   if (!diffResult) { alert('Run a comparison first.'); return; }
+  if (window.IMDebug) { IMDebug.dump('block-compare'); return; }
+  legacyDebugDump();
+}
+
+function buildCompareDebug() {
+  if (!diffResult) return null;
 
   const summarizeArchived = () => {
     if (!dbCols || dbCols.archived < 0) return null;
@@ -3035,10 +3043,54 @@ function debugDump() {
     skipped: diffResult.skipped.slice()
   };
 
-  // Expose on window for live console inspection.
+  // Reshape the diff's own findings into the shared "asked" vocabulary, so a
+  // Block Compare dump can be read next to a Standardize one.
+  const asked = [];
+  if (window.IMDebug) {
+    asked.push(IMDebug.ask('conflicts', 'data', 'Blocks whose incoming values disagree with the database', {
+      count: dump.summary.conflicts, blocksExport: true,
+      detail: 'Each needs a keep-database / take-incoming decision before export.',
+      items: dump.conflicts.map(c => ({ blockCode: c.blockCode, changedColumns: c.diffFieldNames }))
+    }));
+    asked.push(IMDebug.ask('sites-to-create', 'dropdown', 'Sites referenced by the adds but missing from PickTrace', {
+      count: (diffResult.sitesToCreate || []).length, blocksExport: true,
+      items: diffResult.sitesToCreate || []
+    }));
+    asked.push(IMDebug.ask('to-unarchive', 'data', 'Blocks that exist but are archived', {
+      count: dump.summary.toUnarchive, blocksExport: false,
+      detail: 'These are re-activated rather than created fresh.',
+      items: (diffResult.toUnarchive || []).map(u => ({ blockCode: u.blockCode }))
+    }));
+    asked.push(IMDebug.ask('skipped', 'data', 'Incoming rows the diff could not place', {
+      count: dump.summary.skipped, blocksExport: false, items: diffResult.skipped || []
+    }));
+    asked.push(IMDebug.ask('duplicate-add-rows', 'data', 'Duplicate rows within the adds file', {
+      count: dump.summary.dupAddRows, blocksExport: false
+    }));
+    asked.push(IMDebug.ask('acres-trees-swapped', 'data', 'Rows where Acres and Trees looked transposed', {
+      count: dump.summary.acresTreesSwapped, blocksExport: false
+    }));
+    dump.asked = asked;
+    dump.inputs = [
+      IMDebug.file('PickTrace database export', dbData, { columnMap: dbCols, archived: summarizeArchived() }),
+      IMDebug.file('adds / incoming file', addData),
+      IMDebug.file('removes file', removeData),
+      IMDebug.file('bulk template', templateData, {
+        columnCount: templateData ? templateData.dataEntryHeaders.length : null,
+        siteCount: templateData ? templateData.sites.length : null,
+        cropVarietyCount: templateData ? templateData.cropVarieties.length : null
+      })
+    ];
+  }
+  return dump;
+}
+
+// Fallback for the case where debug-dump.js failed to load.
+function legacyDebugDump() {
+  const dump = buildCompareDebug();
+  if (!dump) { alert('Run a comparison first.'); return; }
   window.cmpDebug = dump;
   console.log('[Block Compare] Debug dump on window.cmpDebug', dump);
-
   const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -3349,6 +3401,13 @@ function cmpInit() {
   });
   $('cmp-debug').addEventListener('click', debugDump);
   $('cmp-reset').addEventListener('click', resetAll);
+  if (window.IMDebug) {
+    IMDebug.register('block-compare', {
+      label: 'Block Compare',
+      ready: () => !!diffResult,
+      collect: buildCompareDebug
+    });
+  }
 
   // Master select-all checkboxes
   $('cmp-adds-master').addEventListener('change', e => {
