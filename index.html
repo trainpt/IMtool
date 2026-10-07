@@ -9,7 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=1">
   <link rel="icon" type="image/png" sizes="180x180" href="assets/favicon.png?v=1">
   <link rel="apple-touch-icon" href="assets/favicon.png?v=1">
-  <link rel="stylesheet" href="styles.css?v=40">
+  <link rel="stylesheet" href="styles.css?v=49">
 </head>
 <body>
 
@@ -411,8 +411,10 @@
             <button class="btn btn-ghost btn-sm" id="trk-btn-undo" title="Undo last edit" style="display:none;">&#8630; Undo</button>
             <span class="toolbar-sep"></span>
             <div class="toolbar-group">
+              <button class="btn btn-ghost btn-sm" id="trk-btn-ref" title="Pin a lookup block from the workbook, and fill columns from it" style="display:none;">&#8862; Reference</button>
               <button class="btn btn-ghost btn-sm" id="trk-btn-bulkedit" title="Find &amp; Replace / Bulk Edit">&#9998; Bulk Edit</button>
               <label class="btn btn-ghost btn-sm" id="trk-btn-import-done" title="Import done list CSV">&#8615; Import Done<input type="file" id="trk-import-done-file" accept=".csv,.xlsx,.xls" hidden></label>
+              <label class="btn btn-ghost btn-sm" id="trk-btn-dedupe" title="Upload what is already in the system — the rows it already holds are removed from this sheet">&#8861; Remove Dupes<input type="file" id="trk-dedupe-file" accept=".csv,.xlsx,.xls" hidden></label>
               <button class="btn btn-ghost btn-sm" id="trk-btn-download" title="Download current sheet as CSV">&#8615; Export</button>
             </div>
             <span class="toolbar-sep"></span>
@@ -428,6 +430,10 @@
           </div>
         </div>
         <div id="trk-hidden-cols" class="trk-hidden-cols" style="display:none;"></div>
+        <!-- Auto-detected fills: proposals the tracker worked out by itself -->
+        <div id="trk-suggest" class="trk-suggest" style="display:none;"></div>
+        <!-- Reference ranges: lookup blocks pinned from anywhere in the workbook -->
+        <div id="trk-ref-panel" class="trk-ref-panel" style="display:none;"></div>
         <div class="rv-progress-wrap">
           <div class="rv-progress-bar"><div id="trk-bar" class="rv-progress-fill"></div></div>
           <span id="trk-pct" class="rv-progress-text">0%</span>
@@ -817,7 +823,9 @@
 
       <!-- ═══ Template Standardize mode ═══ -->
       <div class="cmp-page" id="cmp-mode-standardize" style="display:none;">
-        <div class="cmp-header">
+        <!-- Shown for Locations / Sites / Employees. Site Groups builds no
+             template at all, so it carries its own header instead. -->
+        <div class="cmp-header" id="ts-std-header">
           <p>Format an Excel/CSV file into a personalized PickTrace bulk template (Create or Update). Auto-maps columns by name; flags Sites and Crop&nbsp;&amp; Variety values that don't exist in your template's dropdown so you can create them in PickTrace before uploading. All required (*) cells must be filled.</p>
         </div>
 
@@ -875,6 +883,7 @@
           <button class="btn btn-success" id="ts-run" disabled>&#9654; Format Sheet</button>
           <button class="btn btn-primary" id="ts-export" disabled>&#8615; Export XLSX</button>
           <button class="btn btn-ghost" id="ts-reset">&#8634; Reset</button>
+          <button class="btn btn-ghost" id="ts-debug" disabled title="Load your files and format the sheet first.">&#128270; Debug Dump</button>
           <label style="display:flex;align-items:center;gap:6px;margin-left:12px;font-size:13px;color:var(--text-muted,#6b7280);" title="PickTrace rejects a subvariety inside Crop & Variety. This moves the part after ' - ' into the Clone/Subvariety column.">
             <input type="checkbox" id="ts-crop-split" checked>
             Split subvariety from Crop &amp; Variety &rarr; Clone/Subvariety
@@ -1031,6 +1040,7 @@
             <button class="btn btn-success" id="tss-run" disabled>&#9654; Format Sheet</button>
             <button class="btn btn-primary" id="tss-export" disabled>&#8615; Export XLSX</button>
             <button class="btn btn-ghost" id="tss-reset">&#8634; Reset</button>
+            <button class="btn btn-ghost" id="tss-debug" disabled title="Load your files and format the sheet first.">&#128270; Debug Dump</button>
           </div>
 
           <div class="cmp-summary" id="tss-summary" style="display:none;"></div>
@@ -1040,6 +1050,16 @@
               <header class="cmp-section-head"><h3 id="tss-mapping-title">Column Mapping</h3></header>
               <p class="cmp-sites-hint">Auto-matched columns are pre-selected. Unmatched template columns are blank &mdash; pick a source column or leave empty. City / State / Zip / Country are usually filled from the parsed Address.</p>
               <div class="table-wrap"><table class="data-table" id="tss-mapping-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-refaddr" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="tss-refaddr-title">Reference Addresses</h3>
+                <button class="btn btn-primary btn-sm" id="tss-refaddr-confirm-all" style="display:none;">Confirm all</button>
+              </header>
+              <p class="cmp-sites-hint"></p>
+              <div class="table-wrap"><table class="data-table" id="tss-refaddr-table"></table></div>
+              <div id="tss-refaddr-extra" style="display:none;"></div>
             </section>
 
             <section class="cmp-section" id="tss-section-smartfix" style="display:none;">
@@ -1063,6 +1083,11 @@
               <div class="table-wrap"><table class="data-table" id="tss-type-create-table"></table></div>
             </section>
 
+            <section class="cmp-section" id="tss-section-grouplink" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-grouplink-title">Site Groups</h3></header>
+              <p class="cmp-sites-hint"></p>
+            </section>
+
             <section class="cmp-section" id="tss-section-required" style="display:none;">
               <header class="cmp-section-head"><h3 id="tss-required-title">Empty Required Columns</h3></header>
               <p class="cmp-sites-hint">Required (*) cells with no value. Pick from the template's dropdown or type a manual override; click Apply to fill all empty cells in that column. (Great for a shared Employer / Country.)</p>
@@ -1076,7 +1101,10 @@
             </section>
 
             <section class="cmp-section" id="tss-section-collisions" style="display:none;">
-              <header class="cmp-section-head"><h3 id="tss-collisions-title">Name Collisions</h3></header>
+              <header class="cmp-section-head">
+                <h3 id="tss-collisions-title">Name Collisions</h3>
+                <button class="btn btn-primary btn-sm" id="tss-coll-apply-all" style="display:none;">Apply all suggestions</button>
+              </header>
               <p class="cmp-sites-hint">A site can't load under its name because the name is already taken &mdash; by another site in your data, or one <b>already in PickTrace</b>. Type a new, unique <b>name</b> for each <b>New</b> row and click <b>Rename</b>. Colliding Name cells are red in the preview.</p>
               <div class="table-wrap"><table class="data-table" id="tss-collisions-table"></table></div>
             </section>
@@ -1090,6 +1118,95 @@
 
           <div class="empty-state" id="tss-empty">Upload a source file AND a personalized bulk <b>Sites</b> template to start.</div>
         </div><!-- /ts-site-wrap -->
+
+        <!-- ─── Site Groups ───
+             Site groups can't be bulk created — the Sites template has no column
+             for them, so PickTrace files every uploaded site under a group of its
+             own name. This tab is the manual worklist for rebuilding that
+             grouping. It reads the source + rows already loaded on the Sites tab
+             rather than taking its own uploads. -->
+        <div id="ts-sitegroup-wrap" style="display:none;">
+          <div class="cmp-header">
+            <p>Site groups <b>cannot be bulk created</b> &mdash; the bulk <b>Sites</b>
+            template has no column for them, so PickTrace files every uploaded site
+            under a group of its own name and your source file's grower-client
+            grouping is lost on import. Rebuild it here: create each group, then work
+            through its sites, ticking them off as you assign them. Nothing is
+            exported from this tab.</p>
+          </div>
+
+          <div class="cmp-uploads">
+            <div class="cmp-slot cmp-slot-db">
+              <div class="cmp-slot-label">1. Source data <span class="cmp-req">(required)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                &#128193; Choose file
+                <input type="file" id="tssg-src-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <div class="cmp-filename" id="tssg-src-name">No file selected</div>
+              <div class="cmp-meta" id="tssg-src-meta"></div>
+            </div>
+            <div class="cmp-slot">
+              <div class="cmp-slot-label">2. Existing sites export <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                &#128193; Choose file
+                <input type="file" id="tssg-existing-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <div class="cmp-filename" id="tssg-existing-name">No file selected</div>
+              <div class="cmp-meta" id="tssg-existing-meta">Marks which sites are already in PickTrace.</div>
+            </div>
+          </div>
+
+          <div class="cmp-actions">
+            <button class="btn btn-ghost" id="tssg-use-sites" style="display:none;">&#8593; Use the file loaded on the Sites tab</button>
+            <button class="btn btn-ghost" id="tssg-reset">&#8634; Reset</button>
+          </div>
+
+          <div class="cmp-summary" id="tss-group-summary" style="display:none;"></div>
+
+          <div class="cmp-results" id="tss-group-results">
+            <section class="cmp-section" id="tss-section-sitegroups" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="tss-sitegroups-title">Site Groups &mdash; create &amp; assign in PickTrace</h3>
+                <label class="text-muted small" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">
+                  Group column
+                  <select class="input-field" id="tss-sitegroups-col" style="min-width:150px;"></select>
+                </label>
+                <label class="text-muted small" id="tss-sitegroups-namecol-wrap" style="display:none;align-items:center;gap:6px;">
+                  Site name column
+                  <select class="input-field" id="tss-sitegroups-namecol" style="min-width:150px;"></select>
+                </label>
+                <button class="btn btn-ghost btn-sm" id="tss-sitegroups-copy-all" title="Copy every group name with its site count">&#10697; All groups</button>
+              </header>
+              <p class="cmp-sites-hint"></p>
+              <div class="cmp-meta" id="tss-sitegroups-note" style="display:none;color:#15803d;font-weight:600;"></div>
+              <div class="table-wrap"><table class="data-table" id="tss-sitegroups-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tss-section-groupwork" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="tss-groupwork-title">Assign Sites to a Site Group</h3>
+                <label class="text-muted small" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">
+                  Group
+                  <select class="input-field" id="tss-groupwork-sel" style="min-width:220px;"></select>
+                </label>
+                <button class="btn btn-ghost btn-sm" id="tss-groupwork-copy-remaining" title="Copy only the sites still to add, one per line">&#10697; Copy remaining</button>
+              </header>
+              <p class="cmp-sites-hint">Pick a group, then tick each site as you add it in PickTrace &mdash; a chip also copies its name when you click it. Green means added.</p>
+              <div class="cmp-meta" id="tss-groupwork-note" style="display:none;color:#15803d;font-weight:600;margin-bottom:6px;"></div>
+              <div class="tss-progress"><span id="tss-groupwork-bar" style="width:0%"></span></div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+                <input type="text" class="input-field" id="tss-groupwork-filter" placeholder="Filter sites&hellip;" style="width:200px;">
+                <span class="text-muted small" id="tss-groupwork-count"></span>
+                <span style="margin-left:auto;"></span>
+                <button class="btn btn-ghost btn-sm" id="tss-groupwork-all">Mark all added</button>
+                <button class="btn btn-ghost btn-sm" id="tss-groupwork-none">Clear this group</button>
+              </div>
+              <div class="tss-chip-well" id="tss-groupwork-list"></div>
+            </section>
+          </div>
+
+          <div class="empty-state" id="tss-group-empty">Load your source file on the <b>Sites</b> tab first &mdash; site groups are read from it.</div>
+        </div><!-- /ts-sitegroup-wrap -->
       </div><!-- /cmp-mode-standardize -->
 
       <!-- ═══ Employees mode (Standardize & Dedupe + Legacy Migration sub-tabs) ═══ -->
@@ -1175,6 +1292,7 @@
           <button class="btn btn-success" id="em-run" disabled>&#9654; Build Preview</button>
           <button class="btn btn-primary" id="em-export" disabled>&#8615; Export XLSX</button>
           <button class="btn btn-ghost" id="em-reset">&#8634; Reset</button>
+          <button class="btn btn-ghost" id="em-debug" disabled title="Load your files and run the migration first.">&#128270; Debug Dump</button>
         </div>
 
         <div class="cmp-summary" id="em-summary" style="display:none;"></div>
@@ -1291,11 +1409,15 @@
           <button class="btn btn-success" id="es-run" disabled>&#9654; Build Preview</button>
           <button class="btn btn-primary" id="es-export" disabled>&#8615; Export XLSX</button>
           <button class="btn btn-ghost" id="es-reset">&#8634; Reset</button>
+          <button class="btn btn-ghost" id="es-debug" disabled title="Load your files and format the sheet first.">&#128270; Debug Dump</button>
         </div>
 
         <div class="cmp-summary" id="es-summary" style="display:none;"></div>
 
         <div class="cmp-results" id="es-results">
+          <!-- Filled by highlight-filter.js when the Data Template has highlighted rows. -->
+          <section class="cmp-section" id="es-section-highlight" style="display:none;"></section>
+
           <section class="cmp-section" id="es-section-dups" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="es-dups-title">Duplicates Excluded</h3>
@@ -1371,7 +1493,7 @@
               <input type="file" id="dt-bulk-file" accept=".csv,.xlsx,.xls" multiple hidden>
             </label>
             <div class="cmp-filename">Select any number of files</div>
-            <div class="cmp-slot-hint">Each file is routed by its header row. A workbook with a <code>DATA ENTRY</code> sheet is treated as a template; anything else is treated as an export. Unrecognized files are reported so you can place them by hand.</div>
+            <div class="cmp-slot-hint">Each file is routed by its header row. A workbook with a <code>DATA ENTRY</code> sheet is treated as a template; anything else is treated as an export. A workbook with several sheets &mdash; a client's Implementation Data Template, say &mdash; opens a picker so you can load several sheets at once, each into the template it fills. Unrecognized files are reported so you can place them by hand.</div>
           </div>
         </div>
 
@@ -1403,7 +1525,11 @@
               <input type="file" id="dt-locations-tpl-file" accept=".xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="dt-locations-tpl-name">No template</div>
-            <div class="cmp-slot-hint">Near 1:1 &mdash; every export column but <code>Is Archived</code> carries straight over.</div>
+            <div class="dt-src-override" id="dt-locations-site-wrap" style="display:none;">
+              <label for="dt-locations-site-src">Site* from</label>
+              <select id="dt-locations-site-src" class="input-field"></select>
+            </div>
+            <div class="cmp-slot-hint">Near 1:1 &mdash; every export column but <code>Is Archived</code> carries straight over. If the client put the site in another column, point <b>Site*</b> at it; that column then stops filling its own.</div>
           </div>
 
           <div class="cmp-slot">
@@ -1439,6 +1565,7 @@
           <button class="btn btn-primary" id="dt-dl-sites" disabled>&#8615; Sites</button>
           <button class="btn btn-primary" id="dt-dl-jobs" disabled>&#8615; Jobs</button>
           <button class="btn btn-ghost" id="dt-reset">&#8634; Reset</button>
+          <button class="btn btn-ghost" id="dt-debug" disabled title="Load your exports and templates first.">&#128270; Debug Dump</button>
           <label style="display:flex;align-items:center;gap:6px;margin-left:12px;font-size:13px;color:var(--text-muted,#6b7280);" title="When the destination template allows exactly one value for a column, rewrite off-list values to it. This is what moves employees from the org they were exported from to the org the template belongs to.">
             <input type="checkbox" id="dt-migrate" checked>
             Migrate values to the template's org
@@ -1490,6 +1617,7 @@
               <div class="cmp-bulk-actions">
                 <input type="text" id="dt-fill-filter" class="input-field" placeholder="Filter columns&hellip;" style="width:150px;">
                 <select id="dt-fill-scope" class="input-field" style="width:150px;">
+                  <option value="attn" selected>Needs attention</option>
                   <option value="all">All columns</option>
                   <option value="req">Required only</option>
                   <option value="empty">Has empty cells</option>
@@ -1498,7 +1626,7 @@
                 <button class="btn btn-ghost btn-sm" id="dt-fill-reset">Undo all fills</button>
               </div>
             </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Bulk-set <b>any</b> column of the previewed domain &mdash; switch domains with the preview pills, and type in the filter box to jump to one. <b>All rows</b> overwrites everything, <b>Blanks</b> only writes where the cell is empty, <b>Clear</b> empties the column. Where the template has a dropdown, pick from it so the value matches exactly; where it doesn't, type an override.</div>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;"><b>Needs attention</b> lists required columns with blanks, columns holding values the dropdown won't take, and empty columns that have a dropdown to pick from; switch to <b>All columns</b> to bulk-set anything else. Switch domains with the preview pills, and type in the filter box to jump to a column. <b>All rows</b> overwrites everything, <b>Blanks</b> only writes where the cell is empty, <b>Clear</b> empties the column. Where the template has a dropdown, pick from it so the value matches exactly; where it doesn't, type an override.</div>
             <div class="table-wrap"><table class="data-table" id="dt-fill-table"></table></div>
           </section>
 
@@ -1551,9 +1679,9 @@
 
           <section class="cmp-section" id="dt-section-remap" style="display:none;">
             <header class="cmp-section-head">
-              <h3 id="dt-remap-title">Migrated Values</h3>
+              <h3 id="dt-remap-title">Rewritten Values</h3>
             </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">The export's value wasn't in the template's list, and the template allows exactly one value &mdash; so it was rewritten. This is the org-to-org move. Uncheck <b>Migrate values</b> above to write the export's originals instead.</div>
+            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values written differently from the export, and why. <b>Only option in this org</b>: the template allows exactly one value, so it was migrated &mdash; uncheck <b>Migrate values</b> above to keep the originals. <b>Only matching dropdown entry</b>: the value had exactly one plausible entry in the dropdown (<code>Cherries</code> &rarr; <code>Cherries-Other</code>, <code>M</code> &rarr; <code>MALE</code>), so it was matched without a Smart Fix. <b>Crews tab</b>: the employee's Crew held a payroll code from the workbook's Crews tab, so it was written as that crew's Crew Name (<code>IRR01</code> &rarr; <code>Irrigation</code>).</div>
             <div class="table-wrap"><table class="data-table" id="dt-remap-table"></table></div>
           </section>
 
@@ -1710,6 +1838,7 @@
           <button class="btn btn-success" id="lm-run" disabled>&#9654; Build Preview</button>
           <button class="btn btn-primary" id="lm-export" disabled>&#8615; Export XLSX</button>
           <button class="btn btn-ghost" id="lm-reset">&#8634; Reset</button>
+          <button class="btn btn-ghost" id="lm-debug" disabled title="Load your files and run the migration first.">&#128270; Debug Dump</button>
         </div>
 
         <div class="cmp-summary" id="lm-summary" style="display:none;"></div>
@@ -1806,20 +1935,30 @@
 <!-- data-store.js defines sessionPrefs (the in-memory stand-in for localStorage),
      so it loads before every module that reads or writes a preference. -->
 <script src="data-store.js?v=4"></script>
+<!-- debug-dump.js defines window.IMDebug, which every builder module registers
+     its audit collector with, so it loads before all of them. -->
+<script src="debug-dump.js?v=1"></script>
+<!-- xlsx-template-writer.js patches a template's zip in place, keeping its
+     dropdowns and writing literal inline strings — SheetJS's writer drops the
+     first and emits t="str" for the second, which uploaders reject. -->
+<script src="xlsx-template-writer.js?v=1"></script>
 <script src="gcv-ocr.js?v=2"></script>
 <script src="utils.js?v=2"></script>
 <script src="app.js?v=2"></script>
 <script src="review-data.js"></script>
 <script src="review-logic.js"></script>
 <script src="coleditor.js"></script>
-<script src="tracker-logic.js?v=3"></script>
-<script src="compare-logic.js?v=71"></script>
-<script src="template-standardize.js?v=24"></script>
-<script src="sites-standardize.js?v=5"></script>
-<script src="employee-migrate.js?v=16"></script>
-<script src="employee-standardize.js?v=9"></script>
-<script src="data-template.js?v=11"></script>
-<script src="locations-migrate.js?v=3"></script>
+<script src="tracker-logic.js?v=10"></script>
+<script src="compare-logic.js?v=73"></script>
+<!-- highlight-filter.js defines window.IMHighlight (leave out / keep only
+     rows a client highlighted), used by the Standardize modules below. -->
+<script src="highlight-filter.js?v=1"></script>
+<script src="template-standardize.js?v=26"></script>
+<script src="sites-standardize.js?v=14"></script>
+<script src="employee-migrate.js?v=17"></script>
+<script src="employee-standardize.js?v=11"></script>
+<script src="data-template.js?v=17"></script>
+<script src="locations-migrate.js?v=4"></script>
 <script>
 // ═══ Router ═══
 // The topbar holds one entry per destination: Build, then the prep tools.
@@ -1840,15 +1979,16 @@ const BUILD_TOOLS = {
     get:  'One filled template',
     when: 'A client sent you a spreadsheet and none of it is in PickTrace yet. The column layout is unknown, so you map it here — and you get the duplicate collapsing, name-collision renaming and editable preview that the bulk version doesn’t have.',
     entities: [
-      { key: 'locations', label: 'Locations' },
-      { key: 'sites',     label: 'Sites' },
-      { key: 'employees', label: 'Employees' }
+      { key: 'locations',  label: 'Locations' },
+      { key: 'sites',      label: 'Sites' },
+      { key: 'employees',  label: 'Employees' },
+      { key: 'sitegroups', label: 'Site Groups' }
     ]
   },
   bundle: {
     name: 'Bulk Template Standardize',
     situation: 'Every template, from account exports',
-    give: 'PickTrace account exports and their templates — drop them all at once',
+    give: 'PickTrace account exports (or a multi-sheet Implementation Data Template) and their templates — drop them all at once',
     get:  'Four filled templates: employees, locations, sites, jobs',
     when: 'Standing up a new account from an existing one. The export shape is known, so columns carry across almost 1:1 and there is no mapping step. Faster than the single version, with less control.'
   },
@@ -1982,9 +2122,16 @@ function showBuild(tool, entity) {
 
   show('cmp-mode-compare',      tool === 'compare');
   show('cmp-mode-datatemplate', tool === 'bundle');
+  const stdGrp = tool === 'standardize' && entity === 'sitegroups';
   show('cmp-mode-standardize',  tool === 'standardize' && !stdEmp);
+  // The shared blurb describes filling a bulk template; Site Groups fills none.
+  show('ts-std-header',         tool === 'standardize' && !stdEmp && !stdGrp);
   show('ts-loc-wrap',           tool === 'standardize' && entity === 'locations');
   show('ts-site-wrap',          tool === 'standardize' && entity === 'sites');
+  show('ts-sitegroup-wrap',     stdGrp);
+  if (tool === 'standardize' && entity === 'sitegroups' && typeof window.tssRenderGroups === 'function') {
+    window.tssRenderGroups();
+  }
   // #cmp-mode-employees is the wrapper holding both employee panes; it stays
   // in the DOM where it is and is shown for whichever one is in play.
   show('cmp-mode-employees',    stdEmp || legEmp);

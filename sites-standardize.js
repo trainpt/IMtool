@@ -8,6 +8,13 @@
 // Address2, City*, State*, Zip*, Country*. The source usually packs the whole
 // address into ONE "Address" cell, so this module parses it into
 // Address1/City/State/Zip/Country (City is a best-effort guess, flagged amber).
+//
+// Reference addresses: some implementation workbooks don't repeat the address
+// on every row. They put a bare state code ("CA", "AZ") in the Address column
+// and list each state's one real address ONCE, off to the side — often in a
+// column with no header at all. scanReferenceAddresses() finds those, the
+// Reference Addresses panel lets you confirm/correct the street-vs-city split,
+// and every row carrying that code is filled from the confirmed entry.
 // ═══════════════════════════════════════════════════════════════════════
 (function () {
   'use strict';
@@ -57,6 +64,29 @@
   let guessedCityRows = new Set();// rowIdxs whose City* was machine-guessed from a combined address
   let collisionKeys = new Set();
   let existingTakenKeys = new Set();
+  // Renaming one half of a colliding pair makes the other half unique, which
+  // would drop the whole group out of computeCollisions() before the second row
+  // could be dealt with. The panel therefore renders from this history — every
+  // group that has EVER collided this run — not from the live collision set.
+  let collisionHistory = new Map();  // original nameKey → { base, rows:Set<rowIdx> }
+  let collisionDismissed = new Set();// nameKeys the user has finished with
+  let groupColIdx = -1;              // source column holding the grower / site group
+  let groupColPicked = false;        // true once the user overrides the detected column
+  let completedGroups = new Set();   // site groups ticked off as CREATED in PickTrace
+  let assignedSites = new Map();     // group → Set(site name) already assigned to it
+  let groupWorkSel = '';             // group open in the assignment worklist
+  let groupWorkFilter = '';          // its filter box
+  // The Site Groups tab can run on its own file — you may want to fix a
+  // grouping months after the sites went up, with no upload to build.
+  let groupSrcOwn = null;            // { headers, rows, fileName, sheetName }
+  let groupExistingOwn = null;       // { keys:Set<nameKey>, fileName, count }
+  let groupNameColIdx = -1;          // site-name column, when running on its own file
+  let groupNameColPicked = false;
+  let refAddrMap = {};            // STATE CODE → reference-address entry (sticky; see scanReferenceAddresses)
+  let refAddrExtras = [];         // additional full-address cells found for a code already claimed
+  let xrefCodeCounts = new Map(); // STATE CODE → how many rows carry it as a bare Address value
+  let xrefRows = new Map();       // formattedRows index → STATE CODE it was filled from
+  let provMarks = {};             // "row|col" → provenance code, for the debug dump
   let initialized = false;
 
   function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i); }
@@ -101,6 +131,11 @@
         const t = toks[i].replace(/\./g, '').toLowerCase();
         if (STREET_SUFFIX.has(t)) cut = i;
       }
+      // A route number belongs to the street, not to the city: in
+      // "12000 S. Hwy. 99 Fairview" the suffix is "Hwy." but the split goes
+      // after "99", or the city comes out as "99 Fairview". Keep at least one
+      // token back for the city itself.
+      while (cut >= 0 && cut + 1 < toks.length - 1 && /^\d+[A-Za-z]?$/.test(toks[cut + 1])) cut++;
       if (cut >= 0 && cut < toks.length - 1) {
         out.address1 = toks.slice(0, cut + 1).join(' ');
         out.city = toks.slice(cut + 1).join(' ');
@@ -110,6 +145,124 @@
       }
     }
     return out;
+  }
+
+  // ─── Reference addresses ───
+  // Workbooks that share one address across many sites put a bare state code in
+  // the Address column and spell the real address out once, somewhere else on
+  // the sheet — frequently in a column past the last header, which is why the
+  // scan walks every cell of every row rather than the mapped columns.
+
+  // "CA" / "AZ" / "BC" on its own — not part of a longer string.
+  function bareStateCode(v) {
+    const s = String(v == null ? '' : v).trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(s)) return '';
+    return (US_STATES.has(s) || CA_PROVINCES.has(s)) ? s : '';
+  }
+  // A cell that reads like a complete street address ending in STATE + ZIP.
+  function looksLikeFullAddress(v) {
+    const s = String(v == null ? '' : v).trim().replace(/\s+/g, ' ');
+    if (s.length < 10 || s.length > 200) return '';
+    const m = s.match(/[,\s]([A-Za-z]{2})[,\s]+(\d{5}(?:-\d{4})?|[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d)$/);
+    if (!m) return '';
+    const code = m[1].toUpperCase();
+    if (!US_STATES.has(code) && !CA_PROVINCES.has(code)) return '';
+    // Needs a street number ahead of the state, or it's a city/state/zip stub.
+    if (!/\d/.test(s.slice(0, m.index))) return '';
+    return code;
+  }
+  // How much to trust the street/city split parseAddress produced.
+  function splitConfidence(p) {
+    if (!p.city) return 'check';
+    if (!p.cityGuessed) return 'clean';
+    const toks = p.city.split(' ').filter(Boolean);
+    if (/\d/.test(p.city) || toks.length > 3) return 'check';
+    return 'guessed';
+  }
+  function makeRefEntry(code, raw, origin) {
+    const p = parseAddress(raw);
+    return {
+      code, raw, origin,
+      address1: p.address1 || '',
+      city: p.city || '',
+      state: p.state || code,
+      zip: p.zip || '',
+      country: p.country || (CA_PROVINCES.has(code) ? 'CA' : 'US'),
+      confidence: splitConfidence(p),
+      confirmed: false,
+      edited: false,
+      manual: !raw
+    };
+  }
+  // Tally the bare state codes sitting in whichever source column feeds
+  // Address1*. No codes → this workbook spells its addresses out per row and
+  // the whole reference mechanism stays off.
+  function countStateCodes() {
+    const counts = new Map();
+    if (!srcData) return counts;
+    const a1 = SITE_HEADERS.indexOf('Address1*');
+    const sc = mapping[a1];
+    if (sc == null || sc < 0) return counts;
+    srcData.rows.forEach(r => {
+      const code = bareStateCode(r[sc]);
+      if (code) counts.set(code, (counts.get(code) || 0) + 1);
+    });
+    return counts;
+  }
+  // Seeds refAddrMap. User edits are sticky, so an entry already confirmed or
+  // hand-edited is left exactly as it is on a re-scan.
+  function scanReferenceAddresses() {
+    refAddrExtras = [];
+    xrefCodeCounts = countStateCodes();
+    if (!srcData || !xrefCodeCounts.size) return;
+    const a1 = SITE_HEADERS.indexOf('Address1*');
+    const addrCol = mapping[a1] != null ? mapping[a1] : -1;
+    const found = new Map();
+    srcData.rows.forEach((row, ri) => {
+      for (let ci = 0; ci < row.length; ci++) {
+        if (ci === addrCol) continue;              // that column holds the codes
+        const code = looksLikeFullAddress(row[ci]);
+        if (!code) continue;
+        const sheetRow = (srcData.rowNums && srcData.rowNums[ri] != null) ? srcData.rowNums[ri] + 1 : ri + 1;
+        const origin = {
+          sheet: srcData.sheetName || null,
+          cell: colLetter(ci) + sheetRow,
+          column: srcData.headers[ci] ? srcData.headers[ci] : '(no header)',
+          dataRowIndex: ri
+        };
+        const raw = String(row[ci]).trim().replace(/\s+/g, ' ');
+        if (found.has(code)) { refAddrExtras.push({ code, raw, origin }); continue; }
+        found.set(code, { raw, origin });
+      }
+    });
+    // Every code actually used gets a panel row — including ones with no
+    // address anywhere, so they can be typed in rather than silently skipped.
+    xrefCodeCounts.forEach((_, code) => {
+      const hit = found.get(code);
+      const prior = refAddrMap[code];
+      if (prior && (prior.confirmed || prior.edited)) {
+        if (hit && !prior.raw) { prior.raw = hit.raw; prior.origin = hit.origin; }
+        return;
+      }
+      refAddrMap[code] = hit
+        ? makeRefEntry(code, hit.raw, hit.origin)
+        : makeRefEntry(code, '', null);
+    });
+    // Drop entries for codes this mapping no longer uses.
+    Object.keys(refAddrMap).forEach(code => { if (!xrefCodeCounts.has(code)) delete refAddrMap[code]; });
+  }
+  function refEntryUsable(e) { return !!(e && (e.address1 || e.city || e.zip)); }
+  function refNeedsAttention(e) { return !!(e && !e.confirmed && (e.confidence === 'check' || !refEntryUsable(e))); }
+  function refAddrOutstanding() {
+    return Object.keys(refAddrMap).filter(c => refNeedsAttention(refAddrMap[c]));
+  }
+  // A split the parser flagged as wrong-looking, waved through without anyone
+  // touching the fields. Not a blocker — the operator may know better — but it
+  // rides on every row using that code, so it stays visible in the panel, in
+  // the export dialog and in the debug dump instead of disappearing on a click.
+  function refConfirmedUnfixed(e) { return !!(e && e.confirmed && !e.edited && e.confidence === 'check'); }
+  function refAddrConfirmedUnfixed() {
+    return Object.keys(refAddrMap).filter(c => refConfirmedUnfixed(refAddrMap[c]));
   }
 
   // ─── Header-row detection (mirrors template-standardize) ───
@@ -145,13 +298,26 @@
              s.startsWith('this field') || s.startsWith('this tab') || s.includes('used to collect');
     });
   }
-  function sliceSheetAoa(aoa) {
+  // `indexed` is [{ row, i }] where i is the 0-based row index in the original
+  // sheet. Carrying it through means the debug dump and the Reference Addresses
+  // panel can name a real cell ("Site!J3") instead of a post-filter offset.
+  function sliceSheetAoa(indexed) {
+    const aoa = indexed.map(x => x.row);
     const hIdx = detectHeaderRow(aoa);
     const headers = (aoa[hIdx] || []).map(h => String(h == null ? '' : h).trim());
-    const rows = aoa.slice(hIdx + 1)
-      .filter(r => !isInstructionRow(r))
-      .map(r => r.map(c => c == null ? '' : String(c).trim()));
-    return { headers, rows, headerRow: hIdx };
+    const kept = indexed.slice(hIdx + 1).filter(x => !isInstructionRow(x.row));
+    return {
+      headers,
+      rows: kept.map(x => x.row.map(c => c == null ? '' : String(c).trim())),
+      rowNums: kept.map(x => x.i),          // 0-based sheet row per data row
+      headerRow: indexed[hIdx] ? indexed[hIdx].i : hIdx
+    };
+  }
+  function colLetter(n) {
+    let s = '';
+    let x = n + 1;
+    while (x > 0) { const r = (x - 1) % 26; s = String.fromCharCode(65 + r) + s; x = Math.floor((x - 1) / 26); }
+    return s;
   }
 
   // ─── File parsing ───
@@ -163,14 +329,16 @@
           const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
           const sheets = wb.SheetNames.map(n => {
             const aoa = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' });
-            const filtered = aoa.filter(row => row && row.some(c => c != null && String(c).trim() !== ''));
-            if (!filtered.length) return null;
-            const sliced = sliceSheetAoa(filtered);
+            const indexed = aoa.map((row, i) => ({ row, i }))
+              .filter(x => x.row && x.row.some(c => c != null && String(c).trim() !== ''));
+            if (!indexed.length) return null;
+            const sliced = sliceSheetAoa(indexed);
             if (!sliced.headers.filter(h => h).length) return null;
-            return { name: n, headers: sliced.headers, rows: sliced.rows };
+            return { name: n, headers: sliced.headers, rows: sliced.rows, rowNums: sliced.rowNums, headerRow: sliced.headerRow };
           }).filter(Boolean);
           if (!sheets.length) return reject(new Error('No sheets with usable headers.'));
-          const finish = s => resolve({ headers: s.headers, rows: s.rows, fileName: file.name, sheetName: s.name });
+          const finish = s => resolve({ headers: s.headers, rows: s.rows, rowNums: s.rowNums,
+            headerRow: s.headerRow, fileName: file.name, sheetName: s.name });
           if (sheets.length === 1) return finish(sheets[0]);
           pickSheet(sheets, file.name).then(finish).catch(reject);
         } catch (err) { reject(err); }
@@ -360,6 +528,8 @@
     const zi = SITE_HEADERS.indexOf('Zip*');
     const coi = SITE_HEADERS.indexOf('Country*');
     guessedCityRows = new Set();
+    xrefRows = new Map();
+    provMarks = {};
     return srcData.rows.map((srcRow, ri) => {
       const out = new Array(SITE_HEADERS.length).fill('');
       SITE_HEADERS.forEach((bh, bi) => {
@@ -369,15 +539,31 @@
           if (v) out[bi] = v;
         }
       });
-      // Parse a combined address (only when City/State/Zip aren't already mapped
-      // in full). Fills only the empty target cells so explicit columns win.
-      if (a1 >= 0 && out[a1] && !(out[ci] && out[si] && out[zi])) {
+      // A bare state code in Address1* means the real address lives in the
+      // reference table, not on this row. Address1 holds only the code, so it
+      // is replaced outright; the rest fill only where empty (a real source
+      // column still wins).
+      const code = a1 >= 0 ? bareStateCode(out[a1]) : '';
+      const ref = code ? refAddrMap[code] : null;
+      if (code && refEntryUsable(ref)) {
+        const mark = 'xref:' + code;
+        out[a1] = ref.address1 || '';
+        provMarks[ri + '|' + a1] = ref.address1 ? mark : 'empty';
+        if (ci >= 0 && !out[ci] && ref.city) { out[ci] = ref.city; provMarks[ri + '|' + ci] = mark; }
+        if (si >= 0 && !out[si]) { out[si] = ref.state || code; provMarks[ri + '|' + si] = mark; }
+        if (zi >= 0 && !out[zi] && ref.zip) { out[zi] = ref.zip; provMarks[ri + '|' + zi] = mark; }
+        if (coi >= 0 && !out[coi] && ref.country) { out[coi] = ref.country; provMarks[ri + '|' + coi] = mark; }
+        xrefRows.set(ri, code);
+      } else if (a1 >= 0 && out[a1] && !(out[ci] && out[si] && out[zi])) {
+        // Parse a combined address (only when City/State/Zip aren't already
+        // mapped in full). Fills only the empty target cells.
         const p = parseAddress(out[a1]);
-        if (p.address1) out[a1] = p.address1;
-        if (ci >= 0 && !out[ci] && p.city) { out[ci] = p.city; if (p.cityGuessed) guessedCityRows.add(ri); }
-        if (si >= 0 && !out[si] && p.state) out[si] = p.state;
-        if (zi >= 0 && !out[zi] && p.zip) out[zi] = p.zip;
-        if (coi >= 0 && !out[coi] && p.country) out[coi] = p.country;
+        if (p.address1) { out[a1] = p.address1; provMarks[ri + '|' + a1] = 'parse:address'; }
+        if (ci >= 0 && !out[ci] && p.city) { out[ci] = p.city; provMarks[ri + '|' + ci] = 'parse:address'; if (p.cityGuessed) guessedCityRows.add(ri); }
+        if (si >= 0 && !out[si] && p.state) { out[si] = p.state; provMarks[ri + '|' + si] = 'parse:address'; }
+        if (zi >= 0 && !out[zi] && p.zip) { out[zi] = p.zip; provMarks[ri + '|' + zi] = 'parse:address'; }
+        if (coi >= 0 && !out[coi] && p.country) { out[coi] = p.country; provMarks[ri + '|' + coi] = 'parse:address'; }
+        if (code) xrefRows.set(ri, code); // code with no usable reference entry
       }
       return out;
     });
@@ -454,6 +640,9 @@
       }
     });
     counts.forEach((c, k) => { if (c >= 2) collisionKeys.add(k); });
+    // Fold this pass's collisions into the sticky history the panel renders
+    // from, so resolving half a pair doesn't hide the other half.
+    recordCollisions();
   }
 
   function computeCollisions() {
@@ -500,6 +689,9 @@
     $('tss-mapping-table').querySelectorAll('.tss-map-select').forEach(s => {
       s.addEventListener('change', e => {
         mapping[+e.target.dataset.bi] = +e.target.value;
+        // Re-point Address1* and the reference table has to be rebuilt around
+        // the new column (edited entries survive).
+        scanReferenceAddresses();
         rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
       });
     });
@@ -508,13 +700,21 @@
   // ─── Editable preview (mirrors template-standardize's combo grid) ───
   function renderPreview() {
     if (!srcData || !tplData || !formattedRows) return;
-    renderExisting(); renderCollisions(); renderSmartFixes();
+    renderExisting(); renderCollisions(); renderRefAddresses(); renderSmartFixes();
+    renderGroupsTab();
     const sec = $('tss-section-preview');
     const tbl = $('tss-preview-table');
     sec.style.display = '';
     const collisionIdxs = collisionRowSet();
     const nameColIdx = SITE_HEADERS.indexOf('Name*');
     const cityIdx = SITE_HEADERS.indexOf('City*');
+    // Address cells filled from a reference entry you haven't vetted yet.
+    const addrCols = new Set(['Address1*', 'City*', 'State*', 'Zip*', 'Country*']
+      .map(h => SITE_HEADERS.indexOf(h)).filter(i => i >= 0));
+    const refPending = ri => {
+      const code = xrefRows.get(ri);
+      return code && refNeedsAttention(refAddrMap[code]) ? code : '';
+    };
     const colDrop = SITE_HEADERS.map(h => {
       const vals = dropdownValuesFor(h);
       return vals ? { vals, lower: new Set(vals.map(v => v.toLowerCase().trim())) } : null;
@@ -535,6 +735,7 @@
         if (/\*$/.test(SITE_HEADERS[i]) && !val) return true;
         if (i === nameColIdx && collisionIdxs.has(ri)) return true;
         if (i === cityIdx && guessedCityRows.has(ri) && val) return true;
+        if (addrCols.has(i) && refPending(ri)) return true;
         const d = colDrop[i];
         if (d && val && !d.lower.has(val.toLowerCase().trim())) return true;
       }
@@ -564,6 +765,11 @@
           bg = '#fee2e2'; title = 'Name collision — another site shares this Name. Rename it here (or in Name Collisions above); PickTrace requires unique site names.';
         } else if (i === cityIdx && guessedCityRows.has(ri) && val) {
           bg = '#fef3c7'; title = 'City is a best-effort guess from the combined address — verify it.';
+        } else if (addrCols.has(i) && refPending(ri)) {
+          bg = '#fef3c7';
+          title = 'Filled from the reference address for "' + refPending(ri) +
+            '" — that entry still needs your check in the Reference Addresses panel above. ' +
+            'Fixing it there updates every row using this code.';
         } else if (d && val && !inList) {
           bg = '#fef3c7'; title = 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is, or pick a listed value.';
         }
@@ -597,7 +803,7 @@
       let t = toggle;
       if (previewIssuesOnly) t += 'Showing ' + Math.min(limit, visibleRowIdxs.length) + ' of ' + issueCount + ' flagged row' + (issueCount === 1 ? '' : 's') + (visibleRowIdxs.length > limit ? ' (capped at ' + limit + ')' : '') + '. ';
       else if (visibleRowIdxs.length > limit) t += 'Showing first ' + limit + ' of ' + visibleRowIdxs.length + ' rows. ';
-      t += 'Every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. Red = empty required; amber = off-list or a guessed City. Click <b>×</b> to drop a row.';
+      t += 'Every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. Red = empty required; amber = off-list, a guessed City, or an unconfirmed reference address. Click <b>×</b> to drop a row.';
       if (removedRows.size) t += ' &nbsp; <button class="btn btn-ghost btn-sm" id="tss-restore-rows">Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
       hint.innerHTML = t;
       const io = $('tss-issues-only');
@@ -646,6 +852,141 @@
   }
   function recomputeAfterEdit() {
     rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+
+  // ─── Reference Addresses panel ───
+  // One row per bare state code the Address column uses. Shows what was found
+  // and where, the street/city split it produced, and how much to trust that
+  // split. Editing any field confirms the entry; "Looks right" confirms it
+  // as-is. Both push straight back through every row carrying the code.
+  const REF_FIELDS = [
+    { key: 'address1', label: 'Address1*', width: '190px' },
+    { key: 'city',     label: 'City*',     width: '130px' },
+    { key: 'state',    label: 'State*',    width: '60px'  },
+    { key: 'zip',      label: 'Zip*',      width: '80px'  },
+    { key: 'country',  label: 'Country*',  width: '70px'  }
+  ];
+  function refStatusCell(e) {
+    if (!refEntryUsable(e)) {
+      return '<span style="color:#dc2626;font-weight:600;">&#9888; no address found</span>' +
+        '<div class="text-muted small">Type one in — these rows export with an empty Address1.</div>';
+    }
+    if (refConfirmedUnfixed(e)) {
+      return '<span style="color:#b45309;font-weight:600;">&#10003; confirmed &mdash; but the split was flagged</span>' +
+        '<div class="text-muted small">You waved this through without editing it. Check <b>Address1</b> and <b>City</b> above.</div>';
+    }
+    if (e.confirmed) return '<span style="color:#15803d;font-weight:600;">&#10003; confirmed</span>';
+    if (e.confidence === 'check') {
+      return '<span style="color:#b45309;font-weight:600;">&#9888; check this split</span>' +
+        '<div class="text-muted small">The city looks wrong — fix Address1/City, then it applies to every row.</div>';
+    }
+    if (e.confidence === 'guessed') return '<span style="color:#b45309;">~ auto-split</span>';
+    return '<span style="color:#15803d;">&#10003; parsed</span>';
+  }
+  function renderRefAddresses() {
+    const sec = $('tss-section-refaddr');
+    if (!sec) return;
+    const codes = Object.keys(refAddrMap).sort();
+    if (!codes.length) { sec.style.display = 'none'; $('tss-refaddr-table').innerHTML = ''; return; }
+    sec.style.display = '';
+    const totalRows = codes.reduce((n, c) => n + (xrefCodeCounts.get(c) || 0), 0);
+    const outstanding = refAddrOutstanding().length;
+    const t = $('tss-refaddr-title');
+    if (t) t.textContent = 'Reference Addresses (' + codes.length + ' code' + (codes.length === 1 ? '' : 's') +
+      ', ' + totalRows + ' rows' + (outstanding ? ' — ' + outstanding + ' need your check' : '') + ')';
+    const hint = sec.querySelector('.cmp-sites-hint');
+    if (hint) {
+      hint.innerHTML = 'Your Address column holds state codes, not addresses — the real addresses were found elsewhere on the sheet. ' +
+        'Confirm each split below and it fills <b>Address1 / City / State / Zip / Country</b> on every row carrying that code. ' +
+        'Amber = the street/city guess is uncertain.';
+    }
+    let html = '<thead><tr><th>Code</th><th>Found in</th>' +
+      REF_FIELDS.map(f => '<th>' + escHtml(f.label) + '</th>').join('') +
+      '<th>Rows</th><th>Status</th><th></th></tr></thead><tbody>';
+    codes.forEach(code => {
+      const e = refAddrMap[code];
+      const rows = xrefCodeCounts.get(code) || 0;
+      const bad = refNeedsAttention(e);
+      const tint = bad ? ' style="background:#fffbeb;"' : '';
+      const origin = e.origin
+        ? '<code>' + escHtml((e.origin.sheet ? e.origin.sheet + '!' : '') + e.origin.cell) + '</code>' +
+          '<div class="text-muted small">column: ' + escHtml(e.origin.column) + '</div>'
+        : '<span class="text-muted small">not found on the sheet</span>';
+      const raw = e.raw
+        ? '<div class="text-muted small" style="max-width:240px;">raw: ' + escHtml(e.raw) + '</div>' : '';
+      html += '<tr' + tint + '><td><b>' + escHtml(code) + '</b></td>' +
+        '<td>' + origin + raw + '</td>' +
+        REF_FIELDS.map(f => '<td><input type="text" class="tss-ref-input input-field" data-code="' + escHtml(code) +
+          '" data-key="' + f.key + '" style="width:' + f.width + ';" value="' + escHtml(e[f.key] || '') + '"></td>').join('') +
+        '<td><b>' + rows + '</b></td>' +
+        '<td>' + refStatusCell(e) + '</td>' +
+        '<td><button class="btn ' + (bad ? 'btn-primary' : 'btn-ghost') + ' btn-sm tss-ref-ok" data-code="' +
+          escHtml(code) + '">' +
+          (e.confirmed ? 'Confirmed' : (e.confidence === 'check' ? 'Confirm anyway' : 'Looks right')) +
+        '</button></td></tr>';
+    });
+    html += '</tbody>';
+    $('tss-refaddr-table').innerHTML = html;
+
+    if (refAddrExtras.length) {
+      const extra = refAddrExtras.slice(0, 10).map(x =>
+        '<li><b>' + escHtml(x.code) + '</b> &mdash; <code>' + escHtml((x.origin.sheet ? x.origin.sheet + '!' : '') + x.origin.cell) +
+        '</code> ' + escHtml(x.raw) + '</li>').join('');
+      const note = $('tss-refaddr-extra');
+      if (note) {
+        note.style.display = '';
+        note.innerHTML = '<div class="text-muted small">Other addresses found for codes already covered above (not used — edit the row above if one of these is the right one):<ul>' +
+          extra + (refAddrExtras.length > 10 ? '<li>… and ' + (refAddrExtras.length - 10) + ' more</li>' : '') + '</ul></div>';
+      }
+    } else {
+      const note = $('tss-refaddr-extra');
+      if (note) { note.style.display = 'none'; note.innerHTML = ''; }
+    }
+
+    const tbl = $('tss-refaddr-table');
+    tbl.querySelectorAll('.tss-ref-input').forEach(inp => inp.addEventListener('change', ev => {
+      const el = ev.currentTarget;
+      const e = refAddrMap[el.dataset.code];
+      if (!e) return;
+      e[el.dataset.key] = el.value.trim();
+      e.edited = true;
+      e.confirmed = true;
+      applyRefAddresses();
+    }));
+    tbl.querySelectorAll('.tss-ref-ok').forEach(btn => btn.addEventListener('click', ev => {
+      const e = refAddrMap[ev.currentTarget.dataset.code];
+      if (!e) return;
+      if (!refEntryUsable(e)) { alert('Type an address for ' + e.code + ' first — there is nothing to confirm yet.'); return; }
+      e.confirmed = true;
+      applyRefAddresses();
+    }));
+    // "Confirm all" deliberately skips entries the parser flagged as a bad
+    // split. Sweeping those up is how a wrong street/city reaches every row
+    // using the code — those need a look, one at a time.
+    const all = $('tss-refaddr-confirm-all');
+    if (all) {
+      const pending = codes.filter(c => confirmableInBulk(refAddrMap[c]));
+      const held = codes.filter(c => refEntryUsable(refAddrMap[c]) && !refAddrMap[c].confirmed &&
+        refAddrMap[c].confidence === 'check');
+      all.style.display = pending.length ? '' : 'none';
+      all.textContent = 'Confirm the ' + pending.length + ' clean one' + (pending.length === 1 ? '' : 's');
+      all.title = held.length
+        ? held.length + ' flagged split' + (held.length === 1 ? '' : 's') + ' (' + held.join(', ') +
+          ') are left out on purpose — check each one yourself.'
+        : 'Confirm every reference address whose split parsed cleanly.';
+    }
+  }
+  function confirmableInBulk(e) {
+    return !!(e && refEntryUsable(e) && !e.confirmed && e.confidence !== 'check');
+  }
+  function applyRefAddresses() {
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+  function confirmAllRefAddresses() {
+    const pending = Object.keys(refAddrMap).filter(c => confirmableInBulk(refAddrMap[c]));
+    if (!pending.length) return;
+    pending.forEach(c => { refAddrMap[c].confirmed = true; });
+    applyRefAddresses();
   }
 
   // ─── Smart Fixes panel — dropdown per off-list value (suggestion pre-selected) ───
@@ -732,6 +1073,374 @@
     return { p1: emps.size, p2: types.size };
   }
 
+  // ─── Site Groups ───
+  // The bulk Sites template has no Site Group column, and groups can't be bulk
+  // created — PickTrace files every uploaded site under a group of its own
+  // name, so a source workbook's grower-client grouping is simply lost on
+  // import. This panel is the worklist for rebuilding it by hand: each group,
+  // the sites that belong to it, and a tick once you've done it.
+  const GROUP_ALIASES = ['site group', 'sitegroup', 'group', 'grower', 'grower client',
+    'growerclient', 'client', 'customer', 'ranch group', 'ranchgroup'];
+  const NAME_ALIASES = ['site name', 'sitename', 'name', 'site', 'sites', 'ranch', 'location name'];
+  // Whichever file the tab is running on: its own upload, else the Sites tab's.
+  // `nameAt` is the important difference — on the Sites tab it returns the FINAL
+  // name (collision renames included), which is what exists in PickTrace.
+  function groupDataset() {
+    if (groupSrcOwn) {
+      const keys = groupExistingOwn && groupExistingOwn.keys;
+      return {
+        own: true, headers: groupSrcOwn.headers, rows: groupSrcOwn.rows,
+        fileName: groupSrcOwn.fileName, sheetName: groupSrcOwn.sheetName,
+        nameAt: ri => groupNameColIdx < 0 ? ''
+          : String((groupSrcOwn.rows[ri] || [])[groupNameColIdx] == null ? ''
+            : groupSrcOwn.rows[ri][groupNameColIdx]).trim(),
+        skip: () => false,
+        isExisting: ri => {
+          if (!keys || !keys.size || groupNameColIdx < 0) return false;
+          const n = String((groupSrcOwn.rows[ri] || [])[groupNameColIdx] || '').trim();
+          return !!n && keys.has(nameKeyOf(n));
+        }
+      };
+    }
+    if (srcData && formattedRows) {
+      const nameIdx = SITE_HEADERS.indexOf('Name*');
+      const includeExisting = !!(existingData && existingData.keys && existingData.keys.size);
+      return {
+        own: false, headers: srcData.headers, rows: srcData.rows,
+        fileName: srcData.fileName, sheetName: srcData.sheetName,
+        nameAt: ri => String((formattedRows[ri] || [])[nameIdx] == null ? '' : formattedRows[ri][nameIdx]).trim(),
+        skip: ri => removedRows.has(ri) || (existingRowIdxs.has(ri) && !includeExisting),
+        isExisting: ri => existingRowIdxs.has(ri)
+      };
+    }
+    return null;
+  }
+  function detectGroupCol() {
+    const ds = groupDataset();
+    if (!ds) return -1;
+    // On the Sites tab, never pick a column that already feeds a template column.
+    const used = ds.own ? new Set()
+      : new Set(Object.keys(mapping).map(k => mapping[k]).filter(i => i >= 0));
+    let hit = -1;
+    ds.headers.forEach((h, i) => {
+      if (hit >= 0 || used.has(i)) return;
+      if (GROUP_ALIASES.indexOf(norm(h)) >= 0 || GROUP_ALIASES.indexOf(normLoose(h)) >= 0) hit = i;
+    });
+    return hit;
+  }
+  function detectNameCol() {
+    const ds = groupDataset();
+    if (!ds || !ds.own) return -1;
+    let hit = -1;
+    ds.headers.forEach((h, i) => {
+      if (hit >= 0 || i === groupColIdx) return;
+      if (NAME_ALIASES.indexOf(norm(h)) >= 0 || NAME_ALIASES.indexOf(normLoose(h)) >= 0) hit = i;
+    });
+    return hit;
+  }
+  // Which rows count toward a group. With an existing-sites export loaded we
+  // also know about the rows dropped for already being in PickTrace — those are
+  // live sites that still need assigning, so they belong on the list. Rows
+  // removed by hand are off the job and stay out either way.
+  function siteGroupScope() {
+    const ds = groupDataset();
+    if (!ds) return 'nothing loaded';
+    if (ds.own) return (groupExistingOwn && groupExistingOwn.keys.size)
+      ? 'every row in ' + ds.fileName + ', existing sites flagged'
+      : 'every row in ' + ds.fileName;
+    return (existingData && existingData.keys && existingData.keys.size)
+      ? 'exported + already in PickTrace'
+      : 'exported only';
+  }
+  function collectSiteGroups() {
+    const out = new Map(); // group → { sites:[names], created, existing }
+    const ds = groupDataset();
+    if (!ds || groupColIdx < 0) return out;
+    ds.rows.forEach((row, ri) => {
+      if (ds.skip(ri)) return;
+      const g = String(row[groupColIdx] == null ? '' : row[groupColIdx]).trim();
+      if (!g) return;
+      const e = out.get(g) || { sites: [], created: 0, existing: 0 };
+      const nm = ds.nameAt(ri);
+      if (nm) e.sites.push(nm);
+      if (ds.isExisting(ri)) e.existing++; else e.created++;
+      out.set(g, e);
+    });
+    return out;
+  }
+  function copyText(text, okMsg) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text).then(() => { if (okMsg) flashGroupNote(okMsg); }, () => {});
+  }
+  // The two group panels sit far apart on the page, so a confirmation goes to
+  // both — whichever one you're looking at shows it.
+  function flashGroupNote(msg) {
+    const els = ['tss-sitegroups-note', 'tss-groupwork-note'].map($).filter(Boolean);
+    if (!els.length) return;
+    els.forEach(el => { el.textContent = msg; el.style.display = ''; });
+    clearTimeout(flashGroupNote._t);
+    flashGroupNote._t = setTimeout(() => { els.forEach(el => { el.style.display = 'none'; }); }, 2500);
+  }
+  // Everything the Site Groups tab owns: its own summary bar, its empty state,
+  // and the two panels. Called on every Sites rebuild AND on entering the tab.
+  function renderGroupsTab() {
+    const ds = groupDataset();
+    if (!groupColPicked) groupColIdx = detectGroupCol();
+    if (ds && ds.own && !groupNameColPicked) groupNameColIdx = detectNameCol();
+    renderSiteGroups();
+    renderGroupWork();
+    renderGroupSummary();
+    renderGroupLink();
+    // Offer the Sites tab's data only when it has some and we're not already on it.
+    const useBtn = $('tssg-use-sites');
+    if (useBtn) useBtn.style.display = (groupSrcOwn && srcData && formattedRows) ? '' : 'none';
+    const has = !!ds && collectSiteGroups().size > 0;
+    const empty = $('tss-group-empty');
+    if (empty) {
+      empty.style.display = has ? 'none' : '';
+      empty.innerHTML = !ds
+        ? 'Choose a <b>source data</b> file above &mdash; or load one on the <b>Sites</b> tab and it will be read from there.'
+        : (groupColIdx < 0
+            ? 'No grower / site group column found in <code>' + escHtml(ds.fileName || 'that file') +
+              '</code>. If it has one under another name, pick it with the <b>Group column</b> selector.'
+            : (ds.own && groupNameColIdx < 0
+                ? 'Found the group column, but not a site-name column. Pick one with the <b>Site name column</b> selector.'
+                : 'No site group values found in that column.'));
+    }
+  }
+  function renderGroupSummary() {
+    const sum = $('tss-group-summary');
+    if (!sum) return;
+    const groups = collectSiteGroups();
+    if (!groups.size) { sum.style.display = 'none'; return; }
+    let siteTotal = 0, siteDone = 0;
+    groups.forEach((info, k) => { const p = groupProgress(k, info); siteTotal += p.total; siteDone += p.done; });
+    const toCreate = [...groups.keys()].filter(k => !completedGroups.has(k)).length;
+    sum.style.display = '';
+    sum.innerHTML =
+      '<div class="cmp-stat"><b>' + groups.size + '</b> site groups</div>' +
+      (toCreate ? '<div class="cmp-stat cmp-warn"><b>' + toCreate + '</b> still to create</div>'
+                : '<div class="cmp-stat"><b>all</b> groups created</div>') +
+      '<div class="cmp-stat"><b>' + siteTotal + '</b> sites to assign</div>' +
+      (siteDone < siteTotal
+        ? '<div class="cmp-stat cmp-warn"><b>' + (siteTotal - siteDone) + '</b> still to assign</div>'
+        : '<div class="cmp-stat"><b>done</b> — every site assigned</div>') +
+      '<div class="cmp-stat"><b>' + escHtml(siteGroupScope()) + '</b></div>';
+  }
+  // A short pointer on the Sites tab, so the work isn't invisible from there.
+  function renderGroupLink() {
+    const sec = $('tss-section-grouplink');
+    if (!sec) return;
+    // Only speak for the Sites tab's own data — if the Site Groups tab is
+    // running on a different file, this pointer would be describing it.
+    if (groupSrcOwn || !srcData || !formattedRows) { sec.style.display = 'none'; return; }
+    const groups = collectSiteGroups();
+    if (!groups.size) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    let siteTotal = 0, siteDone = 0;
+    groups.forEach((info, k) => { const p = groupProgress(k, info); siteTotal += p.total; siteDone += p.done; });
+    const left = [...groups.keys()].filter(k => !completedGroups.has(k)).length;
+    const t = $('tss-grouplink-title');
+    if (t) t.textContent = 'Site Groups (' + groups.size + ')';
+    const hint = sec.querySelector('.cmp-sites-hint');
+    if (hint) {
+      hint.innerHTML = 'Your source groups these sites under <b>' + groups.size + '</b> grower client' +
+        (groups.size === 1 ? '' : 's') + ', but the Sites template has no column for it &mdash; groups ' +
+        '<b>cannot be bulk created</b> and are lost on import. ' +
+        '<b>' + left + '</b> group' + (left === 1 ? '' : 's') + ' to create and <b>' + (siteTotal - siteDone) +
+        '</b> of ' + siteTotal + ' sites to assign by hand: see the <b>Site Groups</b> tab above.';
+    }
+  }
+
+  function renderSiteGroups() {
+    const sec = $('tss-section-sitegroups');
+    if (!sec) return;
+    const ds = groupDataset();
+    if (!ds) { sec.style.display = 'none'; return; }
+    const groups = collectSiteGroups();
+    // Hide only when nothing was found AND the user hasn't touched the picker —
+    // once they have, the panel must stay up or the picker becomes unreachable.
+    if (groupColIdx < 0 && !groups.size && !groupColPicked) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+
+    const entries = [...groups.entries()].sort((a, b) => b[1].sites.length - a[1].sites.length);
+    const done = entries.filter(([g]) => completedGroups.has(g)).length;
+    const t = $('tss-sitegroups-title');
+    if (t) t.textContent = 'Site Groups — create & assign in PickTrace (' +
+      (entries.length - done) + ' to do' + (done ? ' · ' + done + ' done' : '') + ')';
+
+    // Column pickers — neither column is ever exported, so they aren't in
+    // Column Mapping and get their own selectors here. The site-name picker
+    // only matters when this tab is running on its own file; on the Sites tab
+    // the name comes from the formatted rows, renames and all.
+    const opts = (sel) => '<option value="-1">— none —</option>' + ds.headers.map((h, i) =>
+      '<option value="' + i + '"' + (i === sel ? ' selected' : '') + '>' +
+      escHtml(h || '(column ' + colLetter(i) + ')') + '</option>').join('');
+    const pick = $('tss-sitegroups-col');
+    if (pick) pick.innerHTML = opts(groupColIdx);
+    const namePick = $('tss-sitegroups-namecol');
+    const nameWrap = $('tss-sitegroups-namecol-wrap');
+    if (nameWrap) nameWrap.style.display = ds.own ? '' : 'none';
+    if (namePick && ds.own) namePick.innerHTML = opts(groupNameColIdx);
+
+    const hint = sec.querySelector('.cmp-sites-hint');
+    if (hint) {
+      hint.innerHTML = 'Site groups <b>cannot be bulk created</b> — the Sites template has no column for them, so ' +
+        'PickTrace files every uploaded site under a group of its own name. Rebuild them by hand here: ' +
+        '<b>click a row</b> to copy the group name and tick it off, and <b>&#10697; sites</b> to copy that group\'s ' +
+        'site names one per line for assigning. Counting <b>' + escHtml(siteGroupScope()) + '</b>' +
+        (siteGroupScope() === 'exported only'
+          ? ' — load your existing-sites export to also count sites already in PickTrace.' : '.');
+    }
+
+    if (!entries.length) {
+      $('tss-sitegroups-table').innerHTML = '<tbody><tr><td class="text-muted">' +
+        (groupColIdx < 0
+          ? 'No group column selected — pick the one holding your grower / site group above.'
+          : 'No site group values found in that column.') + '</td></tr></tbody>';
+      return;
+    }
+    let html = '<thead><tr><th style="width:28px;" title="Group created in PickTrace"></th><th>Site group</th>' +
+      '<th>Sites</th><th>Already in PickTrace</th><th>Assigned</th><th></th><th></th></tr></thead><tbody>';
+    entries.forEach(([g, info]) => {
+      const isDone = completedGroups.has(g);
+      const mark = isDone ? '<span style="color:#15803d;font-weight:700;">&#10003;</span>'
+                          : '<span style="color:#9ca3af;">&#9744;</span>';
+      const st = isDone ? ' style="text-decoration:line-through;color:#15803d;"' : '';
+      const p = groupProgress(g, info);
+      const prog = p.done === 0
+        ? '<span class="text-muted">0 / ' + p.total + '</span>'
+        : '<span style="color:' + (p.done === p.total ? '#15803d;font-weight:600' : '#b45309') + ';">' +
+          p.done + ' / ' + p.total + (p.done === p.total ? ' &#10003;' : '') + '</span>';
+      html += '<tr class="tss-group-row" data-group="' + escHtml(g) + '" style="cursor:pointer;" ' +
+        'title="Click to copy this group name and tick it off as created">' +
+        '<td style="text-align:center;">' + mark + '</td>' +
+        '<td><b' + st + '>' + escHtml(g) + '</b></td>' +
+        '<td>' + info.sites.length + '</td>' +
+        '<td>' + (info.existing ? info.existing : '<span class="text-muted">—</span>') + '</td>' +
+        '<td>' + prog + '</td>' +
+        '<td><button class="btn btn-primary btn-sm tss-group-open" data-group="' + escHtml(g) +
+          '" title="Open this group\'s sites as a checklist">Assign sites &rarr;</button></td>' +
+        '<td><button class="btn btn-ghost btn-sm tss-group-copy" data-group="' + escHtml(g) +
+          '" title="Copy this group\'s site names, one per line">&#10697; ' + info.sites.length + '</button></td></tr>';
+    });
+    html += '</tbody>';
+    $('tss-sitegroups-table').innerHTML = html;
+
+    const tbl = $('tss-sitegroups-table');
+    tbl.querySelectorAll('.tss-group-row').forEach(tr => tr.addEventListener('click', e => {
+      if (e.target.closest('button')) return;      // the copy button handles itself
+      const g = tr.dataset.group;
+      if (completedGroups.has(g)) completedGroups.delete(g); else completedGroups.add(g);
+      copyText(g);
+      renderSiteGroups(); renderGroupSummary(); renderGroupLink(); updateSummary();
+    }));
+    tbl.querySelectorAll('.tss-group-copy').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const g = e.currentTarget.dataset.group;
+      const info = collectSiteGroups().get(g);
+      if (!info || !info.sites.length) return;
+      copyText(info.sites.join('\n'), 'Copied ' + info.sites.length + ' site name' +
+        (info.sites.length === 1 ? '' : 's') + ' for "' + g + '".');
+    }));
+    tbl.querySelectorAll('.tss-group-open').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openGroupWork(e.currentTarget.dataset.group);
+    }));
+    const copyAll = $('tss-sitegroups-copy-all');
+    if (copyAll) copyAll.onclick = () => {
+      const lines = entries.map(([g, info]) => g + '\t' + info.sites.length).join('\n');
+      copyText(lines, 'Copied ' + entries.length + ' group names with their site counts.');
+    };
+  }
+
+  // ─── Site-group assignment worklist ───
+  // Creating the group is one click; putting 261 sites into it is the actual
+  // job. This is that job as a checklist: one chip per site, ticked as you go,
+  // so you can stop halfway and still know where you were.
+  function assignedFor(group) {
+    let s = assignedSites.get(group);
+    if (!s) { s = new Set(); assignedSites.set(group, s); }
+    return s;
+  }
+  function groupProgress(group, info) {
+    const done = assignedFor(group);
+    const total = info ? info.sites.length : 0;
+    let n = 0;
+    if (info) info.sites.forEach(s => { if (done.has(s)) n++; });
+    return { done: n, total: total, pct: total ? Math.round(n / total * 100) : 0 };
+  }
+  function renderGroupWork() {
+    const sec = $('tss-section-groupwork');
+    if (!sec) return;
+    const groups = collectSiteGroups();
+    if (!groups.size) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const names = [...groups.keys()].sort((a, b) => groups.get(b).sites.length - groups.get(a).sites.length);
+    if (!groupWorkSel || !groups.has(groupWorkSel)) groupWorkSel = names[0];
+    const info = groups.get(groupWorkSel);
+    const done = assignedFor(groupWorkSel);
+    const prog = groupProgress(groupWorkSel, info);
+
+    const sel = $('tss-groupwork-sel');
+    if (sel) {
+      sel.innerHTML = names.map(n => {
+        const p = groupProgress(n, groups.get(n));
+        const label = n + '  (' + (p.total - p.done) + ' of ' + p.total + ' left)';
+        return '<option value="' + escHtml(n) + '"' + (n === groupWorkSel ? ' selected' : '') + '>' +
+          escHtml(label) + '</option>';
+      }).join('');
+    }
+    const t = $('tss-groupwork-title');
+    if (t) t.textContent = 'Assign Sites to a Site Group — ' + groupWorkSel +
+      ' (' + (prog.total - prog.done) + ' of ' + prog.total + ' still to add)';
+    const bar = $('tss-groupwork-bar');
+    if (bar) bar.style.width = prog.pct + '%';
+
+    const f = groupWorkFilter.toLowerCase();
+    const shown = info.sites.filter(s => !f || s.toLowerCase().indexOf(f) >= 0);
+    const cnt = $('tss-groupwork-count');
+    if (cnt) cnt.textContent = f
+      ? shown.length + ' of ' + info.sites.length + ' match · ' + prog.done + ' added'
+      : prog.done + ' of ' + prog.total + ' added (' + prog.pct + '%)';
+
+    const list = $('tss-groupwork-list');
+    if (list) {
+      list.innerHTML = shown.length
+        ? shown.map(s => '<button type="button" class="tss-site-chip' + (done.has(s) ? ' is-done' : '') +
+            '" data-site="' + escHtml(s) + '" title="Click to copy this name and tick it off">' +
+            escHtml(s) + '</button>').join('')
+        : '<span class="text-muted small">No sites match that filter.</span>';
+    }
+  }
+  // Toggling a chip updates it in place — re-rendering 261 chips on every click
+  // would throw away the scroll position and the filter box's focus.
+  function toggleAssigned(group, site, chipEl) {
+    const set = assignedFor(group);
+    if (set.has(site)) set.delete(site); else { set.add(site); copyText(site); }
+    if (chipEl) chipEl.classList.toggle('is-done', set.has(site));
+    const info = collectSiteGroups().get(group);
+    const prog = groupProgress(group, info);
+    const bar = $('tss-groupwork-bar');
+    if (bar) bar.style.width = prog.pct + '%';
+    const cnt = $('tss-groupwork-count');
+    if (cnt && !groupWorkFilter) cnt.textContent = prog.done + ' of ' + prog.total + ' added (' + prog.pct + '%)';
+    const t = $('tss-groupwork-title');
+    if (t) t.textContent = 'Assign Sites to a Site Group — ' + group +
+      ' (' + (prog.total - prog.done) + ' of ' + prog.total + ' still to add)';
+    renderSiteGroups(); renderGroupSummary(); renderGroupLink();
+    updateSummary();
+  }
+  function openGroupWork(group) {
+    groupWorkSel = group;
+    groupWorkFilter = '';
+    const fb = $('tss-groupwork-filter');
+    if (fb) fb.value = '';
+    renderGroupWork();
+    const sec = $('tss-section-groupwork');
+    if (sec && sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   // ─── Empty required columns ───
   function renderRequired() {
     if (!formattedRows || !tplData) return;
@@ -816,40 +1525,209 @@
   }
 
   // ─── Name collisions ───
+  // Two sites sharing a Name are usually still distinguishable in the source —
+  // a different state, a different cost code — the Sites schema just has no
+  // column to carry it. Find the source column that tells them apart and
+  // propose it as a suffix, instead of asking for 16 invented names. Rows that
+  // nothing distinguishes are real duplicates and get called that.
+  function collisionDiscriminator(rowIdxs) {
+    if (!srcData || !rowIdxs || rowIdxs.length < 2) return null;
+    const width = srcData.rows.reduce((m, r) => Math.max(m, (r || []).length), srcData.headers.length);
+    let best = null;
+    for (let ci = 0; ci < width; ci++) {
+      const vals = rowIdxs.map(ri => {
+        const r = srcData.rows[ri] || [];
+        return String(r[ci] == null ? '' : r[ci]).trim();
+      });
+      if (vals.some(v => !v)) continue;                                   // needs a value on every row
+      if (new Set(vals.map(v => v.toUpperCase())).size !== vals.length) continue; // must be distinct
+      const maxLen = Math.max.apply(null, vals.map(v => v.length));
+      if (maxLen > 20) continue;                                          // too long to be a suffix
+      if (!best || maxLen < best.maxLen) {
+        best = { colIdx: ci, header: srcData.headers[ci] || '(no header)', values: vals, maxLen };
+      }
+    }
+    return best;
+  }
+  // The row's name as the SOURCE spells it. Suggestions build on this rather
+  // than on the current cell, so applying one twice can't yield "WEST-FIELD AZ AZ".
+  function srcNameOf(ri) {
+    const nameIdx = SITE_HEADERS.indexOf('Name*');
+    const sc = mapping[nameIdx];
+    if (sc != null && sc >= 0 && srcData && srcData.rows[ri]) {
+      const v = String(srcData.rows[ri][sc] == null ? '' : srcData.rows[ri][sc]).trim();
+      if (v) return v;
+    }
+    return (formattedRows && formattedRows[ri]) ? String(formattedRows[ri][nameIdx] || '').trim() : '';
+  }
+  // Fold the live collisions into the sticky history. Called on every rebuild,
+  // so a group survives the rename that resolves half of it.
+  function recordCollisions() {
+    computeCollisions().forEach((arr, k) => {
+      const e = collisionHistory.get(k) || { base: srcNameOf(arr[0]), rows: new Set() };
+      arr.forEach(ri => e.rows.add(ri));
+      collisionHistory.set(k, e);
+    });
+  }
+  function collisionSuggestions() {
+    const out = new Map(); // nameKey → { base, rowIdxs, disc, names: Map<ri, suggestedName> }
+    const colliding = collisionRowSet();
+    collisionHistory.forEach((e, k) => {
+      if (collisionDismissed.has(k)) {
+        // A dismissed group comes back if it starts colliding again — e.g. the
+        // row that was dropped to resolve it gets restored.
+        const live = [...e.rows].some(ri => !removedRows.has(ri) && !existingRowIdxs.has(ri) && colliding.has(ri));
+        if (!live) return;
+        collisionDismissed.delete(k);
+      }
+      const rowIdxs = [...e.rows].sort((a, b) => a - b);
+      const disc = collisionDiscriminator(rowIdxs);
+      const names = new Map();
+      if (disc) rowIdxs.forEach((ri, i) => names.set(ri, (srcNameOf(ri) + ' ' + disc.values[i]).trim()));
+      out.set(k, { base: e.base, rowIdxs, disc, names });
+    });
+    return out;
+  }
+  // A group is done once none of its surviving rows still collides.
+  function collisionGroupState(rowIdxs) {
+    const colliding = collisionRowSet();
+    const live = rowIdxs.filter(ri => !removedRows.has(ri) && !existingRowIdxs.has(ri));
+    const dropped = rowIdxs.filter(ri => removedRows.has(ri));
+    return { live, dropped, unresolved: live.filter(ri => colliding.has(ri)) };
+  }
+  function applyAllCollisionSuggestions() {
+    let n = 0;
+    collisionSuggestions().forEach(g => {
+      g.names.forEach((v, ri) => { if (!removedRows.has(ri)) { nameOverrides[ri] = v; n++; } });
+    });
+    if (!n) { alert('No suggestions available — none of these collisions can be told apart by a source column.'); return; }
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+  // Drop a site from the export entirely, straight from this panel.
+  function dropCollisionRow(ri) {
+    removedRows.add(ri);
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+  function restoreCollisionRow(ri) {
+    removedRows.delete(ri);
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+
   function renderCollisions() {
     const sec = $('tss-section-collisions');
     if (!sec) return;
-    const groups = computeCollisions();
-    if (!groups.size) { sec.style.display = 'none'; $('tss-collisions-table').innerHTML = ''; return; }
+    const sugg = collisionSuggestions();
+    if (!sugg.size) { sec.style.display = 'none'; $('tss-collisions-table').innerHTML = ''; return; }
     sec.style.display = '';
     const nameIdx = SITE_HEADERS.indexOf('Name*');
     const typeIdx = SITE_HEADERS.indexOf('Site Type*');
-    let total = 0; groups.forEach(arr => total += arr.length);
+
+    let openGroups = 0, openRows = 0, suggestable = 0, identical = 0;
+    sugg.forEach(g => {
+      const st = collisionGroupState(g.rowIdxs);
+      if (st.unresolved.length) { openGroups++; openRows += st.unresolved.length; }
+      if (g.disc) { g.names.forEach((v, ri) => { if (!removedRows.has(ri) && nameOverrides[ri] !== v) suggestable++; }); }
+      else if (st.unresolved.length) identical++;
+    });
     const t = $('tss-collisions-title');
-    if (t) t.textContent = 'Name Collisions (' + groups.size + ' name' + (groups.size === 1 ? '' : 's') + ', ' + total + ' to fix)';
-    let html = '<thead><tr><th>Source</th><th>Name</th><th>Site Type</th><th>New name</th><th></th></tr></thead><tbody>';
-    [...groups.entries()].forEach(([k, arr]) => {
+    if (t) t.textContent = 'Name Collisions (' + openGroups + ' name' + (openGroups === 1 ? '' : 's') +
+      ', ' + openRows + ' to fix)' + (openGroups === 0 ? ' — all resolved' : '');
+    const hint = sec.querySelector('.cmp-sites-hint');
+    if (hint) {
+      hint.innerHTML = 'PickTrace requires unique site names &mdash; it silently drops one of each duplicate pair. ' +
+        'Each group stays listed until you are done with it, so you can rename <b>both</b> halves. ' +
+        (suggestable ? 'Where a source column tells the rows apart (a different state, a different cost code), a name is suggested. ' : '') +
+        (identical ? '<b>' + identical + '</b> group' + (identical === 1 ? ' is' : 's are') +
+          ' identical in every source column &mdash; those are true duplicates, so <b>Drop</b> one. ' : '') +
+        'Use <b>Drop</b> to remove a site from the export entirely.';
+    }
+    const btnAll = $('tss-coll-apply-all');
+    if (btnAll) {
+      btnAll.style.display = suggestable ? '' : 'none';
+      btnAll.textContent = 'Apply all ' + suggestable + ' suggestion' + (suggestable === 1 ? '' : 's');
+    }
+
+    let html = '<thead><tr><th>Source</th><th>Name now</th><th>Site Type</th><th>Told apart by</th>' +
+      '<th>New name</th><th></th><th></th></tr></thead><tbody>';
+    [...sugg.entries()].forEach(([k, g]) => {
+      const st = collisionGroupState(g.rowIdxs);
+      const done = st.unresolved.length === 0;
+      // Renaming one half makes the other unique, so the group is technically
+      // resolved while its sibling still carries the bare name. Say so rather
+      // than flashing a green "resolved" that hides work you meant to finish.
+      const pending = g.disc
+        ? g.rowIdxs.filter(ri => !removedRows.has(ri) && nameOverrides[ri] == null).length : 0;
+      const tone = done ? (pending ? '#fef3c7' : '#dcfce7') : '#fee2e2';
+      const ink  = done ? (pending ? '#7c2d12' : '#14532d') : '#7f1d1d';
+      html += '<tr><td colspan="7" style="background:' + tone + ';color:' + ink +
+        ';font-weight:600;padding:6px 10px;">' +
+        (done ? (pending ? '&#10003; ' : '&#10003; ') : '&#9888; ') + escHtml(g.base) +
+        ' — ' + g.rowIdxs.length + ' row' + (g.rowIdxs.length === 1 ? '' : 's') +
+        (st.dropped.length ? ', ' + st.dropped.length + ' dropped' : '') +
+        (done
+          ? (pending
+              ? ' — no longer colliding, but ' + pending + ' row' + (pending === 1 ? '' : 's') +
+                ' still ' + (pending === 1 ? 'has' : 'have') + ' an unapplied suggestion'
+              : ' — resolved')
+          : ', ' + st.unresolved.length + ' still colliding') +
+        (done ? '<button class="btn btn-ghost btn-sm tss-coll-dismiss" data-k="' + escHtml(k) +
+          '" style="margin-left:10px;">Dismiss</button>' : '') +
+        '</td></tr>';
       if (existingTakenKeys.has(k)) {
-        const r0 = formattedRows[arr[0]];
         html += '<tr style="background:var(--bg-sunken,#f3f4f6);color:#6b7280;"><td><b>In PickTrace</b></td>' +
-          '<td><b>' + escHtml(r0[nameIdx]) + '</b></td><td></td><td colspan="2"><i>already exists — name is taken</i></td></tr>';
+          '<td><b>' + escHtml(g.base) + '</b></td><td></td><td colspan="4"><i>already exists — this name is taken</i></td></tr>';
       }
-      arr.forEach(ri => {
+      g.rowIdxs.forEach((ri, i) => {
         const r = formattedRows[ri];
-        html += '<tr><td>New</td><td><b style="color:#dc2626;">' + escHtml(r[nameIdx]) + '</b></td>' +
+        if (!r) return;
+        const isDropped = removedRows.has(ri);
+        const renamed = nameOverrides[ri] != null;
+        const suggested = g.names.get(ri) || '';
+        const stillColliding = st.unresolved.indexOf(ri) >= 0;
+        if (isDropped) {
+          html += '<tr style="color:#9ca3af;"><td>Dropped</td>' +
+            '<td><s>' + escHtml(srcNameOf(ri)) + '</s></td><td colspan="4"><i>removed from the export</i></td>' +
+            '<td><button class="btn btn-ghost btn-sm tss-coll-restore" data-ri="' + ri + '">Restore</button></td></tr>';
+          return;
+        }
+        const by = g.disc
+          ? escHtml(g.disc.header) + ' = <b>' + escHtml(g.disc.values[i]) + '</b>'
+          : '<span style="color:#b45309;">nothing — identical rows</span>';
+        const nameCell = stillColliding
+          ? '<b style="color:#dc2626;">' + escHtml(r[nameIdx]) + '</b>'
+          : '<span style="color:#15803d;">' + escHtml(r[nameIdx]) + (renamed ? ' &#10003;' : '') + '</span>';
+        // Once a row has been renamed its box starts empty — re-offering the
+        // suggestion would invite appending the suffix a second time.
+        const boxVal = renamed ? '' : suggested;
+        html += '<tr><td>New</td><td>' + nameCell + '</td>' +
           '<td>' + escHtml(r[typeIdx] || '') + '</td>' +
-          '<td><input type="text" class="tss-coll-name input-field" data-ri="' + ri + '" placeholder="' + escHtml(r[nameIdx]) + '" style="width:160px;"></td>' +
-          '<td><button class="btn btn-primary btn-sm tss-coll-apply" data-ri="' + ri + '">Rename</button></td></tr>';
+          '<td class="small">' + by + '</td>' +
+          '<td><input type="text" class="tss-coll-name input-field" data-ri="' + ri + '" placeholder="' +
+            escHtml(r[nameIdx]) + '" value="' + escHtml(boxVal) + '" style="width:180px;"></td>' +
+          '<td><button class="btn ' + (boxVal ? 'btn-primary' : 'btn-ghost') + ' btn-sm tss-coll-apply" data-ri="' + ri +
+            '">' + (renamed ? 'Rename again' : 'Rename') + '</button></td>' +
+          '<td><button class="btn btn-ghost btn-sm tss-coll-drop" data-ri="' + ri +
+            '" title="Remove this site from the export entirely">Drop</button></td></tr>';
       });
     });
     html += '</tbody>';
     $('tss-collisions-table').innerHTML = html;
-    $('tss-collisions-table').querySelectorAll('.tss-coll-apply').forEach(btn => btn.addEventListener('click', e => {
-      const tr = e.target.closest('tr'), ri = +e.target.dataset.ri;
+    const tbl = $('tss-collisions-table');
+    tbl.querySelectorAll('.tss-coll-apply').forEach(btn => btn.addEventListener('click', e => {
+      const ri = +e.currentTarget.dataset.ri;
+      const tr = e.currentTarget.closest('tr');
       const val = tr.querySelector('.tss-coll-name').value.trim();
       if (!val) { alert('Type a new name first.'); return; }
       nameOverrides[ri] = val;
       rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+    }));
+    tbl.querySelectorAll('.tss-coll-drop').forEach(btn => btn.addEventListener('click', e =>
+      dropCollisionRow(+e.currentTarget.dataset.ri)));
+    tbl.querySelectorAll('.tss-coll-restore').forEach(btn => btn.addEventListener('click', e =>
+      restoreCollisionRow(+e.currentTarget.dataset.ri)));
+    tbl.querySelectorAll('.tss-coll-dismiss').forEach(btn => btn.addEventListener('click', e => {
+      collisionDismissed.add(e.currentTarget.dataset.k);
+      renderCollisions();
     }));
   }
 
@@ -863,16 +1741,32 @@
     const visibleCount = formattedRows ? formattedRows.filter((_, i) => !excluded(i)).length : 0;
     const totalCount = formattedRows ? formattedRows.length : 0;
     let collisionRows = 0; computeCollisions().forEach(arr => collisionRows += arr.length);
+    const refPend = refAddrOutstanding();
+    let refPendRows = 0; refPend.forEach(c => refPendRows += (xrefCodeCounts.get(c) || 0));
     const sum = $('tss-summary');
     sum.style.display = '';
     sum.innerHTML =
       '<div class="cmp-stat"><b>' + visibleCount + '</b> sites' + (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + totalCount + ')</span>' : '') + '</div>' +
+      (refPendRows ? '<div class="cmp-stat cmp-warn"><b>' + refPendRows + '</b> rows on an unconfirmed reference address</div>' : '') +
       (existingRowIdxs.size ? '<div class="cmp-stat cmp-warn"><b>' + existingRowIdxs.size + '</b> already in PickTrace (dropped)</div>' : '') +
       (collisionRows ? '<div class="cmp-stat cmp-warn"><b>' + collisionRows + '</b> name collision rows</div>' : '') +
       '<div class="cmp-stat"><b>' + SITE_HEADERS.length + '</b> template columns</div>' +
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
       (tc.p1 ? '<div class="cmp-stat cmp-warn"><b>' + tc.p1 + '</b> employers to reconcile</div>' : '') +
-      (tc.p2 ? '<div class="cmp-stat cmp-warn"><b>' + tc.p2 + '</b> site types to reconcile</div>' : '');
+      (tc.p2 ? '<div class="cmp-stat cmp-warn"><b>' + tc.p2 + '</b> site types to reconcile</div>' : '') +
+      (function () {
+        const g = collectSiteGroups();
+        if (!g.size) return '';
+        const left = [...g.keys()].filter(k => !completedGroups.has(k)).length;
+        let siteTotal = 0, siteDone = 0;
+        g.forEach((info, k) => { const p = groupProgress(k, info); siteTotal += p.total; siteDone += p.done; });
+        return (left
+          ? '<div class="cmp-stat cmp-warn"><b>' + left + '</b> site group' + (left === 1 ? '' : 's') + ' to create by hand</div>'
+          : '<div class="cmp-stat"><b>' + g.size + '</b> site groups created</div>') +
+          (siteDone < siteTotal
+            ? '<div class="cmp-stat cmp-warn"><b>' + (siteTotal - siteDone) + '</b> of ' + siteTotal + ' sites still to assign</div>'
+            : '<div class="cmp-stat"><b>' + siteTotal + '</b> sites assigned to groups</div>');
+      })();
   }
 
   function getExportBlockers() {
@@ -892,19 +1786,42 @@
     let nameCollisions = 0; const collisionSamples = [];
     const nameIdx = SITE_HEADERS.indexOf('Name*');
     collisionGroups.forEach(arr => { nameCollisions += arr.length; collisionSamples.push(String(formattedRows[arr[0]][nameIdx] || '') + ' (×' + arr.length + ')'); });
-    return { emptyReq, unknownByCol, nameCollisions, collisionSamples };
+    // Reference addresses still awaiting a look, and how many rows ride on each.
+    const refPendingCodes = refAddrOutstanding().map(code => ({
+      code,
+      rows: xrefCodeCounts.get(code) || 0,
+      reason: refEntryUsable(refAddrMap[code]) ? 'street/city split unverified' : 'no address found',
+      address1: refAddrMap[code].address1 || '',
+      city: refAddrMap[code].city || ''
+    })).filter(x => x.rows > 0);
+    // Flagged splits that were confirmed without anyone editing them.
+    const refUnfixedCodes = refAddrConfirmedUnfixed().map(code => ({
+      code,
+      rows: xrefCodeCounts.get(code) || 0,
+      address1: refAddrMap[code].address1 || '',
+      city: refAddrMap[code].city || '',
+      raw: refAddrMap[code].raw || ''
+    })).filter(x => x.rows > 0);
+    return { emptyReq, unknownByCol, nameCollisions, collisionSamples, refPendingCodes, refUnfixedCodes };
   }
-  function hasBlockers(b) { return b && (b.emptyReq > 0 || b.unknownByCol.length || b.nameCollisions > 0); }
+  function hasBlockers(b) {
+    return b && (b.emptyReq > 0 || b.unknownByCol.length || b.nameCollisions > 0 ||
+      (b.refPendingCodes && b.refPendingCodes.length > 0) ||
+      (b.refUnfixedCodes && b.refUnfixedCodes.length > 0));
+  }
 
   function updateExportButton() {
     const btn = $('tss-export');
     btn.disabled = !(srcData && tplData && formattedRows && formattedRows.length);
+    if (window.IMDebug) IMDebug.refresh('sites-standardize');
     const b = getExportBlockers();
     if (!b) { btn.title = ''; return; }
     const reasons = [];
     if (b.emptyReq > 0) reasons.push(b.emptyReq + ' empty required cells');
     b.unknownByCol.forEach(c => reasons.push(c.values.length + ' ' + c.header.replace(/\*$/, '') + ' value(s) not in dropdown'));
     if (b.nameCollisions > 0) reasons.push(b.nameCollisions + ' duplicate site names');
+    (b.refPendingCodes || []).forEach(r => reasons.push('reference address for ' + r.code + ' unconfirmed (' + r.rows + ' rows)'));
+    (b.refUnfixedCodes || []).forEach(r => reasons.push(r.code + ' address split flagged but never edited (' + r.rows + ' rows)'));
     btn.title = reasons.length ? 'Click to review before exporting: ' + reasons.join(', ') + '.' : 'Ready to export.';
   }
 
@@ -917,6 +1834,25 @@
       overlay.className = 'cmp-export-modal';
       overlay.style.display = 'flex';
       const sections = [];
+      (b.refUnfixedCodes || []).forEach(r => {
+        sections.push('<div class="ts-confirm-issue"><div class="ts-confirm-issue-head">⚠ The "' + escHtml(r.code) +
+          '" address split was flagged, confirmed, and never edited — ' + r.rows + ' row' + (r.rows === 1 ? '' : 's') +
+          ' use it</div><ul class="ts-confirm-list"><li>From: <b>' + escHtml(r.raw) + '</b></li>' +
+          '<li>Address1: <b>' + escHtml(r.address1 || '(empty)') + '</b></li>' +
+          '<li>City: <b>' + escHtml(r.city || '(empty)') + '</b></li></ul>' +
+          '<div class="ts-confirm-issue-body">The parser could not tell where the street ended. If that City looks wrong, ' +
+          'fix it in <b>Reference Addresses</b> — it is wrong on all ' + r.rows + ' rows.</div></div>');
+      });
+      (b.refPendingCodes || []).forEach(r => {
+        const split = r.address1 || r.city
+          ? '<ul class="ts-confirm-list"><li>Address1: <b>' + escHtml(r.address1 || '(empty)') + '</b></li><li>City: <b>' + escHtml(r.city || '(empty)') + '</b></li></ul>'
+          : '';
+        sections.push('<div class="ts-confirm-issue"><div class="ts-confirm-issue-head">⚠ Reference address for "' + escHtml(r.code) +
+          '" is unconfirmed — ' + r.rows + ' row' + (r.rows === 1 ? '' : 's') + ' use it</div>' + split +
+          '<div class="ts-confirm-issue-body">' + escHtml(r.reason.charAt(0).toUpperCase() + r.reason.slice(1)) +
+          '. Every one of these rows exports the same address, so a wrong split is wrong ' + r.rows +
+          ' times. Check it in the <b>Reference Addresses</b> panel.</div></div>');
+      });
       if (b.emptyReq > 0) sections.push('<div class="ts-confirm-issue"><div class="ts-confirm-issue-head">⚠ ' + b.emptyReq + ' empty required cells</div><div class="ts-confirm-issue-body">PickTrace will reject sites missing values for required (*) columns. Fill them via the Empty Required Columns panel.</div></div>');
       b.unknownByCol.forEach(c => {
         const sample = c.values.slice(0, 8).map(v => '<li>' + escHtml(v) + '</li>').join('');
@@ -941,42 +1877,46 @@
   }
 
   // ─── Export ───
-  function doExport() {
-    if (!formattedRows || !tplData) return;
+  // The filled file is the TEMPLATE with a new <sheetData>, patched at the zip
+  // level (see xlsx-template-writer.js). Round-tripping through SheetJS instead
+  // rewrites every part from its own model: the dropdowns disappear and string
+  // cells come out as t="str" — which OOXML defines as a cached formula result,
+  // not literal text. PickTrace reads those back as nothing and rejects the
+  // file with "unexpected column header", even though the grid is correct.
+  function exportRowsForFile() {
     // Canonicalize dropdown-backed columns to the template's exact casing.
     const caseMaps = SITE_HEADERS.map(h => buildCaseMap(tplData.dropdowns.get(norm(h).replace(/\*$/, ''))));
-    const exportRows = formattedRows.filter((_, ri) => !excluded(ri)).map(row => {
+    return formattedRows.filter((_, ri) => !excluded(ri)).map(row => {
       const r = row.slice();
-      caseMaps.forEach((m, i) => { if (m.size && r[i]) { const k = String(r[i]).toUpperCase().trim(); if (m.has(k)) r[i] = m.get(k); } });
-      return r;
+      caseMaps.forEach((m, i) => {
+        if (m.size && r[i]) { const k = String(r[i]).toUpperCase().trim(); if (m.has(k)) r[i] = m.get(k); }
+      });
+      // Everything is written as text, so Zip keeps any leading zero (07094).
+      return r.map(v => (v == null ? '' : String(v)));
     });
-    const wb = XLSX.read(new Uint8Array(tplData.rawBuffer), { type: 'array', cellStyles: true, cellDates: true, sheetStubs: true });
-    const dataName = wb.SheetNames.find(n => /data.?entry/i.test(n)) || wb.SheetNames[0];
-    const ws = wb.Sheets[dataName];
-    if (!ws) { alert('Template missing DATA ENTRY sheet — cannot export.'); return; }
-    const range = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: SITE_HEADERS.length - 1 } };
-    for (let r = 1; r <= range.e.r; r++) {
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const ref = XLSX.utils.encode_cell({ r, c });
-        if (ws[ref]) delete ws[ref];
-      }
-    }
-    const colCount = Math.max(range.e.c + 1, SITE_HEADERS.length);
-    exportRows.forEach((row, ri) => {
-      for (let c = 0; c < colCount; c++) {
-        const val = row[c];
-        if (val == null || val === '') continue;
-        const ref = XLSX.utils.encode_cell({ r: ri + 1, c });
-        // Keep Zip as text so leading zeros survive (e.g. 07094).
-        ws[ref] = { v: String(val), t: 's' };
-      }
-    });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, exportRows.length), c: colCount - 1 } });
+  }
+  function exportFileName() {
     const origName = (tplData.fileName || 'sites-template.xlsx').trim();
     const dotIdx = origName.lastIndexOf('.');
     const base = dotIdx > 0 ? origName.substring(0, dotIdx) : origName;
     const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
-    XLSX.writeFile(wb, base + ' — filled' + ext, { cellStyles: true });
+    return base + ' — filled' + ext;
+  }
+  function doExport() {
+    if (!formattedRows || !tplData) return;
+    if (!window.IMXlsxTemplate) {
+      alert('The template writer (xlsx-template-writer.js) did not load — cannot export a valid file.');
+      return;
+    }
+    const rows = exportRowsForFile();
+    IMXlsxTemplate.write({
+      rawBuffer: tplData.rawBuffer,
+      headers: SITE_HEADERS,
+      rows: rows,
+      fileName: exportFileName()
+    }).catch(err => {
+      alert('Could not write the filled template: ' + (err && err.message ? err.message : err));
+    });
   }
 
   // ─── File load handlers ───
@@ -984,7 +1924,10 @@
     if (!srcData || !tplData) { alert('Upload source data + a personalized Sites template first.'); return; }
     mapping = autoMap(SITE_HEADERS, srcData.headers);
     manualFills = {}; removedRows = new Set(); cellOverrides = {}; nameOverrides = {};
-    smartFixMap = {}; previewIssuesOnly = false;
+    smartFixMap = {}; previewIssuesOnly = false; refAddrMap = {};
+    collisionHistory = new Map(); collisionDismissed = new Set();
+    if (!groupSrcOwn) resetGroupWork();
+    scanReferenceAddresses();
     rebuildFormattedRows();
     renderMapping(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
     $('tss-empty').style.display = 'none';
@@ -1035,21 +1978,298 @@
       if (srcData && tplData) { rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary(); }
     }).catch(err => { if (err && err.message === 'cancelled') return; alert('Failed to read existing-sites file: ' + (err && err.message ? err.message : err)); });
   }
+  // ─── Site Groups tab: its own file handling ───
+  function resetGroupWork() {
+    completedGroups = new Set(); assignedSites = new Map();
+    groupWorkSel = ''; groupWorkFilter = '';
+    groupColPicked = false; groupColIdx = -1;
+    groupNameColPicked = false; groupNameColIdx = -1;
+    const fb = $('tss-groupwork-filter'); if (fb) fb.value = '';
+  }
+  function handleGroupSrcFile(file) {
+    readSrcFile(file).then(data => {
+      groupSrcOwn = data;
+      resetGroupWork();
+      $('tssg-src-name').textContent = file.name + ' [' + data.sheetName + ']';
+      $('tssg-src-meta').textContent = data.rows.length + ' rows · ' + data.headers.length + ' columns';
+      renderGroupsTab();
+    }).catch(err => {
+      if (err && err.message === 'cancelled') return;
+      alert('Failed to read that file: ' + (err && err.message ? err.message : err));
+    });
+  }
+  function handleGroupExistingFile(file) {
+    readSrcFile(file).then(data => {
+      const nameI = data.headers.findIndex(h => {
+        const k = norm(h).replace(/\*$/, '');
+        return k === 'name' || k === 'site name' || k === 'site' || k === 'sites';
+      });
+      if (nameI < 0) { alert('That file needs a Name (or Site) column.'); return; }
+      const keys = new Set();
+      data.rows.forEach(r => {
+        const n = String(r[nameI] == null ? '' : r[nameI]).trim();
+        if (n) keys.add(nameKeyOf(n));
+      });
+      groupExistingOwn = { keys, fileName: file.name, count: keys.size };
+      $('tssg-existing-name').textContent = file.name + ' [' + data.sheetName + ']';
+      $('tssg-existing-meta').textContent = keys.size + ' existing site' + (keys.size === 1 ? '' : 's') + ' indexed';
+      renderGroupsTab();
+    }).catch(err => {
+      if (err && err.message === 'cancelled') return;
+      alert('Failed to read that file: ' + (err && err.message ? err.message : err));
+    });
+  }
+  function resetGroupTab() {
+    groupSrcOwn = null; groupExistingOwn = null;
+    resetGroupWork();
+    $('tssg-src-name').textContent = 'No file selected';
+    $('tssg-src-meta').textContent = '';
+    $('tssg-existing-name').textContent = 'No file selected';
+    $('tssg-existing-meta').textContent = 'Marks which sites are already in PickTrace.';
+    ['tssg-src-file', 'tssg-existing-file'].forEach(id => { const el = $(id); if (el) el.value = ''; });
+    renderGroupsTab();
+  }
+
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
     manualFills = {}; removedRows = new Set(); existingData = null; existingRowIdxs = new Set();
     nameOverrides = {}; cellOverrides = {}; smartFixMap = {}; previewIssuesOnly = false; guessedCityRows = new Set(); collisionKeys = new Set(); existingTakenKeys = new Set();
+    refAddrMap = {}; refAddrExtras = []; xrefCodeCounts = new Map(); xrefRows = new Map(); provMarks = {};
+    collisionHistory = new Map(); collisionDismissed = new Set();
+    // The Site Groups tab keeps its own Reset. Only clear its progress when it
+    // is riding on this tab's data — not when it has a file of its own.
+    if (!groupSrcOwn) resetGroupWork();
     $('tss-src-name').textContent = 'No file selected';
     $('tss-tpl-name').textContent = 'No file selected';
     $('tss-src-meta').textContent = ''; $('tss-tpl-meta').textContent = '';
     { const en = $('tss-existing-name'); if (en) en.textContent = 'No file selected'; }
     { const em = $('tss-existing-meta'); if (em) em.textContent = ''; }
     ['tss-src-file', 'tss-tpl-file', 'tss-existing-file'].forEach(id => { const el = $(id); if (el) el.value = ''; });
-    ['tss-section-mapping', 'tss-section-smartfix', 'tss-section-emp-create', 'tss-section-type-create', 'tss-section-required', 'tss-section-existing', 'tss-section-collisions', 'tss-section-preview']
+    ['tss-section-mapping', 'tss-section-refaddr', 'tss-section-smartfix', 'tss-section-emp-create',
+     'tss-section-type-create', 'tss-section-grouplink', 'tss-section-required', 'tss-section-existing',
+     'tss-section-collisions', 'tss-section-preview',
+     'tss-section-sitegroups', 'tss-section-groupwork', 'tss-group-summary']
       .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
+    { const ge = $('tss-group-empty'); if (ge) { ge.style.display = ''; ge.innerHTML =
+        'Load your source file on the <b>Sites</b> tab first &mdash; site groups are read from it.'; } }
     $('tss-summary').style.display = 'none';
     $('tss-empty').style.display = '';
+    { const rx = $('tss-refaddr-extra'); if (rx) { rx.style.display = 'none'; rx.innerHTML = ''; } }
     $('tss-run').disabled = true; $('tss-export').disabled = true;
+    if (window.IMDebug) IMDebug.refresh('sites-standardize');
+  }
+
+  // ─── Debug dump ───
+  // Everything that went in, every decision the module made on the way to the
+  // export grid, and every item it surfaced for you — resolved or not.
+  function collectDebug() {
+    if (!srcData || !tplData || !formattedRows) return null;
+    const a1 = SITE_HEADERS.indexOf('Address1*');
+    const nameIdx = SITE_HEADERS.indexOf('Name*');
+    const b = getExportBlockers() || {};
+    const keptIdxs = formattedRows.map((_, i) => i).filter(i => !excluded(i));
+    const keptRows = keptIdxs.map(i => formattedRows[i]);
+
+    // How autoMap landed on each source column, re-derived for readability.
+    const cols = SITE_HEADERS.map((h, i) => {
+      const si = mapping[i] != null ? mapping[i] : -1;
+      const hdr = si >= 0 ? norm(srcData.headers[si] || '') : '';
+      const bn = norm(h), bnPlain = bn.replace(/\*$/, '').trim();
+      let match = 'unmapped';
+      if (si >= 0) {
+        if (hdr === bn || hdr === bnPlain) match = 'exact header';
+        else if ((SITE_ALIASES[bn] || SITE_ALIASES[bnPlain] || []).some(a => norm(a) === hdr)) match = 'alias';
+        else if (normLoose(srcData.headers[si] || '') === normLoose(h.replace(/\*$/, ''))) match = 'loose header';
+        else match = 'substring fallback';
+      }
+      let note = null;
+      if (si < 0 && ['City*', 'State*', 'Zip*', 'Country*'].indexOf(h) >= 0) {
+        note = 'No source column. Filled by the address parser or the reference-address cross-reference.';
+      }
+      return { index: i, header: h, required: /\*$/.test(h), srcIndex: si, match, note,
+        sample: si >= 0 && srcData.rows[0] ? srcData.rows[0][si] : null };
+    });
+
+    const refTable = Object.keys(refAddrMap).sort().map(code => {
+      const e = refAddrMap[code];
+      return {
+        code, rowsUsingCode: xrefCodeCounts.get(code) || 0,
+        foundAt: e.origin ? ((e.origin.sheet ? e.origin.sheet + '!' : '') + e.origin.cell) : null,
+        foundInColumn: e.origin ? e.origin.column : null,
+        raw: e.raw || null,
+        split: { address1: e.address1, city: e.city, state: e.state, zip: e.zip, country: e.country },
+        splitConfidence: e.confidence,
+        confirmedByUser: !!e.confirmed,
+        editedByUser: !!e.edited,
+        confirmedWithoutFixing: refConfirmedUnfixed(e),
+        usable: refEntryUsable(e),
+        outstanding: refNeedsAttention(e)
+      };
+    });
+
+    const asked = [];
+    if (refTable.length) {
+      const unfixed = refAddrConfirmedUnfixed();
+      asked.push(IMDebug.ask('reference-addresses', 'xref',
+        'Reference addresses to confirm (Address column holds state codes, not addresses)', {
+          count: refAddrOutstanding().length + unfixed.length,
+          blocksExport: false,
+          detail: refTable.length + ' state code(s) in use; each confirmed entry fills Address1/City/State/Zip/Country on every row carrying that code.' +
+            (unfixed.length ? ' ' + unfixed.length + ' flagged split(s) (' + unfixed.join(', ') +
+              ') were confirmed without being edited — see confirmedWithoutFixing.' : ''),
+          items: refTable
+        }));
+    }
+    const emptyReqCols = SITE_HEADERS.map((h, i) => {
+      if (!/\*$/.test(h)) return null;
+      let n = 0; keptIdxs.forEach(ri => { if (!formattedRows[ri][i]) n++; });
+      return n ? { column: h, emptyRows: n } : null;
+    }).filter(Boolean);
+    asked.push(IMDebug.ask('empty-required', 'required', 'Required columns with empty cells', {
+      count: emptyReqCols.length, blocksExport: true,
+      detail: (b.emptyReq || 0) + ' empty required cells across ' + keptIdxs.length + ' exported rows.',
+      items: emptyReqCols
+    }));
+    asked.push(IMDebug.ask('off-list-values', 'dropdown', 'Values not present in a template dropdown', {
+      count: (b.unknownByCol || []).length, blocksExport: true,
+      detail: 'Each of these must be created in PickTrace, or respelled to match the template.',
+      items: (b.unknownByCol || []).map(c => ({ column: c.header, values: c.values }))
+    }));
+    const collGroups = [];
+    collisionSuggestions().forEach((g, k) => {
+      collGroups.push({
+        name: formattedRows[g.rowIdxs[0]] ? formattedRows[g.rowIdxs[0]][nameIdx] : k,
+        rowIndexes: g.rowIdxs,
+        toldApartBy: g.disc ? { sourceColumn: g.disc.header, sourceColumnIndex: g.disc.colIdx, values: g.disc.values } : null,
+        suggestedNames: g.disc ? g.rowIdxs.map(ri => g.names.get(ri)) : null,
+        verdict: g.disc ? 'distinguishable — rename with the suggested suffix'
+                        : 'identical in every source column — a true duplicate, drop one'
+      });
+    });
+    asked.push(IMDebug.ask('name-collisions', 'collision', 'Sites sharing a Name', {
+      count: b.nameCollisions || 0, blocksExport: true,
+      detail: 'PickTrace silently drops one of each duplicate pair. ' +
+        collGroups.filter(g => g.toldApartBy).length + ' of ' + collGroups.length +
+        ' group(s) can be told apart by a source column and have a suggested rename.',
+      items: collGroups
+    }));
+    const sfPending = computeSmartFixes();
+    asked.push(IMDebug.ask('smart-fixes', 'smartfix', 'Off-list values awaiting a Smart Fix choice', {
+      count: sfPending.length, blocksExport: false,
+      items: sfPending.map(f => ({ column: f.header, value: f.from, rows: f.count, suggestion: f.suggestion || null }))
+    }));
+    const groups = collectSiteGroups();
+    if (groups.size) {
+      const pending = [...groups.keys()].filter(g => !completedGroups.has(g));
+      asked.push(IMDebug.ask('site-groups', 'data', 'Site groups to create and assign by hand in PickTrace', {
+        count: pending.length, blocksExport: false,
+        detail: 'The Sites template has no Site Group column and groups cannot be bulk created — PickTrace files ' +
+          'every uploaded site under a group of its own name, so this grouping is lost on import. Counting ' +
+          siteGroupScope() + '.',
+        items: [...groups.entries()]
+          .sort((a, b) => b[1].sites.length - a[1].sites.length)
+          .map(([g, info]) => {
+            const p = groupProgress(g, info);
+            const set = assignedFor(g);
+            return { group: g, sites: info.sites.length, newSites: info.created,
+              alreadyInPickTrace: info.existing,
+              groupCreated: completedGroups.has(g),
+              sitesAssigned: p.done, sitesStillToAssign: p.total - p.done,
+              stillToAssign: info.sites.filter(s => !set.has(s)).slice(0, 500),
+              siteNames: info.sites.slice(0, 500) };
+          })
+      }));
+    }
+
+    const fills = Object.keys(manualFills).map(i => ({
+      column: SITE_HEADERS[+i], value: manualFills[i], scope: 'all exported rows',
+      kind: 'column fill'
+    })).concat(Object.keys(smartFixMap).map(k => {
+      const sep = k.indexOf('||');
+      return { column: SITE_HEADERS[+k.slice(0, sep)], from: k.slice(sep + 2), value: smartFixMap[k], kind: 'smart fix' };
+    }));
+
+    const prov = IMDebug.deriveProvenance({
+      headers: SITE_HEADERS, rows: formattedRows, srcRows: srcData.rows,
+      colToSrc: mapping, fills: manualFills, cellEdits: cellOverrides,
+      nameEdits: nameOverrides, smartFixes: smartFixMap, marks: provMarks, nameCol: nameIdx
+    });
+    const out = IMDebug.output(SITE_HEADERS, keptRows, {
+      note: 'Rows in export order. Dropdown-backed columns are re-cased to the template\'s exact spelling on export. ' +
+        'exportedRowIndexes[n] is the formattedRows index behind exported row n — the same key used by provenance.codes, ' +
+        'edits, and dropped.',
+      exportFileName: (tplData.fileName || 'sites-template.xlsx').replace(/(\.[^.]+)$/, ' — filled$1')
+    });
+    out.exportedRowIndexes = keptIdxs;
+
+    return {
+      inputs: [
+        IMDebug.file('source data (implementation workbook / export)', srcData, {
+          stateCodesInAddressColumn: [...xrefCodeCounts.entries()].map(([c, n]) => ({ code: c, rows: n })),
+          addressSourceColumn: mapping[a1] != null && mapping[a1] >= 0
+            ? { index: mapping[a1], name: srcData.headers[mapping[a1]] } : null
+        }),
+        IMDebug.file('personalized bulk Sites template', tplData, {
+          dropdowns: tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [],
+          sheetNames: tplData.sheetNames || null
+        }),
+        IMDebug.file('existing sites in PickTrace', existingData, {
+          indexedNames: existingData ? existingData.count : null,
+          note: 'Used to drop rows whose Name already exists and to flag taken names.'
+        })
+      ],
+      mapping: IMDebug.mapping(cols, srcData.headers, {
+        srcRows: srcData.rows,
+        note: 'Columns with no source are filled by the address parser, the reference-address cross-reference, or a manual fill. ' +
+              'sourceColumnsNotUsed includes unheadered columns that carry data — that is where reference addresses hide.'
+      }),
+      derived: [
+        { kind: 'reference-address cross-reference',
+          note: 'Address cells holding only a state code were replaced with that state\'s reference address.',
+          rowsFilled: [...xrefRows.keys()].filter(ri => !excluded(ri)).length,
+          table: refTable,
+          alsoFoundButUnused: refAddrExtras.map(x => ({ code: x.code, raw: x.raw, foundAt: (x.origin.sheet ? x.origin.sheet + '!' : '') + x.origin.cell })) },
+        { kind: 'site groups (not exported)',
+          note: 'Read from a source column that has no destination in the Sites template. Listed for manual ' +
+            'creation + assignment in PickTrace; never written to the file.',
+          sourceColumn: groupColIdx >= 0 ? { index: groupColIdx, name: srcData.headers[groupColIdx] || '(no header)' } : null,
+          columnChosenByUser: groupColPicked,
+          scope: siteGroupScope(),
+          groupCount: collectSiteGroups().size,
+          markedDone: [...completedGroups] },
+        { kind: 'combined-address parse',
+          note: 'Rows whose Address cell held a full address were split into Address1/City/State/Zip/Country.',
+          rowsWithGuessedCity: [...guessedCityRows].filter(ri => !excluded(ri)).length,
+          guessedCitySamples: [...guessedCityRows].filter(ri => !excluded(ri)).slice(0, 20)
+            .map(ri => ({ rowIndex: ri, name: formattedRows[ri][nameIdx],
+              address1: formattedRows[ri][a1], city: formattedRows[ri][SITE_HEADERS.indexOf('City*')] })) }
+      ],
+      fills: fills,
+      edits: {
+        cells: Object.keys(cellOverrides).map(k => {
+          const sep = k.indexOf('|');
+          const ri = +k.slice(0, sep), ci = +k.slice(sep + 1);
+          const si = mapping[ci];
+          return { rowIndex: ri, column: SITE_HEADERS[ci], value: cellOverrides[k],
+            sourceValue: (si != null && si >= 0 && srcData.rows[ri]) ? srcData.rows[ri][si] : null };
+        }),
+        names: Object.keys(nameOverrides).map(ri => ({
+          rowIndex: +ri, value: nameOverrides[ri],
+          sourceValue: (mapping[nameIdx] >= 0 && srcData.rows[+ri]) ? srcData.rows[+ri][mapping[nameIdx]] : null
+        }))
+      },
+      dropped: {
+        removedByHand: { count: removedRows.size, rowIndexes: [...removedRows].slice(0, 500) },
+        alreadyInPickTrace: {
+          count: existingRowIdxs.size,
+          source: existingData ? existingData.fileName : null,
+          names: [...existingRowIdxs].slice(0, 500).map(ri => formattedRows[ri][nameIdx])
+        }
+      },
+      asked: asked,
+      output: out,
+      provenance: prov
+    };
   }
 
   // ─── Init + domain toggle ───
@@ -1068,10 +2288,82 @@
     });
     $('tss-reset').addEventListener('click', reset);
     { const sfa = $('tss-smartfix-apply-all'); if (sfa) sfa.addEventListener('click', applyAllSmartFixes); }
+    { const rc = $('tss-refaddr-confirm-all'); if (rc) rc.addEventListener('click', confirmAllRefAddresses); }
+    { const ca = $('tss-coll-apply-all'); if (ca) ca.addEventListener('click', applyAllCollisionSuggestions); }
+    { const gc = $('tss-sitegroups-col'); if (gc) gc.addEventListener('change', e => {
+        groupColIdx = +e.target.value;
+        groupColPicked = true;
+        // A different column means a different set of groups — the old
+        // checklist no longer refers to anything.
+        completedGroups = new Set(); assignedSites = new Map(); groupWorkSel = '';
+        renderGroupsTab(); updateSummary();
+      }); }
+    { const nc = $('tss-sitegroups-namecol'); if (nc) nc.addEventListener('change', e => {
+        groupNameColIdx = +e.target.value;
+        groupNameColPicked = true;
+        assignedSites = new Map(); groupWorkSel = '';
+        renderGroupsTab(); updateSummary();
+      }); }
+    { const gf2 = $('tssg-src-file'); if (gf2) gf2.addEventListener('change', e => {
+        if (e.target.files[0]) handleGroupSrcFile(e.target.files[0]); e.target.value = ''; }); }
+    { const ge2 = $('tssg-existing-file'); if (ge2) ge2.addEventListener('change', e => {
+        if (e.target.files[0]) handleGroupExistingFile(e.target.files[0]); e.target.value = ''; }); }
+    { const gr2 = $('tssg-reset'); if (gr2) gr2.addEventListener('click', resetGroupTab); }
+    { const us = $('tssg-use-sites'); if (us) us.addEventListener('click', () => {
+        groupSrcOwn = null; groupExistingOwn = null;
+        resetGroupWork();
+        $('tssg-src-name').textContent = 'No file selected';
+        $('tssg-src-meta').textContent = '';
+        renderGroupsTab();
+      }); }
+    // ─── Site-group assignment worklist ───
+    { const gs = $('tss-groupwork-sel'); if (gs) gs.addEventListener('change', e => {
+        groupWorkSel = e.target.value; groupWorkFilter = '';
+        const fb = $('tss-groupwork-filter'); if (fb) fb.value = '';
+        renderGroupWork();
+      }); }
+    { const gf = $('tss-groupwork-filter'); if (gf) gf.addEventListener('input', e => {
+        groupWorkFilter = e.target.value.trim(); renderGroupWork();
+      }); }
+    { const gl = $('tss-groupwork-list'); if (gl) gl.addEventListener('click', e => {
+        const chip = e.target.closest('.tss-site-chip');
+        if (chip) toggleAssigned(groupWorkSel, chip.dataset.site, chip);
+      }); }
+    { const ga = $('tss-groupwork-all'); if (ga) ga.addEventListener('click', () => {
+        const info = collectSiteGroups().get(groupWorkSel);
+        if (!info) return;
+        const set = assignedFor(groupWorkSel);
+        info.sites.forEach(s => set.add(s));
+        renderGroupsTab(); updateSummary();
+      }); }
+    { const gn = $('tss-groupwork-none'); if (gn) gn.addEventListener('click', () => {
+        assignedSites.set(groupWorkSel, new Set());
+        renderGroupsTab(); updateSummary();
+      }); }
+    { const gr = $('tss-groupwork-copy-remaining'); if (gr) gr.addEventListener('click', () => {
+        const info = collectSiteGroups().get(groupWorkSel);
+        if (!info) return;
+        const set = assignedFor(groupWorkSel);
+        const left = info.sites.filter(s => !set.has(s));
+        if (!left.length) { flashGroupNote('Nothing left — every site in "' + groupWorkSel + '" is ticked off.'); return; }
+        copyText(left.join('\n'), 'Copied the ' + left.length + ' site' + (left.length === 1 ? '' : 's') +
+          ' still to add to "' + groupWorkSel + '".');
+      }); }
+    if (window.IMDebug) {
+      IMDebug.register('sites-standardize', {
+        label: 'Sites Standardize',
+        ready: () => !!(srcData && tplData && formattedRows),
+        collect: collectDebug
+      });
+      IMDebug.wire('tss-debug', 'sites-standardize');
+    }
     // Click-to-copy in the results area.
     $('tss-results').addEventListener('click', e => {
       const td = e.target.closest('.cmp-section .data-table td');
-      if (!td || td.closest('#tss-section-required') || e.target.closest('input, button, select')) return;
+      // Site Groups rows own their click (copy + tick off), so the generic
+      // copy-the-cell handler must not fire on them too.
+      if (!td || td.closest('#tss-section-required') || td.closest('#tss-section-sitegroups') ||
+          e.target.closest('input, button, select')) return;
       const text = (td.textContent || '').trim();
       if (text && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => td.classList.toggle('cmp-copied'), () => {});
     });
@@ -1080,6 +2372,9 @@
   }
 
   window.tssInit = init;
+  // showBuild() calls this when you switch to the Site Groups tab — its panels
+  // live in a pane the Sites renders can't assume is visible.
+  window.tssRenderGroups = function () { renderGroupsTab(); };
   if (document.readyState !== 'loading') init();
   else document.addEventListener('DOMContentLoaded', init);
 })();

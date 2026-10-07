@@ -994,6 +994,127 @@
     const btn = $('em-export');
     const visible = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
     btn.disabled = !(empData && employerMap && tplData && visible);
+    if (window.IMDebug) IMDebug.refresh('employee-migrate');
+  }
+
+  // ─── Debug dump ───
+  function collectDebug() {
+    if (!empData || !tplData || !formattedRows) return null;
+    const H = EMP_HEADERS;
+    const keptIdxs = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
+    const keptRows = keptIdxs.map(i => formattedRows[i]);
+
+    // This module uses a fixed Legacy→3.0 field map rather than auto-matching,
+    // so the mapping section reports that fixed map by source header name.
+    const FIXED_MAP = {
+      0: 'first name', 1: 'middle name', 2: 'last name', 3: 'birth date',
+      5: 'alt id', 6: 'ssn', 8: 'hired date', 17: 'mobile phone #', 18: 'email',
+      19: 'address 1', 20: 'address 2', 21: 'city', 22: 'state', 23: 'postal code', 24: 'country'
+    };
+    const colToSrc = {};
+    const cols = H.map((h, i) => {
+      const key = FIXED_MAP[i];
+      const si = key ? eIdx(key) : -1;
+      colToSrc[i] = si;
+      let note = null, match = 'unmapped';
+      if (key) { match = si >= 0 ? 'fixed legacy field map ("' + key + '")' : 'fixed map — source column "' + key + '" not present'; }
+      else if (i === 4) { match = 'derived'; note = 'Employer* is resolved from Contractor ID via the contractor list, then canonicalized to the template dropdown.'; }
+      else if (i === 7) { match = 'derived'; note = 'Gender derived from the legacy "Is Male" boolean.'; }
+      else if (i === 9) { match = 'left blank'; note = 'Start Date is intentionally blank.'; }
+      else note = 'Not produced by the legacy map — fill it from the Column Fill panel if PickTrace needs it.';
+      return { index: i, header: h, required: /\*$/.test(h), srcIndex: si, match, note,
+        sample: si >= 0 && empData.rows[0] ? empData.rows[0][si] : null };
+    });
+
+    const emptyReqCols = H.map((h, i) => {
+      if (!/\*$/.test(h)) return null;
+      let n = 0; keptIdxs.forEach(ri => { if (!formattedRows[ri][i]) n++; });
+      return n ? { column: h, emptyRows: n } : null;
+    }).filter(Boolean);
+    const unresolved = getUnresolved();
+    const pending = pendingEmployersToCreate();
+    const archivedRemoved = archivedRemovedCount();
+
+    const asked = [
+      IMDebug.ask('empty-required', 'required', 'Required columns with empty cells', {
+        count: emptyReqCols.length, blocksExport: true, items: emptyReqCols }),
+      IMDebug.ask('unresolved-employers', 'data', 'Contractor IDs that resolved to no Employer', {
+        count: unresolved.size, blocksExport: true,
+        detail: 'These rows export with a blank Employer*. Map each Contractor ID, or the upload is rejected.',
+        items: [...unresolved.entries()].map(([cid, info]) => ({ contractorId: cid,
+          rows: info.count, sampleEmployee: info.sampleName || null,
+          legacyName: info.raw || null })) }),
+      IMDebug.ask('employers-to-create', 'dropdown', 'Employers not yet in PickTrace 3.0', {
+        count: pending.length, blocksExport: true,
+        detail: 'Create these in 3.0 first, or tick them off the checklist once created.',
+        items: pending.map(([name, info]) => ({ employer: name,
+          rows: info && info.count != null ? info.count : null })) }),
+      IMDebug.ask('archived-contractors', 'data', 'Archived contractors whose employees were dropped', {
+        count: Object.keys(archivedStats).filter(cid => !restoredArchived.has(cid)).length,
+        blocksExport: false,
+        detail: archivedRemoved + ' employee rows removed. Restore a contractor to keep its employees.',
+        items: Object.keys(archivedStats).filter(cid => !restoredArchived.has(cid))
+          .map(cid => ({ contractorId: cid, name: archivedStats[cid].name, rows: archivedStats[cid].count })) })
+    ];
+
+    const prov = IMDebug.deriveProvenance({
+      headers: H, rows: formattedRows, srcRows: srcKept, colToSrc: colToSrc, fills: columnFills });
+    const out = IMDebug.output(H, keptRows, {
+      note: 'exportedRowIndexes[n] is the formattedRows index behind exported row n. Export is batched — see settings.batchSize.' });
+    out.exportedRowIndexes = keptIdxs;
+
+    let batch = parseInt($('em-batch') ? $('em-batch').value : '', 10);
+    if (!Number.isFinite(batch) || batch < 1) batch = 5000;
+    const skippedInactive = empData.rows.length - formattedRows.length - archivedRemoved - alreadyMigratedCount;
+
+    return {
+      settings: { batchSize: batch, outputFiles: keptRows.length ? Math.ceil(keptRows.length / batch) : 0 },
+      inputs: [
+        IMDebug.file('legacy employee export', empData),
+        { role: 'active contractor list', loaded: !!employerMap,
+          contractorCount: employerMap ? employerMap.size : null },
+        { role: 'full contractor list (archived + active)', loaded: !!fullContractorMap,
+          contractorCount: fullContractorMap ? fullContractorMap.size : null,
+          note: 'Optional. Without it, archived contractors cannot be told apart from unknown ones.' },
+        { role: 'employees already in PickTrace 3.0', loaded: !!migratedAltIds,
+          altIdCount: migratedAltIds ? migratedAltIds.size : null,
+          note: 'Optional. Joined on Alt ID to skip employees already migrated.' },
+        IMDebug.file('personalized bulk Employees template', tplData, {
+          employerList: tplData.employerList || null })
+      ],
+      mapping: IMDebug.mapping(cols, empData.headers, {
+        srcRows: empData.rows,
+        note: 'This module does not auto-match columns — it applies a fixed Legacy→3.0 field map.' }),
+      derived: [
+        { kind: 'employer resolution',
+          note: 'Contractor ID → active contractor name → canonicalized to the template\'s Employer dropdown spelling.',
+          resolvedFromActiveList: employerMap ? employerMap.size : 0,
+          overriddenByHand: Object.keys(employerOverrides).length,
+          overrides: Object.keys(employerOverrides).map(cid => ({ contractorId: cid, employer: employerOverrides[cid] })),
+          unresolved: unresolved.size },
+        { kind: 'gender', note: '"Is Male" = true → MALE, false → FEMALE, blank → blank.' },
+        { kind: 'date normalization', note: 'Birth Date and Hired Date run through normDate().' },
+        { kind: 'dropdown snapping',
+          note: 'Every dropdown-backed column is snapped to the template\'s spelling (country aliases like USA→US included); unmatched values are kept visible.' }
+      ],
+      fills: Object.keys(columnFills).map(i => ({
+        column: H[+i], value: columnFills[i].val,
+        scope: columnFills[i].mode === 'blank' ? 'blank cells only' : 'all rows', kind: 'column fill' })),
+      edits: { cells: [], names: [],
+        note: 'Preview cells are edited in place; see provenance for cells that no longer match their source.' },
+      dropped: {
+        removedByHand: { count: removedRows.size, rowIndexes: [...removedRows].slice(0, 500) },
+        skippedInactive: { count: skippedInactive, reason: 'Is Active was not literally "true".' },
+        alreadyInPickTrace: { count: alreadyMigratedCount, reason: 'Alt ID found in the 3.0 cross-reference file.' },
+        archivedContractor: {
+          count: archivedRemoved,
+          restoredByHand: [...restoredArchived],
+          reason: 'Contractor is archived and was not restored.' }
+      },
+      asked: asked,
+      output: out,
+      provenance: prov
+    };
   }
 
   // ─── Export (batched, pristine template per file) ───
@@ -1108,6 +1229,7 @@
     $('em-empty').style.display = '';
     $('em-run').disabled = true;
     $('em-export').disabled = true;
+    if (window.IMDebug) IMDebug.refresh('employee-migrate');
   }
 
   // ─── Inline cell editing ───
@@ -1158,6 +1280,14 @@
     $('em-run').addEventListener('click', runMigrate);
     $('em-export').addEventListener('click', () => { doExport(); });
     $('em-reset').addEventListener('click', reset);
+    if (window.IMDebug) {
+      IMDebug.register('employee-migrate', {
+        label: 'Employee Migrate (Legacy → 3.0)',
+        ready: () => !!(empData && tplData && formattedRows),
+        collect: collectDebug
+      });
+      IMDebug.wire('em-debug', 'employee-migrate');
+    }
     const copyBtn = $('em-create-copy');
     if (copyBtn) copyBtn.addEventListener('click', () => {
       const names = [...getEmployersToCreate().keys()];

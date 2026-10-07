@@ -2587,6 +2587,134 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   margin: 0 0 10px;
   font-style: italic;
 }
+/* ─── Auto-detected fills (Data Progress) ───
+   Proposals the tracker worked out on import: what it can fill, from where,
+   and how many rows — one button each, no setup. */
+.trk-suggest {
+  padding: 8px 12px; background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+}
+.trk-sg-head { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+.trk-sg-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-top: 4px; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.trk-sg-txt { flex: 1; min-width: 0; }
+.trk-sg-eg { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.trk-dd-hit {
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 10px; font-size: 13px; margin-bottom: 10px;
+}
+.trk-dd-adv { font-size: 12px; margin: 8px 0 12px; }
+.trk-dd-adv summary { cursor: pointer; color: var(--text-2); }
+.trk-sg-pick { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.trk-sg-pick select { max-width: 150px; }
+.trk-sg-row code { font-size: 10px; background: var(--bg-sunken); padding: 1px 5px; border-radius: 3px; }
+
+/* ─── Reference ranges (Data Progress) ───
+   Lookup blocks pinned from elsewhere in the workbook, sitting above the grid
+   so a rate table stays readable while you fill cells in. */
+.trk-ref-panel {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  max-height: 260px; overflow-y: auto;
+}
+.trk-ref-card {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; min-width: 260px; max-width: 520px;
+}
+.trk-ref-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.trk-ref-ref { font-size: 10px; background: var(--bg-sunken); padding: 1px 5px; border-radius: 3px; }
+.trk-ref-body { max-height: 170px; overflow: auto; }
+.trk-ref-table td { font-size: 11px; padding: 3px 7px; white-space: nowrap; }
+.trk-ref-cell { cursor: pointer; }
+.trk-ref-cell:hover { background: var(--accent-soft); }
+.trk-ref-copied { background: #dcfce7 !important; color: #14532d; }
+.trk-range-blocks { max-height: 260px; overflow-y: auto; margin-bottom: 10px; }
+.trk-range-block {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 6px; cursor: pointer;
+}
+.trk-range-block:hover { border-color: var(--accent); }
+.trk-range-prev { font-size: 11px; color: var(--text-2); margin-top: 3px; line-height: 1.5; }
+.trk-fill-grid {
+  display: grid; grid-template-columns: max-content 1fr;
+  gap: 8px 10px; align-items: center; font-size: 12px;
+}
+.trk-fill-preview {
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 10px; font-size: 12px; margin-bottom: 12px;
+}
+.trk-fill-sample { margin-top: 6px; font-size: 11px; line-height: 1.6; }
+.trk-rule-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.trk-rule-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 6px 3px 12px; font-size: 12px;
+}
+.trk-rule-modal { max-width: 640px; }
+.trk-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.trk-inline > select, .trk-inline > input { min-width: 0; }
+.trk-pat { width: 120px; display: none; }
+.trk-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.trk-unmatched-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; margin: 10px 0 6px;
+}
+.trk-unmatched-head > button { margin-left: auto; }
+.trk-unmatched { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.trk-um-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border-light);
+}
+.trk-um-row:last-child { border-bottom: none; }
+.trk-um-label { flex: 1; min-width: 0; font-size: 12px; }
+.trk-um-sub {
+  font-size: 11px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.trk-um-input { width: 190px; flex: none; }
+.trk-warn {
+  margin-top: 8px; padding: 6px 8px; border-radius: var(--radius);
+  background: #fef3c7; color: #7c2d12; font-size: 11px; line-height: 1.5;
+}
+.trk-note {
+  margin-top: 8px; padding: 6px 8px; border-radius: var(--radius);
+  background: #dcfce7; color: #14532d; font-size: 11px; line-height: 1.5;
+}
+
+/* ─── Site-group assignment worklist (Sites Standardize) ───
+   A group can hold hundreds of sites, so they're chips in a scrollable well
+   rather than table rows: dense enough to scan, each one its own tick. */
+.tss-chip-well {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 340px; overflow-y: auto;
+  padding: 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+.tss-site-chip {
+  font: inherit; font-size: 11px; line-height: 1;
+  padding: 5px 9px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-1);
+  white-space: nowrap; transition: background .12s, color .12s, border-color .12s;
+}
+.tss-site-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tss-site-chip.is-done {
+  background: #dcfce7; border-color: #86efac; color: #14532d;
+  text-decoration: line-through;
+}
+.tss-site-chip.is-done::before { content: "\2713\00a0"; text-decoration: none; }
+.tss-progress {
+  height: 8px; border-radius: 999px; background: var(--bg-sunken);
+  border: 1px solid var(--border); overflow: hidden; margin: 6px 0 10px;
+}
+.tss-progress > span { display: block; height: 100%; background: #22c55e; transition: width .18s; }
 #cmp-section-sites { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: var(--radius); padding: 14px 18px; }
 #cmp-section-sites code { background: var(--bg); padding: 1px 6px; border-radius: 3px; font-size: 11px; color: var(--accent); }
 .cmp-export-modal {
@@ -2863,6 +2991,20 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
    already blocked in JS, this just makes that visible. */
 .cmp-org-list-item.es-sheet-disabled { opacity: .45; cursor: not-allowed; }
 .cmp-org-list-item.es-sheet-disabled:hover { background: var(--bg-alt); border-color: var(--border); }
+/* Bulk Template Standardize's multi-sheet picker: tick a sheet, choose the
+   template it fills. */
+.dt-sheet-modal { width: min(560px, calc(100vw - 32px)); max-width: none; box-sizing: border-box; }
+.cmp-org-list-item.dt-sheet-row { cursor: default; }
+.dt-sheet-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.dt-sheet-pick input { flex: none; margin: 0; }
+.dt-sheet-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dt-sheet-meta .cmp-org-counts { white-space: normal; }
+.dt-sheet-key { flex: none; width: 130px; }
+.dt-sheet-err { color: var(--red-text); font-size: 12.5px; margin: -4px 0 12px; }
+/* Locations slot: which source column feeds Site*. */
+.dt-src-override { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; font-size: 12.5px; color: var(--text-2); }
+.dt-src-override label { font-weight: 600; white-space: nowrap; }
+.dt-src-override select { flex: 1; min-width: 0; font-size: 12.5px; }
 
 
 

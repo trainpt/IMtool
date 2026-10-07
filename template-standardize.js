@@ -1540,6 +1540,7 @@
     // confirmation when there are blockers, instead of leaving the user stuck.
     const btn = $('ts-export');
     btn.disabled = !(srcData && tplData && formattedRows && formattedRows.length);
+    if (window.IMDebug) IMDebug.refresh('locations-standardize');
     const b = getExportBlockers();
     if (!b) { btn.title = ''; return; }
     const reasons = [];
@@ -1743,7 +1744,15 @@
     const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
     const exportName = base + ' — filled' + ext;
 
-    XLSX.writeFile(wb, exportName, { cellStyles: true });
+    // bookSST:true is NOT optional. Without it SheetJS writes string cells as
+    // t="str", which OOXML defines as a cached formula result rather than
+    // literal text; strict readers hand back nothing and the upload is
+    // rejected with "unexpected column header". (Sites goes further and
+    // patches the template zip directly — see xlsx-template-writer.js — which
+    // also keeps the <dataValidations> SheetJS drops on a round-trip. This
+    // export still writes numeric columns as numbers, so it has not been moved
+    // over yet.)
+    XLSX.writeFile(wb, exportName, { cellStyles: true, bookSST: true });
   }
 
   // ─── Load handlers ───
@@ -2044,12 +2053,137 @@
     $('ts-empty').style.display = '';
     $('ts-run').disabled = true;
     $('ts-export').disabled = true;
+    if (window.IMDebug) IMDebug.refresh('locations-standardize');
+  }
+
+  // ─── Debug dump ───
+  function collectDebug() {
+    if (!srcData || !tplData || !formattedRows) return null;
+    const H = activeSchemaHeaders();
+    const b = getExportBlockers() || {};
+    const siteIdx = H.indexOf('Site*');
+    const nameIdx = H.indexOf('Name*');
+    const cvIdx = H.indexOf('Crop & Variety*');
+    const keptIdxs = formattedRows.map((_, i) => i).filter(i => !excluded(i));
+    const keptRows = keptIdxs.map(i => formattedRows[i]);
+
+    const cols = H.map((h, i) => {
+      const si = mapping[i] != null ? mapping[i] : -1;
+      return { index: i, header: h, required: /\*$/.test(h), srcIndex: si,
+        match: si >= 0 ? 'mapped' : 'unmapped',
+        sample: si >= 0 && srcData.rows[0] ? srcData.rows[0][si] : null };
+    });
+
+    const asked = [];
+    const emptyReqCols = H.map((h, i) => {
+      if (!/\*$/.test(h)) return null;
+      let n = 0; keptIdxs.forEach(ri => { if (!formattedRows[ri][i]) n++; });
+      return n ? { column: h, emptyRows: n } : null;
+    }).filter(Boolean);
+    asked.push(IMDebug.ask('empty-required', 'required', 'Required columns with empty cells', {
+      count: emptyReqCols.length, blocksExport: true,
+      detail: (b.emptyReq || 0) + ' empty required cells across ' + keptIdxs.length + ' exported rows.',
+      items: emptyReqCols }));
+    asked.push(IMDebug.ask('unknown-sites', 'dropdown', 'Site values not in the template dropdown', {
+      count: (b.unknownSites || []).length, blocksExport: true,
+      detail: 'These sites must exist in PickTrace before the locations can be created.',
+      items: b.unknownSites || [] }));
+    asked.push(IMDebug.ask('unknown-crop-varieties', 'dropdown', 'Crop & Variety values not in the template dropdown', {
+      count: (b.unknownCvs || []).length, blocksExport: true, items: b.unknownCvs || [] }));
+    asked.push(IMDebug.ask('name-collisions', 'collision', 'Rows sharing Site + Name', {
+      count: b.nameCollisions || 0, blocksExport: true, items: b.collisionSamples || [] }));
+    asked.push(IMDebug.ask('past-start-dates', 'data', 'Start Date values before today', {
+      count: b.pastStartDates || 0, blocksExport: false,
+      detail: 'PickTrace treats a past start date as already-planted.' }));
+    const sfPending = computeSmartFixes();
+    asked.push(IMDebug.ask('smart-fixes', 'smartfix', 'Off-list values awaiting a Smart Fix choice', {
+      count: sfPending.length, blocksExport: false,
+      items: sfPending.map(f => ({ column: f.header, value: f.from, rows: f.count, suggestion: f.suggestion || null })) }));
+
+    const merges = [];
+    mergeGroups.forEach((g, k) => {
+      if (unmergedKeys.has(k)) return;
+      const conflicts = [];
+      if (g.conflicts) g.conflicts.forEach((vals, ci) => conflicts.push({ column: H[ci], values: vals }));
+      merges.push({ key: k, keptRowIndex: g.keep, foldedRowIndexes: g.folded,
+        site: formattedRows[g.keep] ? formattedRows[g.keep][siteIdx] : null,
+        name: formattedRows[g.keep] ? formattedRows[g.keep][nameIdx] : null,
+        conflictingColumns: conflicts });
+    });
+
+    const prov = IMDebug.deriveProvenance({
+      headers: H, rows: formattedRows, srcRows: srcData.rows, colToSrc: mapping,
+      fills: manualFills, cellEdits: cellOverrides, nameEdits: nameOverrides,
+      smartFixes: smartFixMap, nameCol: nameIdx });
+    const out = IMDebug.output(H, keptRows, {
+      note: 'exportedRowIndexes[n] is the formattedRows index behind exported row n — the key used by provenance.codes, edits, merges and dropped.' });
+    out.exportedRowIndexes = keptIdxs;
+
+    return {
+      settings: {
+        target: target,
+        targetSchema: target === 'update' ? 'UPDATE' : 'CREATE',
+        cropSplitEnabled: cropSplit,
+        mergeDuplicatesEnabled: mergeDupes,
+        dateFill: dateFill
+      },
+      inputs: [
+        IMDebug.file('source data', srcData),
+        IMDebug.file('personalized bulk Locations template', tplData, {
+          dropdowns: tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [] }),
+        IMDebug.file('existing locations in PickTrace', existingData, {
+          indexedKeys: existingData ? existingData.count : null })
+      ],
+      mapping: IMDebug.mapping(cols, srcData.headers, { srcRows: srcData.rows }),
+      derived: [
+        { kind: 'crop/variety split', enabled: cropSplit,
+          note: 'When on, " - Subvariety" is split off Crop & Variety into Clone/Subvariety.' },
+        { kind: 'year-only date expansion', settings: dateFill,
+          note: 'Year-only Start Dates are expanded to a full date using the month/day above.' },
+        { kind: 'site addresses carried for reference', count: Object.keys(siteAddresses).length,
+          sample: Object.keys(siteAddresses).slice(0, 20).map(k => ({ site: k, address: siteAddresses[k] })) }
+      ],
+      fills: Object.keys(manualFills).map(i => ({ column: H[+i], value: manualFills[i], kind: 'column fill' }))
+        .concat(Object.keys(smartFixMap).map(k => {
+          const sep = k.indexOf('||');
+          return { column: H[+k.slice(0, sep)], from: k.slice(sep + 2), value: smartFixMap[k], kind: 'smart fix' };
+        })),
+      edits: {
+        cells: Object.keys(cellOverrides).map(k => {
+          const sep = k.indexOf('|');
+          return { rowIndex: +k.slice(0, sep), column: H[+k.slice(sep + 1)], value: cellOverrides[k] };
+        }),
+        names: Object.keys(nameOverrides).map(ri => ({ rowIndex: +ri, value: nameOverrides[ri] }))
+      },
+      merges: merges,
+      dropped: {
+        removedByHand: { count: removedRows.size, rowIndexes: [...removedRows].slice(0, 500) },
+        mergedIntoAnotherRow: { count: mergedRowIdxs.size, rowIndexes: [...mergedRowIdxs].slice(0, 500) },
+        alreadyInPickTrace: {
+          count: existingRowIdxs.size,
+          source: existingData ? existingData.fileName : null,
+          samples: [...existingRowIdxs].slice(0, 200).map(ri => ({
+            site: formattedRows[ri][siteIdx], name: formattedRows[ri][nameIdx], cropVariety: formattedRows[ri][cvIdx] }))
+        }
+      },
+      asked: asked,
+      output: out,
+      provenance: prov
+    };
   }
 
   // ─── Init ───
   function init() {
     if (initialized) return;
     initialized = true;
+    if (window.IMDebug) {
+      IMDebug.register('locations-standardize', {
+        label: 'Locations Standardize',
+        ready: () => !!(srcData && tplData && formattedRows),
+        collect: collectDebug
+      });
+      IMDebug.wire('ts-debug', 'locations-standardize');
+    }
     attachModeSwitcher();
     $('ts-src-file').addEventListener('change', e => {
       if (e.target.files[0]) handleSrcFile(e.target.files[0]);

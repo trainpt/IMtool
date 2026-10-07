@@ -17,13 +17,30 @@ let trkStorageOk = true;
 function sGet(k) { try { return JSON.parse(sessionPrefs.getItem(k)); } catch(e) { return null; } }
 function sSet(k, v) { try { sessionPrefs.setItem(k, JSON.stringify(v)); } catch(e) {} }
 
+// Skip-yellow preference. trkSmartParse and #trkSkipYellowToggle both reach for
+// these; until now neither existed, so the `typeof === 'function'` guards fell
+// through to a hardcoded `true` and the checkbox did nothing.
+const TRK_SKIP_YELLOW = "dpt_skip_yellow_v1";
+function getImportSkipYellow() {
+  const v = sGet(TRK_SKIP_YELLOW);
+  return v === null ? true : !!v;   // default ON, as before
+}
+function setImportSkipYellow(on) { sSet(TRK_SKIP_YELLOW, !!on); }
+
 let trkTouched = sGet(TRK_STORAGE) || {};
 let trkFlags   = sGet(TRK_FLAGS) || {};
 let trkNotes   = sGet(TRK_NOTES) || {};
 
-// Multi-sheet: { key: { name, headers, rows, colOrder, hiddenCols, colWidths } }
+// Multi-sheet: { key: { name, headers, rows, colOrder, hiddenCols, colWidths, refRanges } }
 let trkSheets = {};
 let trkActiveSheet = null;
+
+// Full grid of every sheet in the last-imported workbook, kept so a Reference
+// Range can point at anything the tracked table left behind — a lookup block
+// sitting off to the side, or a table on another tab. trkSmartParse keeps only
+// the main table; without this the rest of the file is gone after import.
+let trkWorkbookGrids = {};   // sheet name → [[cell strings]]
+let trkWorkbookName = '';
 
 // Active sheet refs
 let trkHeaders = [];
@@ -188,6 +205,7 @@ function trkReadFile(file, fallbackName) {
   } else {
     reader.onload = e => {
       const wb = XLSX.read(e.target.result, { type: 'array', cellStyles: true });
+      trkCaptureWorkbook(wb, file.name);
       if (wb.SheetNames.length === 1) {
         trkLoadXlsSheet(wb, wb.SheetNames[0], (h, r) => trkShowSetup(wb.SheetNames[0], h, r));
       } else {
@@ -316,10 +334,30 @@ function trkSheetPicker(wb) {
 function trkSmartParse(allRows, yellowFlags) {
   if (allRows.length < 2) return { headers: allRows[0] || [], rows: allRows.slice(1) };
   const colCount = Math.max(...allRows.map(r => r.length));
+  // Header score = the CONTIGUOUS run of usable cells from the first filled
+  // column, not the raw fill count.
+  //
+  // Raw counting breaks on any sheet that carries a second table off to the
+  // side: on the implementation workbook's jobs tab a lookup table starts at
+  // column M on row 3, so that data row fills 12 columns to the real header's
+  // 11 and wins — every column title then comes out as a job record. A run
+  // stops at the gap (8 vs 11), so the header wins again. Ties keep the
+  // earliest row, which is what every well-formed sheet wants anyway.
+  const usable = v => { const s = String(v || '').trim(); return s.length > 0 && s.length < 80; };
+  const isNumericCell = v => { const s = String(v || '').trim(); return /\d/.test(s) && /^-?[\d.,]+%?$/.test(s); };
   function headerScore(row) {
-    let filled = 0;
-    for (let i = 0; i < colCount; i++) { const v = String(row[i] || '').trim(); if (v && v.length > 0 && v.length < 80) filled++; }
-    return filled;
+    let first = -1;
+    for (let i = 0; i < colCount; i++) { if (usable(row[i])) { first = i; break; } }
+    if (first < 0) return 0;
+    let run = 0;
+    for (let i = first; i < colCount; i++) { if (usable(row[i])) run++; else break; }
+    // A row that is mostly numbers is a record, not a heading — this stops an
+    // ID-led data row taking a tie off a short header.
+    const vals = [];
+    for (let i = first; i < first + run; i++) vals.push(String(row[i]).trim());
+    const numeric = vals.filter(isNumericCell).length;
+    if (run >= 2 && numeric / run > 0.5) return 0;
+    return run;
   }
   const searchLimit = Math.min(6, allRows.length);
   let bestIdx = 0, bestScore = 0;
@@ -363,10 +401,19 @@ function trkSmartParse(allRows, yellowFlags) {
       if (yellowFlags[origFlagIdx]) yellowDataRows.add(ri);
     });
   }
+  // Yellow marks EXAMPLE rows in a blank template — a handful at the top. When
+  // most of the sheet is yellow it is colour-coding, not examples, and dropping
+  // it would throw the data away: the jobs tab of the implementation workbook
+  // is 57 highlighted rows out of 73, which left 3. Above this share the
+  // highlight is ignored regardless of the toggle.
+  const YELLOW_MAJORITY = 0.3;
+  const yellowIsFormatting = dataRows.length > 0 &&
+    (yellowDataRows.size / dataRows.length) > YELLOW_MAJORITY;
+  if (yellowIsFormatting) yellowDataRows.clear();
 
   // Fallback heuristic if no yellow info: check if first row after descriptions has high avg cell length
   let exampleIdx = -1;
-  if (yellowDataRows.size === 0 && lastDescIdx >= 0 && lastDescIdx + 1 < dataRows.length) {
+  if (!yellowIsFormatting && yellowDataRows.size === 0 && lastDescIdx >= 0 && lastDescIdx + 1 < dataRows.length) {
     const candidate = dataRows[lastDescIdx + 1];
     const candidateAvg = avgCellLen(candidate);
     if (candidateAvg > dataMedian * 1.5 && candidateAvg > 20) {
@@ -411,14 +458,24 @@ function trkSmartParse(allRows, yellowFlags) {
     if (nonEmpty.length < minFillForData) return false;
     return true;
   });
-  // Strip trailing empty columns (columns where header is empty and all data is empty)
-  let lastUsedCol = headers.length - 1;
-  while (lastUsedCol > 0) {
-    const h = (headers[lastUsedCol] || '').trim();
-    const hasData = filtered.some(r => (r[lastUsedCol] || '').trim() !== '');
-    if (h || hasData) break;
-    lastUsedCol--;
-  }
+  // Trim to the tracked table's own width.
+  //
+  // Stopping at "the last column holding any data" drags neighbouring tables in
+  // with it: the jobs tab's earning-code block at M–P and its wage table at
+  // R–S both ended up as unnamed columns of the job list. A separate block is
+  // always divided from the main one by an EMPTY column, so walk right from the
+  // header's run and stop at the first gap. A column that touches the run is
+  // kept even with no header — those are real columns someone forgot to name
+  // (Pack Size's notes, Equipment's "Remove").
+  const colHasAnything = c =>
+    String(headers[c] || '').trim() !== '' || filtered.some(r => String(r[c] || '').trim() !== '');
+  let firstCol = 0;
+  while (firstCol < colCount && !usable(headers[firstCol])) firstCol++;
+  if (firstCol >= colCount) firstCol = 0;
+  let lastUsedCol = firstCol;
+  while (lastUsedCol + 1 < colCount && usable(headers[lastUsedCol + 1])) lastUsedCol++;
+  while (lastUsedCol + 1 < colCount && colHasAnything(lastUsedCol + 1)) lastUsedCol++;
+  if (lastUsedCol < 0) lastUsedCol = 0;
   const trimmedHeaders = headers.slice(0, lastUsedCol + 1);
   const trimmedRows = filtered.map(r => r.slice(0, lastUsedCol + 1));
 
@@ -473,6 +530,8 @@ function trkSwitchToSheet(key) {
   trkActiveRow = null; trkSortCol = -1; trkSortAsc = true;
   trkRenderSheetTabs();
   trkBuildReview();
+  trkRenderRefPanel();        // ranges are per-sheet
+  trkRefreshSuggestions(true); // and so are the proposals
 }
 
 function trkRenderSheetTabs() {
@@ -1465,6 +1524,15 @@ function trkApplyEdits(changes, label) {
 function trkUndo() {
   if (trkUndoStack.length === 0) return;
   const last = trkUndoStack.pop();
+  if (last.kind === 'rows') {
+    // Put them back where they were, lowest index first.
+    last.removed.slice().sort((a, b) => a.index - b.index)
+      .forEach(r => trkRows.splice(Math.min(r.index, trkRows.length), 0, r.row));
+    if (trkSheets[trkActiveSheet]) trkSheets[trkActiveSheet].rows = trkRows;
+    trkBuildReview(); trkUpdateUndoBtn();
+    if (typeof trkRefreshSuggestions === 'function') trkRefreshSuggestions(true);
+    return;
+  }
   last.changes.forEach(({ ri, ci, oldVal }) => { trkRows[ri][ci] = oldVal; });
   if (trkSheets[trkActiveSheet]) trkSheets[trkActiveSheet].rows = trkRows;
   trkRenderTable(); trkUpdateStat(); trkUpdateUndoBtn();
@@ -1799,6 +1867,20 @@ let trkDonePendingMatches = [];
 
 const doneOverlay = $('trk-done-overlay');
 
+{
+  const dd = $('trk-dedupe-file');
+  if (dd) dd.addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!trkActiveSheet) { alert('Load a sheet first.'); return; }
+    trkReadAnySheet(file, imp => {
+      if (!imp || !imp.rows.length) { alert('No data found in that file.'); return; }
+      trkDedupeAgainst(imp);
+    });
+  });
+}
+
 $('trk-import-done-file').addEventListener('change', e => {
   if (!e.target.files[0] || !trkActiveSheet) return;
   const file = e.target.files[0];
@@ -1828,6 +1910,157 @@ $('trk-import-done-file').addEventListener('change', e => {
   }
   e.target.value = '';
 });
+
+// ══════════════════════════════════════════
+// ── Remove duplicates against another file ──
+//
+// "Here is what is already in the system — take those off my list." Reads any
+// sheet, works out by itself which column pairs up with which, and offers to
+// drop the rows that already exist. No column pickers unless the guess is
+// wrong. Removal is a single undo away.
+// ══════════════════════════════════════════
+function trkReadAnySheet(file, cb) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const reader = new FileReader();
+  if (ext === 'csv') {
+    reader.onload = ev => {
+      const { headers, rows } = trkParseCSV(ev.target.result);
+      cb({ headers: headers, rows: rows, name: file.name });
+    };
+    reader.readAsText(file);
+    return;
+  }
+  reader.onload = ev => {
+    const wb = XLSX.read(ev.target.result, { type: 'array' });
+    // Take whichever sheet carries the most rows — the reference export is
+    // almost never the tiny legend tab.
+    let bestName = wb.SheetNames[0], bestRows = null, bestCount = -1;
+    wb.SheetNames.forEach(n => {
+      const data = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' });
+      const nb = data.filter(r => r.some(c => String(c).trim() !== ''));
+      if (nb.length > bestCount) { bestCount = nb.length; bestName = n; bestRows = nb; }
+    });
+    if (!bestRows || bestRows.length < 2) { alert('No data found in that file.'); return; }
+    const sliced = trkSmartParse(bestRows.map(r => r.map(String)), null);
+    cb({ headers: sliced.headers, rows: sliced.rows, name: file.name + ' [' + bestName + ']' });
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Best (tracked column ↔ imported column) pairing, scored on how many of the
+// tracked sheet's values actually appear in the other file.
+function trkBestDedupeMatch(imp) {
+  const norm = v => String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim();
+  let best = null;
+  const visible = trkVisibleCols();
+  visible.forEach(ci => {
+    const trkVals = new Set();
+    trkRows.forEach(r => { const v = norm(r[ci]); if (v) trkVals.add(v); });
+    if (trkVals.size < 2) return;
+    imp.headers.forEach((h, ii) => {
+      const impVals = new Set();
+      imp.rows.forEach(r => { const v = norm(r[ii]); if (v) impVals.add(v); });
+      if (!impVals.size) return;
+      let overlap = 0;
+      trkVals.forEach(v => { if (impVals.has(v)) overlap++; });
+      if (!overlap) return;
+      // Two columns can hold the same values (an export where every site is
+      // also its own group), so a header that looks related breaks the tie
+      // toward the one a person would have picked.
+      const a = norm(trkHeaders[ci]), b = norm(h);
+      const nameBonus = (a && b && a === b) ? 0.15
+        : (a && b && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0)) ? 0.08 : 0;
+      const share = overlap / trkVals.size;
+      const score = share + nameBonus;
+      if (!best || score > best.score) {
+        best = { ci: ci, ii: ii, overlap: overlap, share: share, score: score, impVals: impVals };
+      }
+    });
+  });
+  return best;
+}
+
+function trkDedupeAgainst(imp) {
+  const m = trkBestDedupeMatch(imp);
+  if (!m) {
+    alert('Nothing in "' + imp.name + '" matches this sheet, so there is nothing to remove.\n\n' +
+          'Check it is the right file — the values have to line up with one of your columns.');
+    return;
+  }
+  const norm = v => String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim();
+  const hits = [];
+  trkRows.forEach((r, ri) => { const v = norm(r[m.ci]); if (v && m.impVals.has(v)) hits.push(ri); });
+  if (!hits.length) { alert('No rows in this sheet appear in "' + imp.name + '".'); return; }
+  trkShowDedupeModal(imp, m, hits);
+}
+
+function trkShowDedupeModal(imp, m, hits) {
+  let ov = $('trk-dedupe-overlay');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'trk-dedupe-overlay'; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
+  const sample = hits.slice(0, 6).map(ri =>
+    '<li>' + esc(String(trkRows[ri][m.ci] || '').slice(0, 60)) + '</li>').join('');
+  const colOpts = trkVisibleCols().map(ci =>
+    '<option value="' + ci + '"' + (ci === m.ci ? ' selected' : '') + '>' +
+    esc(trkHeaders[ci] || 'Col ' + (ci + 1)) + '</option>').join('');
+  const impOpts = imp.headers.map((h, i) =>
+    '<option value="' + i + '"' + (i === m.ii ? ' selected' : '') + '>' + esc(h || 'Col ' + (i + 1)) + '</option>').join('');
+  ov.innerHTML =
+    '<div class="modal" style="max-width:520px;"><h3>Remove rows already in that file</h3>' +
+    '<div class="trk-dd-hit"><b>' + hits.length + '</b> of ' + trkRows.length +
+      ' row' + (trkRows.length === 1 ? '' : 's') + ' already exist in <b>' + esc(imp.name) + '</b>' +
+      '<div class="text-muted small" style="margin-top:3px;">matched <b>' + esc(trkHeaders[m.ci] || 'column') +
+      '</b> against <b>' + esc(imp.headers[m.ii] || 'column') + '</b> &middot; ' +
+      Math.round(m.share * 100) + '% of this column\'s values</div></div>' +
+    '<ul class="ts-confirm-list">' + sample + (hits.length > 6 ? '<li>… and ' + (hits.length - 6) + ' more</li>' : '') + '</ul>' +
+    '<details class="trk-dd-adv"><summary>Matched the wrong columns?</summary>' +
+      '<div class="trk-inline" style="margin-top:8px;">' +
+        '<select class="input-field input-sm" id="trk-dd-trk">' + colOpts + '</select>' +
+        '<span class="text-muted small">against</span>' +
+        '<select class="input-field input-sm" id="trk-dd-imp">' + impOpts + '</select>' +
+      '</div></details>' +
+    '<div class="modal-actions"><button class="btn btn-ghost" id="trk-dd-cancel">Cancel</button>' +
+    '<button class="btn btn-danger" id="trk-dd-go">Remove ' + hits.length + ' rows</button></div></div>';
+  ov.classList.add('show');
+  ov.style.display = 'flex';
+  const close = () => { ov.classList.remove('show'); ov.style.display = 'none'; };
+  ov.querySelector('#trk-dd-cancel').addEventListener('click', close);
+  ov.addEventListener('click', e => { if (e.target === ov) close(); });
+
+  const recompute = () => {
+    const ci = +ov.querySelector('#trk-dd-trk').value;
+    const ii = +ov.querySelector('#trk-dd-imp').value;
+    const norm = v => String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim();
+    const vals = new Set();
+    imp.rows.forEach(r => { const v = norm(r[ii]); if (v) vals.add(v); });
+    const next = [];
+    trkRows.forEach((r, ri) => { const v = norm(r[ci]); if (v && vals.has(v)) next.push(ri); });
+    hits = next;
+    ov.querySelector('#trk-dd-go').textContent = 'Remove ' + hits.length + ' rows';
+    ov.querySelector('#trk-dd-go').disabled = !hits.length;
+  };
+  ov.querySelector('#trk-dd-trk').addEventListener('change', recompute);
+  ov.querySelector('#trk-dd-imp').addEventListener('change', recompute);
+  ov.querySelector('#trk-dd-go').addEventListener('click', () => {
+    trkRemoveRows(hits, 'Removed ' + hits.length + ' already in ' + imp.name);
+    close();
+  });
+}
+
+// Splice rows out, remembering enough to put them back. Progress is keyed by
+// each row's stable _rid, so a restored row brings its ticks with it.
+function trkRemoveRows(indexes, label) {
+  if (!indexes || !indexes.length) return;
+  const sorted = indexes.slice().sort((a, b) => a - b);
+  const removed = sorted.map(i => ({ index: i, row: trkRows[i] }));
+  for (let k = sorted.length - 1; k >= 0; k--) trkRows.splice(sorted[k], 1);
+  const sheet = trkSheets[trkActiveSheet];
+  if (sheet) sheet.rows = trkRows;
+  trkUndoStack.push({ kind: 'rows', removed: removed, label: label || 'Remove rows' });
+  if (trkUndoStack.length > TRK_MAX_UNDO) trkUndoStack.shift();
+  trkUpdateUndoBtn();
+  trkBuildReview();
+  trkRefreshSuggestions(true);
+}
 
 function trkShowDoneModal() {
   const trkCol = $('trk-done-trk-col');
@@ -1959,6 +2192,932 @@ window.addEventListener('beforeunload', () => { trkSave(); trkBackup(); });
 setInterval(trkBackup, 30000);
 
 // ══════════════════════════════════════════
+// ── Reference Ranges ──
+//
+// A workbook rarely holds one tidy table. The implementation workbook's jobs
+// tab carries three blocks side by side: the job list in A–K, an earning-code
+// lookup in M–P, and a state minimum-wage table in R3:S5. trkSmartParse keeps
+// the first and drops the rest, which is right for tracking but throws away
+// exactly the lookups you need while filling cells in.
+//
+// A Reference Range pins any rectangle of the workbook — on this sheet or any
+// other — beside the grid, and can be used as a key→value lookup to fill a
+// tracked column. Fills go through trkApplyEdits, so Undo and Save behave
+// the same as a hand edit.
+// ══════════════════════════════════════════
+
+function trkCaptureWorkbook(wb, fileName) {
+  trkWorkbookGrids = {};
+  trkWorkbookName = fileName || '';
+  (wb.SheetNames || []).forEach(name => {
+    try {
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
+      trkWorkbookGrids[name] = aoa.map(r => (r || []).map(c => String(c == null ? '' : c)));
+    } catch (err) { /* a sheet we can't read simply isn't referenceable */ }
+  });
+}
+
+function trkColLetter(n) {
+  let s = '', x = n + 1;
+  while (x > 0) { const r = (x - 1) % 26; s = String.fromCharCode(65 + r) + s; x = Math.floor((x - 1) / 26); }
+  return s;
+}
+function trkColNum(s) {
+  let n = 0;
+  for (const ch of String(s).toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+function trkRangeLabel(box) {
+  return trkColLetter(box.c0) + (box.r0 + 1) + ':' + trkColLetter(box.c1) + (box.r1 + 1);
+}
+
+// Accepts "Sheet!R3:S5", "R3:S5", "R3", "R:S", "S", "3:5", "3".
+// Open-ended forms are clamped to the sheet's real extent.
+function trkParseA1(text, defaultSheet) {
+  let s = String(text || '').trim();
+  if (!s) return null;
+  let sheet = defaultSheet;
+  const bang = s.lastIndexOf('!');
+  if (bang >= 0) {
+    sheet = s.slice(0, bang).replace(/^'|'$/g, '').trim();
+    s = s.slice(bang + 1).trim();
+  }
+  const grid = trkWorkbookGrids[sheet];
+  if (!grid) return null;
+  const maxRow = Math.max(0, grid.length - 1);
+  const maxCol = Math.max(0, grid.reduce((m, r) => Math.max(m, (r || []).length), 0) - 1);
+  const cell = /^([A-Za-z]+)(\d+)$/;
+  const parts = s.split(':').map(p => p.trim());
+  const one = p => {
+    const m = cell.exec(p);
+    if (m) return { c: trkColNum(m[1]), r: +m[2] - 1 };
+    if (/^[A-Za-z]+$/.test(p)) return { c: trkColNum(p), r: null };
+    if (/^\d+$/.test(p)) return { c: null, r: +p - 1 };
+    return null;
+  };
+  const a = one(parts[0]);
+  if (!a) return null;
+  const b = parts.length > 1 ? one(parts[1]) : a;
+  if (!b) return null;
+  const box = {
+    sheet: sheet,
+    c0: Math.min(a.c == null ? 0 : a.c, b.c == null ? maxCol : b.c),
+    c1: Math.max(a.c == null ? maxCol : a.c, b.c == null ? maxCol : b.c),
+    r0: Math.min(a.r == null ? 0 : a.r, b.r == null ? maxRow : b.r),
+    r1: Math.max(a.r == null ? maxRow : a.r, b.r == null ? maxRow : b.r)
+  };
+  box.c0 = Math.max(0, Math.min(box.c0, maxCol));
+  box.c1 = Math.max(0, Math.min(box.c1, maxCol));
+  box.r0 = Math.max(0, Math.min(box.r0, maxRow));
+  box.r1 = Math.max(0, Math.min(box.r1, maxRow));
+  return box;
+}
+
+// Rectangles of data separated by at least one fully empty column. The first
+// group is the tracked table itself; the rest are what this feature is for.
+function trkFindBlocks(sheetName) {
+  const grid = trkWorkbookGrids[sheetName];
+  if (!grid || !grid.length) return [];
+  const width = grid.reduce((m, r) => Math.max(m, (r || []).length), 0);
+  const colHas = [];
+  for (let c = 0; c < width; c++) colHas[c] = grid.some(r => r && String(r[c] || '').trim() !== '');
+  const groups = [];
+  let c = 0;
+  while (c < width) {
+    if (!colHas[c]) { c++; continue; }
+    const start = c;
+    while (c < width && colHas[c]) c++;
+    groups.push({ c0: start, c1: c - 1 });
+  }
+  return groups.map(g => {
+    let r0 = -1, r1 = -1;
+    grid.forEach((row, ri) => {
+      if (!row) return;
+      for (let cc = g.c0; cc <= g.c1; cc++) {
+        if (String(row[cc] || '').trim() !== '') { if (r0 < 0) r0 = ri; r1 = ri; break; }
+      }
+    });
+    return { sheet: sheetName, c0: g.c0, c1: g.c1, r0: r0, r1: r1 };
+  }).filter(b => b.r0 >= 0);
+}
+
+function trkReadRange(box) {
+  const grid = trkWorkbookGrids[box.sheet];
+  if (!grid) return [];
+  const out = [];
+  for (let r = box.r0; r <= box.r1; r++) {
+    const row = grid[r] || [];
+    const line = [];
+    for (let c = box.c0; c <= box.c1; c++) line.push(String(row[c] == null ? '' : row[c]).trim());
+    if (line.some(v => v !== '')) out.push(line);
+  }
+  return out;
+}
+
+function trkRefList() {
+  const sh = trkSheets[trkActiveSheet];
+  if (!sh) return [];
+  if (!sh.refRanges) sh.refRanges = [];
+  return sh.refRanges;
+}
+function trkRuleList() {
+  const sh = trkSheets[trkActiveSheet];
+  if (!sh) return [];
+  if (!sh.fillRules) sh.fillRules = [];
+  return sh.fillRules;
+}
+
+// ─── Key extraction ───
+// Lookup keys rarely sit in a cell by themselves. "Break (AZ)" has to become
+// "AZ" before it can meet "Arizona (AZ)" — and the same trick, applied to both
+// sides, is what makes one lookup serve a dozen different naming habits.
+const TRK_EXTRACTORS = [
+  { id: 'whole',      label: 'whole cell' },
+  { id: 'parens',     label: 'text in (brackets)' },
+  { id: 'brackets',   label: 'text in [brackets]' },
+  { id: 'first',      label: 'first word' },
+  { id: 'last',       label: 'last word' },
+  { id: 'beforeDash', label: 'text before a dash' },
+  { id: 'afterDash',  label: 'text after a dash' },
+  { id: 'custom',     label: 'custom pattern…' }
+];
+function trkExtract(v, mode, custom) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  let m;
+  switch (mode) {
+    case 'parens':     m = s.match(/\(([^)]*)\)/);   return m ? m[1].trim() : '';
+    case 'brackets':   m = s.match(/\[([^\]]*)\]/);  return m ? m[1].trim() : '';
+    case 'first':      return (s.split(/\s+/)[0] || '');
+    case 'last':       { const p = s.split(/\s+/); return p[p.length - 1] || ''; }
+    case 'beforeDash': m = s.split(/\s*[-–—]\s*/); return m.length > 1 ? m[0].trim() : s;
+    case 'afterDash':  m = s.match(/[-–—]\s*(.+)$/); return m ? m[1].trim() : '';
+    case 'custom':
+      if (!custom) return s;
+      try {
+        const re = new RegExp(custom, 'i');
+        const hit = s.match(re);
+        return hit ? String(hit[1] != null ? hit[1] : hit[0]).trim() : '';
+      } catch (e) { return ''; }
+    default: return s;
+  }
+}
+
+// Works out every cell the rule would write, and buckets whatever it cannot
+// resolve so those can be typed in. Precedence: a per-value entry you typed
+// beats a per-key entry, which beats the lookup range.
+function trkPlanFill(rule) {
+  const data = trkReadRange(rule.box);
+  const norm = v => rule.loose
+    ? String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    : String(v || '').trim();
+  const map = new Map();
+  data.forEach(row => {
+    const k = norm(trkExtract(row[rule.keyCol], rule.keyExtract, rule.keyCustom));
+    if (k && !map.has(k)) map.set(k, String(row[rule.valCol] == null ? '' : row[rule.valCol]).trim());
+  });
+  const isNew = rule.destCi === '__new__';
+  const destCi = isNew ? trkHeaders.length : Number(rule.destCi);
+  const manual = rule.manual || {};
+  const perRow = rule.perRow || {};
+  const hits = [], groups = new Map();
+  let skippedFilled = 0;
+  trkRows.forEach((row, ri) => {
+    const raw = String(row[rule.srcCi] == null ? '' : row[rule.srcCi]).trim();
+    if (!raw) return;
+    const ex = trkExtract(raw, rule.srcExtract, rule.srcCustom);
+    const k = norm(ex);
+    const cur = isNew ? '' : String(row[destCi] == null ? '' : row[destCi]).trim();
+    if (rule.blanksOnly && cur !== '') { skippedFilled++; return; }
+    let val = null;
+    if (perRow[raw] != null && perRow[raw] !== '') val = perRow[raw];
+    else if (k && manual[k] != null && manual[k] !== '') val = manual[k];
+    else if (k && map.has(k)) val = map.get(k);
+    if (val != null) {
+      if (cur !== val) hits.push({ ri: ri, ci: destCi, oldVal: isNew ? '' : (row[destCi] == null ? '' : row[destCi]), newVal: val });
+      return;
+    }
+    // Unresolved. Group by the extracted key when there is one, otherwise by
+    // the cell itself — so every "(CA)" job shares one box while "Stand By"
+    // and "Lunch" each get their own.
+    const gid = k ? 'k\u0000' + k : 'r\u0000' + raw;
+    const g = groups.get(gid) || { kind: k ? 'key' : 'row', key: k, raw: raw, label: k ? ex : raw, rows: [], samples: [] };
+    g.rows.push(ri);
+    if (g.samples.length < 4 && g.samples.indexOf(raw) < 0) g.samples.push(raw);
+    groups.set(gid, g);
+  });
+  return {
+    hits: hits, keys: map.size, isNew: isNew, destCi: destCi, skippedFilled: skippedFilled,
+    groups: [...groups.values()].sort((a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label))
+  };
+}
+
+// ─── Panel ───
+function trkRenderRefPanel() {
+  const wrap = $('trk-ref-panel');
+  if (!wrap) return;
+  const list = trkRefList();
+  const rules = trkRuleList();
+  const btn = $('trk-btn-ref');
+  if (btn) btn.style.display = Object.keys(trkWorkbookGrids).length ? '' : 'none';
+  if (!list.length && !rules.length) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+  wrap.style.display = '';
+  let html = '';
+  if (rules.length) {
+    html += '<div class="trk-rule-bar"><span class="text-muted small">Fill rules</span>' +
+      rules.map(r => {
+        const dest = r.destCi === '__new__' ? (r.destName || 'new column') : (trkHeaders[r.destCi] || 'column ' + (Number(r.destCi) + 1));
+        return '<span class="trk-rule-chip" title="' + esc((trkHeaders[r.srcCi] || '?') + ' → ' + dest) + '">' +
+          '<b>' + esc(r.name) + '</b>' +
+          '<span class="text-muted small">&rarr; ' + esc(dest) + '</span>' +
+          (r.lastRun != null ? '<span class="text-muted small">(' + r.lastRun + ')</span>' : '') +
+          '<button class="btn btn-primary btn-sm trk-rule-run" data-id="' + r.id + '">Run</button>' +
+          '<button class="btn btn-ghost btn-sm trk-rule-edit" data-id="' + r.id + '" title="Edit">&#9998;</button>' +
+          '<button class="btn btn-ghost btn-sm trk-rule-del" data-id="' + r.id + '" title="Delete rule">&times;</button>' +
+        '</span>';
+      }).join('') + '</div>';
+  }
+  list.forEach(rr => {
+    const data = trkReadRange(rr.box);
+    const cols = data.length ? data[0].length : 0;
+    html += '<div class="trk-ref-card">' +
+      '<div class="trk-ref-head">' +
+        '<b>' + esc(rr.name) + '</b>' +
+        '<code class="trk-ref-ref">' + esc(rr.box.sheet + '!' + trkRangeLabel(rr.box)) + '</code>' +
+        '<span class="text-muted small">' + cols + ' col' + (cols === 1 ? '' : 's') +
+          ' &times; ' + data.length + ' row' + (data.length === 1 ? '' : 's') + '</span>' +
+        '<span style="margin-left:auto;"></span>' +
+        (cols >= 2 ? '<button class="btn btn-primary btn-sm trk-ref-fill" data-id="' + rr.id + '">Fill&hellip;</button>' : '') +
+        '<button class="btn btn-ghost btn-sm trk-ref-del" data-id="' + rr.id + '" title="Remove this range">&times;</button>' +
+      '</div>' +
+      '<div class="trk-ref-body"><table class="data-table trk-ref-table"><tbody>';
+    data.slice(0, 40).forEach(row => {
+      html += '<tr>' + row.map(v =>
+        '<td class="trk-ref-cell" title="Click to copy">' + esc(v) + '</td>').join('') + '</tr>';
+    });
+    html += '</tbody></table>' +
+      (data.length > 40 ? '<div class="text-muted small" style="padding:4px 6px;">… and ' + (data.length - 40) + ' more rows</div>' : '') +
+      '</div></div>';
+  });
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('.trk-ref-cell').forEach(td => td.addEventListener('click', () => {
+    const t = (td.textContent || '').trim();
+    if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => {
+      td.classList.add('trk-ref-copied');
+      setTimeout(() => td.classList.remove('trk-ref-copied'), 700);
+    }, () => {});
+  }));
+  wrap.querySelectorAll('.trk-ref-del').forEach(b => b.addEventListener('click', () => {
+    const l = trkRefList();
+    const i = l.findIndex(x => x.id === b.dataset.id);
+    if (i >= 0) l.splice(i, 1);
+    trkRenderRefPanel();
+  }));
+  wrap.querySelectorAll('.trk-ref-fill').forEach(b => b.addEventListener('click', () => {
+    const draft = trkNewRule(b.dataset.id);
+    if (draft) trkShowRuleEditor(draft, true);
+  }));
+  wrap.querySelectorAll('.trk-rule-run').forEach(b => b.addEventListener('click', () => {
+    const r = trkRuleList().find(x => x.id === b.dataset.id);
+    if (!r) return;
+    if (!trkRunRule(r)) alert('Nothing to fill — every target cell already holds the right value.');
+    trkRenderRefPanel();
+  }));
+  wrap.querySelectorAll('.trk-rule-edit').forEach(b => b.addEventListener('click', () => {
+    const r = trkRuleList().find(x => x.id === b.dataset.id);
+    if (r) trkShowRuleEditor(r, false);
+  }));
+  wrap.querySelectorAll('.trk-rule-del').forEach(b => b.addEventListener('click', () => {
+    const l = trkRuleList();
+    const i = l.findIndex(x => x.id === b.dataset.id);
+    if (i >= 0) l.splice(i, 1);
+    trkRenderRefPanel();
+  }));
+}
+
+// ─── Add-range modal ───
+function trkShowAddRangeModal() {
+  const grids = Object.keys(trkWorkbookGrids);
+  if (!grids.length) { alert('Reference ranges come from an uploaded Excel workbook. Load one on the Setup screen first.'); return; }
+  const sh = trkSheets[trkActiveSheet];
+  const own = (sh && sh.name && trkWorkbookGrids[sh.name]) ? sh.name : grids[0];
+
+  let ov = $('trk-range-overlay');
+  const blocks = [];
+  grids.forEach(sn => {
+    trkFindBlocks(sn).forEach((b, i) => {
+      // The first block of the tracked sheet IS the tracked table — skip it.
+      if (sn === own && i === 0) return;
+      blocks.push(b);
+    });
+  });
+  // Nearest first: this sheet's own side-blocks before other tabs'.
+  blocks.sort((a, b) => (a.sheet === own ? 0 : 1) - (b.sheet === own ? 0 : 1));
+
+  let html = '<div class="modal" style="max-width:640px;"><h3>Add reference range</h3>' +
+    '<p class="text-muted small">Blocks found outside the tracked table. Pick one, or type any range &mdash; ' +
+    '<code>R3:S5</code>, <code>Sheet!R3:S5</code>, a column like <code>S</code>, or rows like <code>3:5</code>.</p>' +
+    '<div class="trk-range-blocks">';
+  if (!blocks.length) html += '<div class="text-muted small" style="padding:8px;">No separate blocks found — type a range below.</div>';
+  blocks.slice(0, 12).forEach((b, i) => {
+    const preview = trkReadRange(b).slice(0, 2)
+      .map(r => r.slice(0, 4).map(v => esc(v.length > 26 ? v.slice(0, 26) + '…' : v)).join(' <span class="text-muted">|</span> '))
+      .join('<br>');
+    html += '<label class="trk-range-block">' +
+      '<input type="radio" name="trk-range-pick" value="' + i + '">' +
+      '<div><code>' + esc(b.sheet + '!' + trkRangeLabel(b)) + '</code> ' +
+      '<span class="text-muted small">' + (b.c1 - b.c0 + 1) + ' cols &times; ' + (b.r1 - b.r0 + 1) + ' rows</span>' +
+      '<div class="trk-range-prev">' + preview + '</div></div></label>';
+  });
+  html += '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap;">' +
+      '<label class="trk-range-block" style="flex:1;min-width:260px;">' +
+        '<input type="radio" name="trk-range-pick" value="custom">' +
+        '<div style="flex:1;"><span class="text-muted small">Type a range</span>' +
+        '<div style="display:flex;gap:6px;margin-top:4px;">' +
+        '<select class="input-field input-sm" id="trk-range-sheet">' +
+          grids.map(s => '<option' + (s === own ? ' selected' : '') + '>' + esc(s) + '</option>').join('') +
+        '</select>' +
+        '<input type="text" class="input-field input-sm" id="trk-range-text" placeholder="R3:S5" style="width:120px;">' +
+        '</div></div></label>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">' +
+      '<span class="text-muted small">Name</span>' +
+      '<input type="text" class="input-field" id="trk-range-name" placeholder="e.g. Min Wage" style="flex:1;">' +
+    '</div>' +
+    '<div id="trk-range-err" class="text-muted small" style="color:#dc2626;display:none;margin-bottom:8px;"></div>' +
+    '<div class="modal-actions"><button class="btn btn-ghost" id="trk-range-cancel">Cancel</button>' +
+    '<button class="btn btn-primary" id="trk-range-add">Add</button></div></div>';
+
+  if (!ov) { ov = document.createElement('div'); ov.id = 'trk-range-overlay'; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
+  ov.innerHTML = html;
+  ov.classList.add('show');
+  ov.style.display = 'flex';
+  const close = () => { ov.classList.remove('show'); ov.style.display = 'none'; };
+  ov.querySelector('#trk-range-cancel').addEventListener('click', close);
+  ov.addEventListener('click', e => { if (e.target === ov) close(); });
+  const nameBox = ov.querySelector('#trk-range-name');
+  const textBox = ov.querySelector('#trk-range-text');
+  if (textBox) textBox.addEventListener('focus', () => {
+    const r = ov.querySelector('input[value="custom"]'); if (r) r.checked = true;
+  });
+  ov.querySelector('#trk-range-add').addEventListener('click', () => {
+    const err = ov.querySelector('#trk-range-err');
+    const pick = ov.querySelector('input[name="trk-range-pick"]:checked');
+    if (!pick) { err.textContent = 'Pick a block, or type a range.'; err.style.display = ''; return; }
+    let box;
+    if (pick.value === 'custom') {
+      box = trkParseA1(textBox.value, ov.querySelector('#trk-range-sheet').value);
+      if (!box) { err.textContent = 'Could not read that range. Try R3:S5, S, or 3:5.'; err.style.display = ''; return; }
+    } else {
+      box = blocks[+pick.value];
+    }
+    if (!trkReadRange(box).length) { err.textContent = 'That range is empty.'; err.style.display = ''; return; }
+    trkRefList().push({
+      id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6),
+      name: (nameBox.value || '').trim() || (box.sheet + '!' + trkRangeLabel(box)),
+      box: box
+    });
+    close();
+    trkRenderRefPanel();
+  });
+}
+
+// ─── Fill Rule editor ───
+// One dialog covers the whole job: where the keys come from, how to pull them
+// out of the text, what to write, and a typed-in value for everything that
+// doesn't resolve. Save it under a name and the next sheet is one click.
+// Opening on "column 1, whole cell" is useless — it compares job IDs against
+// state names and reports 0 fills with 53 boxes to type in. So try every
+// (tracked column × extraction × lookup key column × extraction) pairing and
+// open on whichever actually matches the most rows. On this workbook that
+// lands on Job Name → text in (brackets) → Arizona (AZ), with no setup at all.
+function trkAutoConfigure(rule) {
+  const data = trkReadRange(rule.box);
+  if (!data.length || !trkHeaders.length) return rule;
+  const width = data[0].length;
+  const modes = TRK_EXTRACTORS.filter(x => x.id !== 'custom').map(x => x.id);
+  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const sample = trkRows.slice(0, 200);
+  let best = null;
+  for (let keyCol = 0; keyCol < width; keyCol++) {
+    for (const keyMode of modes) {
+      const keys = new Set();
+      data.forEach(r => { const k = norm(trkExtract(r[keyCol], keyMode)); if (k) keys.add(k); });
+      if (!keys.size) continue;
+      for (let ci = 0; ci < trkHeaders.length; ci++) {
+        for (const srcMode of modes) {
+          let hit = 0;
+          for (let i = 0; i < sample.length; i++) {
+            const k = norm(trkExtract(sample[i][ci], srcMode));
+            if (k && keys.has(k)) hit++;
+          }
+          if (!hit) continue;
+          if (!best || hit > best.hit || (hit === best.hit && keys.size > best.keyCount)) {
+            best = { hit: hit, keyCol: keyCol, keyMode: keyMode, ci: ci, srcMode: srcMode, keyCount: keys.size };
+          }
+        }
+      }
+    }
+  }
+  if (best) {
+    rule.srcCi = best.ci;
+    rule.srcExtract = best.srcMode;
+    rule.keyCol = best.keyCol;
+    rule.keyExtract = best.keyMode;
+    rule.valCol = width > 1 ? (best.keyCol === 0 ? 1 : 0) : 0;
+    rule.autoHit = best.hit;
+  }
+  // Write into the first column that is completely empty — that is almost
+  // always the one waiting to be filled (here: Rates).
+  let emptyCi = -1;
+  for (let ci = 0; ci < trkHeaders.length; ci++) {
+    if (ci === rule.srcCi) continue;
+    if (trkRows.every(r => String(r[ci] == null ? '' : r[ci]).trim() === '')) { emptyCi = ci; break; }
+  }
+  rule.destCi = emptyCi >= 0 ? emptyCi : (trkHeaders.length ? '__new__' : '__new__');
+  return rule;
+}
+
+// ─── Auto-suggest ───
+// Nobody should have to pick columns and extraction modes by hand. On import,
+// try every lookup block in the workbook against every tracked column with
+// every extraction, and keep the pairings that actually match rows. What comes
+// back is a finished proposal — "fill Rates from the wage table, 14 rows" —
+// with one button. The editor is there if you want to argue with it.
+function trkSuggestFills() {
+  if (!trkHeaders.length || !trkRows.length) return [];
+  const modes = TRK_EXTRACTORS.filter(x => x.id !== 'custom').map(x => x.id);
+  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const sample = trkRows.slice(0, 250);
+
+  // Extract once per (column, mode); matching is then just set lookups.
+  const srcKeys = [], emptyCol = [];
+  for (let ci = 0; ci < trkHeaders.length; ci++) {
+    emptyCol[ci] = trkRows.every(r => String(r[ci] == null ? '' : r[ci]).trim() === '');
+    srcKeys[ci] = {};
+    if (emptyCol[ci]) continue;
+    modes.forEach(m => { srcKeys[ci][m] = sample.map(r => norm(trkExtract(r[ci], m))); });
+  }
+  const targets = [];
+  for (let ci = 0; ci < trkHeaders.length; ci++) if (emptyCol[ci]) targets.push(ci);
+
+  if (!targets.length) return [];   // nothing empty to fill — propose nothing
+
+  const ownSheet = (trkSheets[trkActiveSheet] || {}).name;
+  const cands = [];
+  Object.keys(trkWorkbookGrids).forEach(sn => {
+    trkFindBlocks(sn).forEach((b, bi) => {
+      if (sn === ownSheet && bi === 0) return;          // that's the tracked table
+      const data = trkReadRange(b);
+      if (data.length < 2 || !data[0] || data[0].length < 2) return;
+      // A lookup is a short reference list. A 2893-row sheet joined on site
+      // name is a dataset, and its "value" column is somebody else's data —
+      // that is how "fill Miles with a location name" got proposed.
+      if (data.length > 200) return;
+      const w = data[0].length;
+      for (let keyCol = 0; keyCol < w; keyCol++) {
+        for (const keyMode of modes) {
+          const keys = new Set();
+          let numericKeys = 0;
+          data.forEach(r => {
+            const k = norm(trkExtract(r[keyCol], keyMode));
+            if (!k) return;
+            if (!keys.has(k) && /^\d+$/.test(k)) numericKeys++;
+            keys.add(k);
+          });
+          if (keys.size < 2) continue;
+          // Bare numbers match each other by accident far too easily.
+          if (numericKeys / keys.size > 0.5) continue;
+          for (let ci = 0; ci < trkHeaders.length; ci++) {
+            if (emptyCol[ci]) continue;
+            for (const srcMode of modes) {
+              const arr = srcKeys[ci][srcMode];
+              const seen = new Set();
+              let hit = 0;
+              for (let i = 0; i < arr.length; i++) {
+                if (arr[i] && keys.has(arr[i])) { hit++; seen.add(arr[i]); }
+              }
+              // How much of the lookup actually gets used is what separates a
+              // real join from a coincidence. "Pay Style = Hourly" hitting one
+              // key of nineteen matched 55 rows and meant nothing; the wage
+              // table matched 3 keys of 3 across 14 rows and meant everything.
+              // Three distinct keys is the floor. On two, "CA→41 / AZ→41"
+              // scores a perfect coverage and means nothing.
+              const coverage = seen.size / keys.size;
+              if (seen.size < 3 || coverage < 0.6 || hit < 5) continue;
+              cands.push({ sheet: sn, box: b, keyCol: keyCol, keyMode: keyMode, ci: ci, srcMode: srcMode,
+                hit: hit, distinct: seen.size, keyCount: keys.size, coverage: coverage,
+                score: seen.size * coverage });
+            }
+          }
+        }
+      }
+    });
+  });
+
+  // One proposal per lookup block, best first. The destination is pre-set to
+  // the first empty column but stays a dropdown in the banner: which column a
+  // rate belongs in is the one thing that cannot be read off the data, so it
+  // is offered rather than guessed at silently.
+  const usedBlock = new Set(), out = [];
+  cands.sort((a, b) => b.score - a.score || b.hit - a.hit);
+  for (const s of cands) {
+    const bid = s.sheet + '!' + trkRangeLabel(s.box);
+    if (usedBlock.has(bid)) continue;
+    const dest = targets[Math.min(out.length, targets.length - 1)];
+    if (dest == null) break;
+    usedBlock.add(bid);
+    const proposal = {
+      id: 's' + Math.random().toString(36).slice(2, 8),
+      box: s.box, rangeLabel: bid,
+      srcCi: s.ci, srcExtract: s.srcMode, srcCustom: '',
+      keyCol: s.keyCol, keyExtract: s.keyMode, keyCustom: '',
+      valCol: s.keyCol === 0 ? 1 : 0,
+      destCi: dest, destName: '',
+      blanksOnly: true, loose: true, manual: {}, perRow: {},
+      name: 'Fill ' + (trkHeaders[dest] || 'column ' + (dest + 1)),
+      matched: s.hit, keyCount: s.keyCount, coverage: s.coverage
+    };
+    // Only offer it if it would actually write something.
+    if (!trkPlanFill(proposal).hits.length) { usedBlock.delete(bid); continue; }
+    out.push(proposal);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+let trkSuggestions = null;
+let trkSuggestDismissed = false;
+
+function trkRefreshSuggestions(force) {
+  if (force) trkSuggestDismissed = false;
+  trkSuggestions = (Object.keys(trkWorkbookGrids).length && !trkSuggestDismissed) ? trkSuggestFills() : [];
+  trkRenderSuggestions();
+}
+
+function trkRenderSuggestions() {
+  const bar = $('trk-suggest');
+  if (!bar) return;
+  const list = (trkSuggestions || []).filter(s => {
+    const p = trkPlanFill(s);
+    s.pending = p.hits.length;
+    s.leftover = p.groups.length;
+    return p.hits.length > 0;
+  });
+  if (!list.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = '';
+  const total = list.reduce((n, s) => n + s.pending, 0);
+  bar.innerHTML =
+    '<div class="trk-sg-head"><b>&#10022; ' + list.length + ' fill' + (list.length === 1 ? '' : 's') +
+      ' found</b> <span class="text-muted small">' + total + ' cell' + (total === 1 ? '' : 's') +
+      ' ready &mdash; nothing to set up</span>' +
+      '<span style="margin-left:auto;"></span>' +
+      (list.length > 1 ? '<button class="btn btn-primary btn-sm" id="trk-sg-all">Fill all</button>' : '') +
+      '<button class="btn btn-ghost btn-sm" id="trk-sg-dismiss" title="Hide these">&times;</button></div>' +
+    list.map(s => {
+      const destName = s.destCi === '__new__' ? (s.destName || 'new column') : (trkHeaders[s.destCi] || 'column');
+      const ex = TRK_EXTRACTORS.find(x => x.id === s.srcExtract);
+      const eg = [];
+      for (let ri = 0; ri < trkRows.length && eg.length < 2; ri++) {
+        const raw = String(trkRows[ri][s.srcCi] || '').trim();
+        const k = trkExtract(raw, s.srcExtract, '');
+        if (raw && k && !eg.some(e => e.k === k)) eg.push({ raw: raw, k: k });
+      }
+      const data = trkReadRange(s.box);
+      const width = data.length ? data[0].length : 1;
+      let valOpts = '';
+      for (let i = 0; i < width; i++) {
+        if (i === s.keyCol) continue;
+        const sm = (data.find(r => r[i]) || [])[i] || '';
+        valOpts += '<option value="' + i + '"' + (i === s.valCol ? ' selected' : '') + '>' +
+          esc(sm.length > 22 ? sm.slice(0, 22) + '…' : (sm || trkColLetter(s.box.c0 + i))) + '</option>';
+      }
+      const destOpts = trkHeaders.map((h, i) =>
+        '<option value="' + i + '"' + (i === s.destCi ? ' selected' : '') + '>' +
+        esc(h || 'column ' + (i + 1)) + '</option>').join('');
+      return '<div class="trk-sg-row">' +
+        '<div class="trk-sg-txt">' +
+          '<span class="text-muted">matched</span> <b>' + esc(trkHeaders[s.srcCi] || 'column') + '</b>' +
+          (s.srcExtract !== 'whole' ? ' <span class="text-muted">(' + esc(ex ? ex.label : s.srcExtract) + ')</span>' : '') +
+          ' <span class="text-muted">against</span> <code>' + esc(s.rangeLabel) + '</code>' +
+          ' <span class="text-muted">&middot; ' + s.pending + ' rows</span>' +
+          (eg.length ? '<div class="trk-sg-eg">' + eg.map(e =>
+            esc(e.raw.length > 28 ? e.raw.slice(0, 28) + '…' : e.raw) + ' &rarr; <b>' + esc(e.k) + '</b>').join(' &nbsp;·&nbsp; ') +
+            (s.leftover ? ' &nbsp;·&nbsp; <span class="text-muted">' + s.leftover + ' left to type in</span>' : '') + '</div>' : '') +
+        '</div>' +
+        '<span class="trk-sg-pick"><span class="text-muted small">put</span>' +
+          '<select class="input-field input-sm trk-sg-val" data-id="' + s.id + '">' + valOpts + '</select>' +
+          '<span class="text-muted small">in</span>' +
+          '<select class="input-field input-sm trk-sg-dest" data-id="' + s.id + '">' + destOpts + '</select></span>' +
+        '<button class="btn btn-primary btn-sm trk-sg-run" data-id="' + s.id + '">Fill</button>' +
+        '<button class="btn btn-ghost btn-sm trk-sg-edit" data-id="' + s.id + '">Review…</button>' +
+      '</div>';
+    }).join('');
+
+  const find = id => (trkSuggestions || []).find(x => x.id === id);
+  bar.querySelectorAll('.trk-sg-dest').forEach(sel => sel.addEventListener('change', () => {
+    const s = find(sel.dataset.id);
+    if (!s) return;
+    s.destCi = +sel.value;
+    s.name = 'Fill ' + (trkHeaders[s.destCi] || 'column ' + (s.destCi + 1));
+    trkRenderSuggestions();
+  }));
+  bar.querySelectorAll('.trk-sg-val').forEach(sel => sel.addEventListener('change', () => {
+    const s = find(sel.dataset.id);
+    if (!s) return;
+    s.valCol = +sel.value;
+    trkRenderSuggestions();
+  }));
+  bar.querySelectorAll('.trk-sg-run').forEach(b => b.addEventListener('click', () => {
+    const s = find(b.dataset.id);
+    if (!s) return;
+    trkAcceptSuggestion(s);
+  }));
+  bar.querySelectorAll('.trk-sg-edit').forEach(b => b.addEventListener('click', () => {
+    const s = find(b.dataset.id);
+    if (!s) return;
+    trkPinRange(s.box, s.name);
+    trkShowRuleEditor(s, true);
+  }));
+  const all = $('trk-sg-all');
+  if (all) all.addEventListener('click', () => { list.slice().forEach(s => trkAcceptSuggestion(s, true)); trkRefreshSuggestions(); });
+  const dis = $('trk-sg-dismiss');
+  if (dis) dis.addEventListener('click', () => { trkSuggestDismissed = true; trkSuggestions = []; trkRenderSuggestions(); });
+}
+
+// Applying a suggestion also pins its lookup and keeps it as a rule, so the
+// leftovers can be typed in later and the whole thing re-run on another sheet.
+function trkAcceptSuggestion(s, quiet) {
+  trkPinRange(s.box, s.name);
+  const list = trkRuleList();
+  if (!list.some(r => r.id === s.id)) list.push(s);
+  const ok = trkRunRule(s);
+  if (!quiet) {
+    trkRefreshSuggestions();
+    trkRenderRefPanel();
+    if (ok && s.leftover) trkShowRuleEditor(s, false);
+  }
+  return ok;
+}
+
+function trkPinRange(box, name) {
+  const list = trkRefList();
+  const label = box.sheet + '!' + trkRangeLabel(box);
+  if (list.some(r => (r.box.sheet + '!' + trkRangeLabel(r.box)) === label)) return;
+  list.push({ id: 'r' + Math.random().toString(36).slice(2, 8), name: name || label, box: box });
+}
+
+function trkNewRule(rangeId) {
+  const rr = trkRefList().find(x => x.id === rangeId);
+  if (!rr) return null;
+  const data = trkReadRange(rr.box);
+  const width = data.length ? data[0].length : 1;
+  const rule = {
+    id: 'f' + Date.now() + Math.random().toString(36).slice(2, 6),
+    name: rr.name, rangeId: rr.id, box: rr.box,
+    srcCi: 0, srcExtract: 'whole', srcCustom: '',
+    keyCol: 0, keyExtract: 'whole', keyCustom: '',
+    valCol: Math.min(1, width - 1),
+    destCi: trkHeaders.length ? 0 : '__new__', destName: '',
+    blanksOnly: true, loose: true,
+    manual: {}, perRow: {}, lastRun: null
+  };
+  trkAutoConfigure(rule);
+  // A range named after its own address makes a poor rule name.
+  if (!rr.name || /^.+![A-Z]+\d+:[A-Z]+\d+$/.test(rr.name)) {
+    const dest = rule.destCi === '__new__' ? 'new column' : (trkHeaders[rule.destCi] || 'column');
+    rule.name = 'Fill ' + dest;
+  }
+  return rule;
+}
+
+function trkShowRuleEditor(rule, isDraft) {
+  const data = trkReadRange(rule.box);
+  if (!data.length) { alert('That reference range is empty.'); return; }
+  const width = data[0].length;
+  const extOpts = (sel) => TRK_EXTRACTORS.map(x =>
+    '<option value="' + x.id + '"' + (x.id === sel ? ' selected' : '') + '>' + esc(x.label) + '</option>').join('');
+  const rangeColOpts = (sel) => {
+    let o = '';
+    for (let i = 0; i < width; i++) {
+      const s = (data.find(r => r[i]) || [])[i] || '';
+      o += '<option value="' + i + '"' + (i === sel ? ' selected' : '') + '>' +
+        esc(trkColLetter(rule.box.c0 + i) + ' — ' + (s.length > 24 ? s.slice(0, 24) + '…' : s)) + '</option>';
+    }
+    return o;
+  };
+  const trackedOpts = (sel, withNew) => {
+    let o = trkHeaders.map((h, i) => '<option value="' + i + '"' + (String(i) === String(sel) ? ' selected' : '') + '>' +
+      esc(h || '(column ' + (i + 1) + ')') + '</option>').join('');
+    if (withNew) o += '<option value="__new__"' + (sel === '__new__' ? ' selected' : '') + '>+ new column…</option>';
+    return o;
+  };
+
+  let ov = $('trk-fill-overlay');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'trk-fill-overlay'; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
+  ov.innerHTML =
+    '<div class="modal trk-rule-modal"><h3>' + (isDraft ? 'New fill rule' : 'Edit rule') + '</h3>' +
+    '<div class="trk-fill-grid">' +
+      '<label>Read tracked column</label>' +
+        '<div class="trk-inline"><select class="input-field" id="trk-r-src">' + trackedOpts(rule.srcCi, false) + '</select>' +
+        '<select class="input-field" id="trk-r-srcex">' + extOpts(rule.srcExtract) + '</select>' +
+        '<input type="text" class="input-field trk-pat" id="trk-r-srcpat" placeholder="pattern" value="' + esc(rule.srcCustom || '') + '"></div>' +
+      '<label>Match lookup column</label>' +
+        '<div class="trk-inline"><select class="input-field" id="trk-r-key">' + rangeColOpts(rule.keyCol) + '</select>' +
+        '<select class="input-field" id="trk-r-keyex">' + extOpts(rule.keyExtract) + '</select>' +
+        '<input type="text" class="input-field trk-pat" id="trk-r-keypat" placeholder="pattern" value="' + esc(rule.keyCustom || '') + '"></div>' +
+      '<label>Write lookup column</label><select class="input-field" id="trk-r-val">' + rangeColOpts(rule.valCol) + '</select>' +
+      '<label>Into tracked column</label>' +
+        '<div class="trk-inline"><select class="input-field" id="trk-r-dest">' + trackedOpts(rule.destCi, true) + '</select>' +
+        '<input type="text" class="input-field" id="trk-r-destname" placeholder="new column name" value="' + esc(rule.destName || '') + '" style="display:none;"></div>' +
+    '</div>' +
+    '<div class="trk-inline" style="margin:8px 0 10px;">' +
+      '<label class="trk-check"><input type="checkbox" id="trk-r-blanks"' + (rule.blanksOnly ? ' checked' : '') + '> only fill blanks</label>' +
+      '<label class="trk-check" title="Ignores case, spaces and punctuation when comparing."><input type="checkbox" id="trk-r-loose"' + (rule.loose ? ' checked' : '') + '> loose match</label>' +
+    '</div>' +
+    '<div id="trk-r-preview" class="trk-fill-preview"></div>' +
+    '<div id="trk-r-unmatched"></div>' +
+    '<div class="trk-inline" style="margin:10px 0 4px;">' +
+      '<span class="text-muted small">Rule name</span>' +
+      '<input type="text" class="input-field" id="trk-r-name" value="' + esc(rule.name || '') + '" style="flex:1;">' +
+    '</div>' +
+    '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" id="trk-r-cancel">Cancel</button>' +
+      '<button class="btn btn-ghost" id="trk-r-save">Save rule</button>' +
+      '<button class="btn btn-primary" id="trk-r-apply">Save &amp; apply</button>' +
+    '</div></div>';
+  ov.classList.add('show');
+  ov.style.display = 'flex';
+  const close = () => { ov.classList.remove('show'); ov.style.display = 'none'; };
+  ov.querySelector('#trk-r-cancel').addEventListener('click', close);
+  ov.addEventListener('click', e => { if (e.target === ov) close(); });
+
+  const q = id => ov.querySelector(id);
+  function harvest() {
+    rule.srcCi = +q('#trk-r-src').value;
+    rule.srcExtract = q('#trk-r-srcex').value;
+    rule.srcCustom = q('#trk-r-srcpat').value.trim();
+    rule.keyCol = +q('#trk-r-key').value;
+    rule.keyExtract = q('#trk-r-keyex').value;
+    rule.keyCustom = q('#trk-r-keypat').value.trim();
+    rule.valCol = +q('#trk-r-val').value;
+    rule.destCi = q('#trk-r-dest').value === '__new__' ? '__new__' : +q('#trk-r-dest').value;
+    rule.destName = q('#trk-r-destname').value.trim();
+    rule.blanksOnly = q('#trk-r-blanks').checked;
+    rule.loose = q('#trk-r-loose').checked;
+    // The name follows the destination until you type one of your own —
+    // otherwise changing the target leaves a rule called "Fill Earning Code"
+    // that writes into Rates.
+    if (rule.nameTouched) {
+      rule.name = q('#trk-r-name').value.trim() || rule.name;
+    } else {
+      const dest = rule.destCi === '__new__'
+        ? (rule.destName || 'new column')
+        : (trkHeaders[rule.destCi] || 'column ' + (Number(rule.destCi) + 1));
+      rule.name = 'Fill ' + dest;
+      const nb = q('#trk-r-name');
+      if (nb && nb.value !== rule.name) nb.value = rule.name;
+    }
+    q('#trk-r-srcpat').style.display = rule.srcExtract === 'custom' ? '' : 'none';
+    q('#trk-r-keypat').style.display = rule.keyExtract === 'custom' ? '' : 'none';
+    q('#trk-r-destname').style.display = rule.destCi === '__new__' ? '' : 'none';
+  }
+
+  function refresh() {
+    harvest();
+    const p = trkPlanFill(rule);
+    // What the extraction is doing, on real rows — the thing you actually
+    // need to see to trust it.
+    // Show rows where the extraction WORKED first — three "→ nothing" lines
+    // look like a broken rule even when it is filling fine.
+    const good = [], bad = [];
+    for (let ri = 0; ri < trkRows.length && good.length < 3; ri++) {
+      const raw = String(trkRows[ri][rule.srcCi] == null ? '' : trkRows[ri][rule.srcCi]).trim();
+      if (!raw) continue;
+      const ex = trkExtract(raw, rule.srcExtract, rule.srcCustom);
+      const bucket = ex ? good : bad;
+      if (bucket.some(s => s.raw === raw) || bucket.length >= 3) continue;
+      bucket.push({ raw: raw, ex: ex });
+    }
+    const shown = good.concat(bad).slice(0, 3);
+    // Nothing matching, and a long list of leftovers, almost always means the
+    // wrong column or the wrong extraction — say so rather than handing over
+    // fifty boxes to type into.
+    // Nothing to do because it is already done is not the same as nothing
+    // lining up — only the second deserves a warning.
+    const allDone = p.hits.length === 0 && p.skippedFilled > 0;
+    const looksWrong = p.hits.length === 0 && !allDone && p.groups.length > 5 &&
+      !Object.keys(rule.manual).length && !Object.keys(rule.perRow).length;
+    q('#trk-r-preview').innerHTML =
+      '<b>' + p.hits.length + '</b> cell' + (p.hits.length === 1 ? '' : 's') + ' will be filled' +
+      ' &middot; <b>' + p.keys + '</b> key' + (p.keys === 1 ? '' : 's') + ' in the lookup' +
+      (p.skippedFilled ? ' &middot; <span class="text-muted">' + p.skippedFilled + ' already filled, left alone</span>' : '') +
+      '<div class="trk-fill-sample">' + shown.map(s =>
+        esc(s.raw.length > 34 ? s.raw.slice(0, 34) + '…' : s.raw) + ' &rarr; <b>' +
+        (s.ex ? esc(s.ex) : '<span class="text-muted">nothing</span>') + '</b>').join('<br>') + '</div>' +
+      (looksWrong ? '<div class="trk-warn">Nothing lines up. Check <b>Read tracked column</b> ' +
+        'and the two <b>extraction</b> dropdowns &mdash; the values above should look like the lookup&rsquo;s keys.</div>' : '') +
+      (allDone ? '<div class="trk-note">Already done &mdash; those ' + p.skippedFilled +
+        ' rows hold the right value. Untick <b>only fill blanks</b> to write over them.</div>' : '');
+
+    const box = q('#trk-r-unmatched');
+    if (!p.groups.length) {
+      box.innerHTML = '<div class="text-muted small" style="margin-top:8px;">Everything resolved &mdash; nothing left to type in.</div>';
+      return;
+    }
+    let rowsLeft = 0; p.groups.forEach(g => rowsLeft += g.rows.length);
+    const CAP = 60;
+    const shownGroups = p.groups.slice(0, CAP);
+    box.innerHTML =
+      '<div class="trk-unmatched-head">' + p.groups.length + ' value' + (p.groups.length === 1 ? '' : 's') +
+        ' found no match (' + rowsLeft + ' row' + (rowsLeft === 1 ? '' : 's') + ') &mdash; type what they should get:' +
+        '<button class="btn btn-ghost btn-sm" id="trk-r-fillall" title="Put the same value in every box below">Set all…</button>' +
+      '</div>' +
+      (p.groups.length > CAP ? '<div class="text-muted small" style="margin-bottom:4px;">Showing the ' + CAP +
+        ' most common; fix the columns above or use <b>Set all…</b> if this list is longer than you expected.</div>' : '') +
+      '<div class="trk-unmatched">' + shownGroups.map(g => {
+        const cur = g.kind === 'key' ? (rule.manual[g.key] || '') : (rule.perRow[g.raw] || '');
+        const sub = g.kind === 'key'
+          ? '<div class="trk-um-sub">' + esc(g.samples.join(' · ').slice(0, 90)) + (g.samples.length >= 4 ? ' …' : '') + '</div>'
+          : '';
+        return '<div class="trk-um-row">' +
+          '<div class="trk-um-label"><b>' + esc(g.label || '(blank)') + '</b>' +
+            '<span class="text-muted small"> — ' + g.rows.length + ' row' + (g.rows.length === 1 ? '' : 's') + '</span>' + sub + '</div>' +
+          '<input type="text" class="input-field trk-um-input" data-kind="' + g.kind + '" ' +
+            'data-key="' + esc(g.key) + '" data-raw="' + esc(g.raw) + '" value="' + esc(cur) + '" placeholder="value">' +
+          '</div>';
+      }).join('') + '</div>';
+
+    box.querySelectorAll('.trk-um-input').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const v = inp.value.trim();
+        if (inp.dataset.kind === 'key') {
+          if (v) rule.manual[inp.dataset.key] = v; else delete rule.manual[inp.dataset.key];
+        } else {
+          if (v) rule.perRow[inp.dataset.raw] = v; else delete rule.perRow[inp.dataset.raw];
+        }
+        refresh();
+      });
+    });
+    const all = q('#trk-r-fillall');
+    if (all) all.addEventListener('click', () => {
+      const v = prompt('Value for all ' + p.groups.length + ' unmatched entries:');
+      if (v == null || !v.trim()) return;
+      p.groups.forEach(g => {
+        if (g.kind === 'key') rule.manual[g.key] = v.trim(); else rule.perRow[g.raw] = v.trim();
+      });
+      refresh();
+    });
+  }
+
+  ['#trk-r-src', '#trk-r-srcex', '#trk-r-key', '#trk-r-keyex', '#trk-r-val',
+   '#trk-r-dest', '#trk-r-blanks', '#trk-r-loose'].forEach(s => q(s).addEventListener('change', refresh));
+  ['#trk-r-srcpat', '#trk-r-keypat'].forEach(s => q(s).addEventListener('input', refresh));
+  q('#trk-r-name').addEventListener('input', () => { rule.nameTouched = true; });
+  q('#trk-r-destname').addEventListener('input', refresh);
+  refresh();
+
+  function persist() {
+    harvest();
+    const list = trkRuleList();
+    const i = list.findIndex(r => r.id === rule.id);
+    if (i >= 0) list[i] = rule; else list.push(rule);
+  }
+  q('#trk-r-save').addEventListener('click', () => { persist(); close(); trkRenderRefPanel(); });
+  q('#trk-r-apply').addEventListener('click', () => {
+    persist();
+    const ok = trkRunRule(rule);
+    close();
+    if (!ok) alert('Nothing to fill — every target cell already holds the right value.');
+    trkRenderRefPanel();
+  });
+}
+
+function trkRunRule(rule) {
+  const p = trkPlanFill(rule);
+  if (!p.hits.length) return false;
+  if (p.isNew) {
+    const nm = (rule.destName || '').trim() || rule.name || 'New column';
+    const sheet = trkSheets[trkActiveSheet];
+    trkHeaders.push(nm);
+    trkRows.forEach(r => { while (r.length < trkHeaders.length) r.push(''); });
+    if (sheet) {
+      sheet.headers = trkHeaders;
+      sheet.colOrder = (sheet.colOrder || []).concat([trkHeaders.length - 1]);
+      sheet.rows = trkRows;
+      trkColOrder = sheet.colOrder;
+    }
+    // The rule now points at a real column, so re-running won't add another.
+    rule.destCi = trkHeaders.length - 1;
+  }
+  trkApplyEdits(p.hits, 'Fill: ' + (rule.name || 'rule'));
+  rule.lastRun = p.hits.length;
+  if (p.isNew) trkBuildReview();
+  return true;
+}
+
+// ══════════════════════════════════════════
 // ── Public API ──
 // ══════════════════════════════════════════
 window.trkLoadSheetData = function(headers, rows, name) {
@@ -1978,6 +3137,10 @@ window.trkInit = function() {
   }
   // Sync the tracker-page yellow-skip checkbox to the persisted setting and wire it
   // so toggling it here writes the same key the import modal reads.
+  { const rb = document.getElementById('trk-btn-ref');
+    if (rb && !rb._wired) { rb.addEventListener('click', trkShowAddRangeModal); rb._wired = true; } }
+  trkRenderRefPanel();
+  trkRefreshSuggestions();
   const cb = document.getElementById('trkSkipYellowToggle');
   if (cb) {
     if (typeof getImportSkipYellow === 'function') cb.checked = getImportSkipYellow();

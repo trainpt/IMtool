@@ -7,6 +7,8 @@
 // all data validations survive). Duplicate detection is corroborated:
 //   • CONFIDENT (excluded)  → exact Alt ID, exact SSN, or Name + DOB match
 //   • POSSIBLE  (kept/flag) → name-only match with nothing else to confirm
+// Rows the client highlighted with a fill color can be left out (or kept
+// exclusively) before dedupe — see highlight-filter.js.
 // Mirrors the Legacy Employee Migration module's UI / interactions.
 // ═══════════════════════════════════════════════════════════════════════
 (function () {
@@ -40,6 +42,9 @@
   let selCells = new Set();
   let selAnchor = null;
   let previewOrder = [];
+  let hasCellEdits = false;// a preview cell was hand-edited since the last build
+  let hlScan = null;       // IMHighlight scan of the Data Template sheet's fill colors
+  let hlState = { mode: 'off', keys: new Set() }; // highlight filter (off / exclude / only)
   let initialized = false;
 
   // Pane visibility is owned by showBuild() in index.html's router — the old
@@ -178,7 +183,8 @@
   }
 
   // Read a workbook (xlsx/xls) → { wb, aoaForSheet(name) }. CSV → single aoa.
-  function readWorkbook(file) {
+  // withStyles keeps cell fills so the highlight filter can read them.
+  function readWorkbook(file, withStyles) {
     return new Promise((resolve, reject) => {
       const r = new FileReader();
       const isCsv = /\.csv$/i.test(file.name);
@@ -187,7 +193,7 @@
           if (isCsv) {
             resolve({ csv: true, aoa: parseCsvText(e.target.result) });
           } else {
-            const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+            const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellStyles: !!withStyles });
             resolve({ csv: false, wb });
           }
         } catch (err) { reject(err); }
@@ -278,7 +284,7 @@
   // Auto-uses the sheet that actually carries employee data; when a workbook has
   // more than one candidate (or none with data), the user picks the sheet.
   function handleSrcFile(file) {
-    readWorkbook(file).then(d => {
+    readWorkbook(file, true).then(d => {
       if (d.csv) {
         srcWb = null; srcFileName = file.name;
         const hr = findHeaderRow(d.aoa);
@@ -304,29 +310,79 @@
 
   // Build srcData from a chosen sheet ({ name, aoa, hr }) and render the meta
   // line with a "Change sheet" affordance when the workbook has more sheets.
+  // srcData.allRows keeps every employee row; srcData.rows is what the
+  // highlight filter lets through (the same rows when the filter is off).
   function loadSrcSheet(info, fileName) {
     const aoa = info.aoa, hr = info.hr, sheetName = info.name || '';
     const headers = (aoa[hr] || []).map(h => String(h == null ? '' : h).trim());
     const idx = {};
     headers.forEach((h, i) => { const k = noStar(h); if (k && idx[k] == null) idx[k] = i; });
     const fi = idx['first name'], li = idx['last name'];
-    const rows = aoa.slice(hr + 1).filter(row => {
-      if (!row) return false;
-      const fn = fi != null ? String(row[fi] == null ? '' : row[fi]).trim() : '';
-      const ln = li != null ? String(row[li] == null ? '' : row[li]).trim() : '';
-      return fn || ln;
-    });
-    srcData = { headers, rows, idx, fileName, sheetName };
+    const cell = (row, i) => i != null ? String(row[i] == null ? '' : row[i]).trim() : '';
+    // aoa index of each employee row — the highlight scan needs the real sheet row.
+    const aoaIdxs = [];
+    for (let r = hr + 1; r < aoa.length; r++) {
+      const row = aoa[r];
+      if (row && (cell(row, fi) || cell(row, li))) aoaIdxs.push(r);
+    }
+    const allRows = aoaIdxs.map(r => aoa[r]);
+    srcData = { headers, rows: allRows, allRows, idx, fileName, sheetName, headerRow: hr };
+    const ws = srcWb && sheetName ? srcWb.Sheets[sheetName] : null;
+    hlScan = ws && window.IMHighlight
+      ? IMHighlight.scan(srcWb, ws, aoaIdxs, headers, i => (cell(allRows[i], fi) + ' ' + cell(allRows[i], li)).trim())
+      : null;
+    hlState = { mode: 'off', keys: new Set() };
     $('es-src-name').textContent = fileName + (sheetName ? '  ·  ' + sheetName : '');
+    applyHighlight();
+    renderSrcMeta();
+    renderHighlight();
+    maybeRun();
+  }
+
+  function renderSrcMeta() {
+    if (!srcData) return;
+    const n = srcData.allRows.length;
+    const notUsed = n - srcData.rows.length;
     const canPick = !!(srcWb && srcWb.SheetNames && srcWb.SheetNames.length > 1);
-    $('es-src-meta').innerHTML = rows.length + ' employee row' + (rows.length === 1 ? '' : 's') +
-      '  ·  header at row ' + (hr + 1) +
+    $('es-src-meta').innerHTML = n + ' employee row' + (n === 1 ? '' : 's') +
+      (notUsed ? '  ·  <b style="color:#b45309;">' + notUsed + ' not used (highlight filter)</b>' : '') +
+      '  ·  header at row ' + (srcData.headerRow + 1) +
       (canPick ? '  ·  <button class="btn btn-ghost btn-sm" id="es-src-changesheet" style="padding:1px 8px;">Change sheet</button>' : '');
     if (canPick) {
       const b = $('es-src-changesheet');
-      if (b) b.addEventListener('click', () => openSrcSheetPicker(scanEmployeeSheets(srcWb), fileName));
+      if (b) b.addEventListener('click', () => openSrcSheetPicker(scanEmployeeSheets(srcWb), srcData.fileName));
     }
-    maybeRun();
+  }
+
+  // ─── Highlight filter (rows the client marked with a fill color) ───
+  function applyHighlight() {
+    if (!srcData) return;
+    const keep = window.IMHighlight ? IMHighlight.filter(hlScan, hlState) : null;
+    srcData.rows = keep ? keep.map(i => srcData.allRows[i]) : srcData.allRows;
+  }
+
+  function renderHighlight() {
+    if (!window.IMHighlight) return;
+    IMHighlight.render($('es-section-highlight'), hlScan, hlState, onHighlightChange,
+      { noun: 'employee', labelHeader: 'Employee' });
+  }
+
+  // A change that alters which rows are used rebuilds the preview from the
+  // source (like re-uploading it), so confirm before discarding work.
+  function onHighlightChange(next, rowsChanged) {
+    const edited = !!formattedRows && (hasCellEdits || removedRows.size > 0 ||
+      Object.keys(columnFills).length > 0 || Object.keys(esSmartFixMap).length > 0);
+    if (rowsChanged && edited && !window.confirm(
+      'Changing the highlight filter rebuilds the preview from the Data Template.\n\n' +
+      'Your bulk fills, Smart Fixes, removed rows and cell edits will be reset. Continue?')) {
+      renderHighlight(); // put the controls back the way they were
+      return;
+    }
+    hlState = next;
+    applyHighlight();
+    renderSrcMeta();
+    renderHighlight();
+    if (rowsChanged) maybeRun();
   }
 
   // Sheet picker modal — lists every sheet with its detected employee-row count;
@@ -696,6 +752,7 @@
     columnFills = {};
     removedRows = new Set();
     esSmartFixMap = {};
+    hasCellEdits = false;
     selCells = new Set(); selAnchor = null;
     buildFormattedRows();
     renderDuplicates();
@@ -1058,6 +1115,7 @@
       const ri = +k.slice(0, i), ci = +k.slice(i + 1);
       if (!formattedRows[ri]) return;
       formattedRows[ri][ci] = val;
+      hasCellEdits = true;
       if (ci === ei) employerTouched = true;
     });
     renderPreview();
@@ -1172,11 +1230,14 @@
     let limit = parseInt($('es-batch').value, 10);
     if (!Number.isFinite(limit) || limit < 1) limit = 5000;
     const files = visible ? Math.ceil(visible / limit) : 0;
+    const hlOut = srcData.allRows.length - srcData.rows.length;
     const sum = $('es-summary');
     sum.style.display = '';
     sum.innerHTML =
       '<div class="cmp-stat"><b>' + visible + '</b> to create' +
         (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + total + ')</span>' : '') + '</div>' +
+      (hlOut ? '<div class="cmp-stat cmp-warn"><b>' + hlOut + '</b> ' +
+        (hlState.mode === 'only' ? 'not highlighted — skipped' : 'left out by highlight') + '</div>' : '') +
       '<div class="cmp-stat cmp-warn"><b>' + excluded + '</b> duplicates excluded' +
         (excludedInternal ? ' <span class="text-muted small">(' + excludedDb + ' in DB, ' + excludedInternal + ' within file)</span>' : '') + '</div>' +
       (possible ? '<div class="cmp-stat cmp-warn"><b>' + possible + '</b> possible duplicate' + (possible === 1 ? '' : 's') + '</div>' : '') +
@@ -1190,6 +1251,101 @@
     const btn = $('es-export');
     const visible = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
     btn.disabled = !(srcData && tplData && visible); // Existing Employees optional
+    if (window.IMDebug) IMDebug.refresh('employee-standardize');
+  }
+
+  // ─── Debug dump ───
+  function collectDebug() {
+    if (!srcData || !tplData || !formattedRows || !outHeaders) return null;
+    const H = outHeaders;
+    const keptIdxs = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
+    const keptRows = keptIdxs.map(i => formattedRows[i]);
+    const colToSrc = {};
+    (srcColForOut || []).forEach((si, i) => { colToSrc[i] = si; });
+
+    const cols = H.map((h, i) => {
+      const si = srcColForOut ? srcColForOut[i] : -1;
+      return { index: i, header: h, required: /\*$/.test(h), srcIndex: si,
+        match: si >= 0 ? 'mapped' : 'unmapped',
+        sample: si >= 0 && srcData.rows[0] ? srcData.rows[0][si] : null };
+    });
+
+    const emptyReqCols = H.map((h, i) => {
+      if (!/\*$/.test(h)) return null;
+      let n = 0; keptIdxs.forEach(ri => { if (!formattedRows[ri][i]) n++; });
+      return n ? { column: h, emptyRows: n } : null;
+    }).filter(Boolean);
+    const toCreate = getEmployersToCreate();
+    const sfPending = computeSmartFixes();
+    const livePossible = dupPossible.filter(d => !removedRows.has(d.ri));
+
+    const asked = [
+      IMDebug.ask('empty-required', 'required', 'Required columns with empty cells', {
+        count: emptyReqCols.length, blocksExport: true, items: emptyReqCols }),
+      IMDebug.ask('employers-to-create', 'dropdown', 'Employers not in the template dropdown', {
+        count: toCreate.size, blocksExport: true,
+        detail: 'The upload is rejected with "Employer not found" unless these exist in PickTrace 3.0 first.',
+        items: [...toCreate.entries()].map(([n, info]) => ({ employer: n, rows: info.count })) }),
+      IMDebug.ask('possible-duplicates', 'data', 'Possible duplicates kept but flagged', {
+        count: livePossible.length, blocksExport: false,
+        detail: 'Matched on name or a conflicting field — kept in the export, for you to confirm.',
+        items: livePossible.map(d => ({ rowIndex: d.ri, name: d.name, altId: d.altId, reason: d.reason, severity: d.sev, existing: d.existing })) }),
+      IMDebug.ask('smart-fixes', 'smartfix', 'Off-list values awaiting a Smart Fix choice', {
+        count: sfPending.length, blocksExport: false,
+        items: sfPending.map(f => ({ column: f.header, value: f.from, rows: f.count, suggestion: f.suggestion || null })) })
+    ];
+
+    const prov = IMDebug.deriveProvenance({
+      headers: H, rows: formattedRows, srcRows: srcKept, colToSrc: colToSrc,
+      fills: columnFills, smartFixes: esSmartFixMap });
+    const out = IMDebug.output(H, keptRows, {
+      note: 'exportedRowIndexes[n] is the formattedRows index behind exported row n. Export is batched — see settings.batchSize.' });
+    out.exportedRowIndexes = keptIdxs;
+
+    let batch = parseInt($('es-batch') ? $('es-batch').value : '', 10);
+    if (!Number.isFinite(batch) || batch < 1) batch = 5000;
+
+    return {
+      settings: { batchSize: batch, outputFiles: keptRows.length ? Math.ceil(keptRows.length / batch) : 0 },
+      inputs: [
+        IMDebug.file('source data (Data Template Employees sheet)', srcData, { workbookFileName: srcFileName || null }),
+        IMDebug.file('personalized bulk Employees template', tplData, {
+          dropdowns: tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [],
+          employerList: tplData.employerList || null }),
+        { role: 'existing employees in PickTrace 3.0', loaded: !!dbIndex,
+          fileName: dbFileName || null, rowCount: dbCount || null,
+          note: 'Used to exclude confident duplicates and flag possible ones.' }
+      ],
+      mapping: IMDebug.mapping(cols, srcData.headers, { srcRows: srcData.rows }),
+      derived: [
+        { kind: 'duplicate classification',
+          note: 'Confident duplicates are excluded from the export; possible ones are kept and flagged.',
+          excludedConfident: dupConfident.length,
+          excludedFoundInDatabase: dupConfident.filter(d => d.kind === 'db').length,
+          excludedFoundWithinFile: dupConfident.filter(d => d.kind === 'internal').length,
+          flaggedPossible: livePossible.length }
+      ],
+      fills: Object.keys(columnFills).map(i => ({
+        column: H[+i], value: columnFills[i].val, scope: columnFills[i].mode === 'blank' ? 'blank cells only' : 'all rows', kind: 'column fill'
+      })).concat(Object.keys(esSmartFixMap).map(k => {
+        const sep = k.indexOf('||');
+        return { column: H[+k.slice(0, sep)], from: k.slice(sep + 2), value: esSmartFixMap[k], kind: 'smart fix' };
+      })),
+      edits: { cells: [], names: [],
+        note: 'This module edits cells in place in the preview grid rather than through a sticky override map; see provenance for cells that no longer match their source.' },
+      dropped: {
+        highlightFilter: window.IMHighlight ? IMHighlight.describe(hlScan, hlState) : null,
+        removedByHand: { count: removedRows.size, rowIndexes: [...removedRows].slice(0, 500) },
+        duplicatesExcluded: {
+          count: dupConfident.length,
+          items: dupConfident.slice(0, 500).map(d => ({ foundIn: d.kind === 'db' ? 'existing 3.0 export' : 'this file',
+            name: d.name, altId: d.altId, matchedOn: d.by, existing: d.existing }))
+        }
+      },
+      asked: asked,
+      output: out,
+      provenance: prov
+    };
   }
 
   // ─── Export (batched, pristine template per file) ───
@@ -1266,7 +1422,8 @@
     outHeaders = null; srcColForOut = null;
     formattedRows = null; srcKept = null;
     dupConfident = []; dupPossible = [];
-    columnFills = {}; removedRows = new Set();
+    columnFills = {}; removedRows = new Set(); hasCellEdits = false;
+    hlScan = null; hlState = { mode: 'off', keys: new Set() };
     selCells = new Set(); selAnchor = null; previewOrder = [];
     { const b = $('es-sel-bar'); if (b) b.style.display = 'none'; }
     $('es-src-name').textContent = 'No file selected';
@@ -1276,13 +1433,14 @@
     $('es-db-meta').textContent = '';
     $('es-tpl-meta').textContent = '';
     $('es-src-file').value = ''; $('es-db-file').value = ''; $('es-tpl-file').value = '';
-    ['es-section-dups', 'es-section-possible', 'es-section-create', 'es-section-smartfix', 'es-section-bulk', 'es-section-preview'].forEach(id => {
+    ['es-section-highlight', 'es-section-dups', 'es-section-possible', 'es-section-create', 'es-section-smartfix', 'es-section-bulk', 'es-section-preview'].forEach(id => {
       const el = $(id); if (el) el.style.display = 'none';
     });
     $('es-summary').style.display = 'none';
     $('es-empty').style.display = '';
     $('es-run').disabled = true;
     $('es-export').disabled = true;
+    if (window.IMDebug) IMDebug.refresh('employee-standardize');
   }
 
   // ─── Inline cell editing ───
@@ -1293,6 +1451,7 @@
     const val = td.textContent.trim();
     if (formattedRows[ri][ci] === val) return;
     formattedRows[ri][ci] = val;
+    hasCellEdits = true;
     const req = /\*$/.test(outHeaders[ci]);
     td.style.background = (req && !val) ? '#fee2e2' : '';
     td.style.color = (req && !val) ? '#7f1d1d' : '';
@@ -1305,6 +1464,14 @@
   function init() {
     if (initialized) return;
     initialized = true;
+    if (window.IMDebug) {
+      IMDebug.register('employee-standardize', {
+        label: 'Employee Standardize',
+        ready: () => !!(srcData && tplData && formattedRows && outHeaders),
+        collect: collectDebug
+      });
+      IMDebug.wire('es-debug', 'employee-standardize');
+    }
     attachModeSwitcher();
     $('es-src-file').addEventListener('change', e => {
       if (e.target.files[0]) handleSrcFile(e.target.files[0]);
