@@ -283,5 +283,5 @@
     };
   }
 
-  window.IMHighlight = { scan, filter, dropped, isActive, newState, cloneState, render, describe, statusText, colorName };
+  window.IMHighlight = { scan, filter, dropped, isActive, newState, cloneState, render, describe, statusText, colorName, fillHex };
 })();

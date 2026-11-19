@@ -504,8 +504,8 @@ function ordRowFromOrgRow(row, headers) {
 
   // PickTrace's pt_locations.csv embeds the site name inside display_name
   // before " - ". E.g.:
-  //   "Sample Ranch 7 - 2022 Devlp Plum TW"  → Site="Sample Ranch 7", Name="2022 Devlp Plum TW"
-  //   "Example Plaza - Producing Pear"          → Site="Example Plaza", Name="Producing Pear"
+  //   "Sample Ranch 7 - 2022 Devlp Plum TW"      → Site="Sample Ranch 7", Name="2022 Devlp Plum TW"
+  //   "Example Plaza - Producing Pear"           → Site="Example Plaza", Name="Producing Pear"
   //   "TOOL SHED"                                → Site=(empty), Name="TOOL SHED"
   // Split on the FIRST " - " so multi-dash names like
   // "Example Hill - 2018 Devlp Avocado" still work cleanly.

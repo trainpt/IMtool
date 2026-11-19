@@ -78,6 +78,90 @@ function countYearOnlyDates(rows, colIdxs) {
   return n;
 }
 
+// ── Output file names ──
+// Every filled template downloads as "<Client> - <Type> - <YYYY-MM-DD>.xlsx",
+// or "<Type> - <YYYY-MM-DD>.xlsx" when no client is known. The client lives in
+// the Client box in the context strip (#ctxClient), shared by every builder.
+// A source file whose name carries the client ("Acme Farms - PickTrace
+// Implementation Data Template.xlsx") fills the box — until you type in it,
+// after which your value sticks for the session.
+window.IMOutName = (function () {
+  const box = () => document.getElementById('ctxClient');
+  const today = () => {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  };
+  // Windows-safe: no \ / : * ? " < > | or control characters. (A trailing dot
+  // is harmless here — the date always ends the name.)
+  const safe = s => String(s == null ? '' : s).replace(/[\\/:*?"<>|\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ').trim();
+
+  // The client in an Implementation Data Template's file name: everything
+  // before "[PickTrace] [year] Implementation …" or "Data Template". '' when
+  // the name doesn't follow that shape (a PickTrace export, "template (15)").
+  function clientFrom(fileName) {
+    const base = String(fileName == null ? '' : fileName).replace(/\.[a-z0-9]+$/i, '').replace(/\s*\(\d+\)\s*$/, '');
+    const m = base.match(/^(.*?)[\s\-–—_]*(?:pick\s*trace\s*)?(?:\d{4}(?:\s*-\s*\d{2,4})?\s*)?(?:implementation\b|data\s*template\b).*$/i);
+    return m ? safe(m[1].replace(/[\s\-–—_,]+$/, '')) : '';
+  }
+  function client() { const b = box(); return b ? safe(b.value) : ''; }
+  // A newly loaded source file offers its client; a name you typed wins.
+  function suggestClient(fileName) {
+    const b = box(), c = clientFrom(fileName);
+    if (b && c && b.dataset.typed !== '1') b.value = c;
+  }
+  // A tool's Reset drops an auto-filled client, never one you typed.
+  function forget() {
+    const b = box();
+    if (b && b.dataset.typed !== '1') b.value = '';
+  }
+  // "Acme Farms - Employees - 2026-10-07 (1 of 3).xlsx"
+  function fileName(type, suffix) {
+    return [client(), safe(type), today()].filter(Boolean).join(' - ') + (suffix || '') + '.xlsx';
+  }
+  // The folder Download All bundles everything into.
+  function folderName() {
+    return [client(), 'PickTrace Uploads', today()].filter(Boolean).join(' - ');
+  }
+  return { clientFrom, client, suggestClient, forget, fileName, folderName };
+})();
+
+// ── Detailed Implementation-template layouts ──
+// "Locations (Detailed Version)" differs from the plain tab in two ways the
+// readers must undo:
+//   - a field whose header cell is an instruction sentence ("Please indicate
+//     the 'Site' …") is named by the short banner cell above it ("Site");
+//   - a label column headed "Location Fields -->" names the metadata rows
+//     under the header (Adv. Filter, Expected Value Type, Preset Values,
+//     Tooltip). Any row with a value in that column is metadata, not data.
+// `rows` are the sheet's rows, `h` the index of the header row among them.
+// Returns { headers, isMeta(row) }; on a plain tab, headers come back
+// unchanged and isMeta is always false.
+window.IMSheetLayout = (function () {
+  const s = v => String(v == null ? '' : v).trim();
+  const INSTRUCTION = /^(please|required|optional|enter|select)\b/i;
+  function resolve(rows, h) {
+    const headers = (rows[h] || []).map(s);
+    const banner = h > 0 ? (rows[h - 1] || []).map(s) : [];
+    headers.forEach((v, i) => {
+      if ((v.length > 40 || INSTRUCTION.test(v)) && banner[i] && banner[i].length <= 30) headers[i] = banner[i];
+    });
+    const labelCol = headers.findIndex(v => /(-+>|→)\s*$/.test(v));
+    if (labelCol >= 0) headers[labelCol] = '';
+    return { headers, isMeta: row => labelCol >= 0 && s((row || [])[labelCol]) !== '' };
+  }
+  return { resolve };
+})();
+
+// A cell value as text. Numbers keep Excel's 15 significant digits: a pasted
+// formula result stores binary float noise (16983.149999999998) that Excel
+// displays as 16983.15. Whole numbers pass through untouched.
+function cellText(c) {
+  if (c == null) return '';
+  if (typeof c === 'number' && isFinite(c) && !Number.isInteger(c)) return String(Number(c.toPrecision(15)));
+  return String(c).trim();
+}
+
 // Read a file (CSV or Excel) and return {headers, rows, sheetNames?, workbook?}
 function readUploadedFile(file) {
   return new Promise((resolve, reject) => {
@@ -102,7 +186,7 @@ function readUploadedFile(file) {
           return {
             name,
             headers: filtered[0].map(h => String(h).trim()),
-            rows: filtered.slice(1).map(r => r.map(c => String(c).trim()))
+            rows: filtered.slice(1).map(r => r.map(cellText))
           };
         }).filter(Boolean);
         resolve({ sheets });

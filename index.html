@@ -9,7 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=1">
   <link rel="icon" type="image/png" sizes="180x180" href="assets/favicon.png?v=1">
   <link rel="apple-touch-icon" href="assets/favicon.png?v=1">
-  <link rel="stylesheet" href="styles.css?v=49">
+  <link rel="stylesheet" href="styles.css?v=69">
 </head>
 <body>
 
@@ -48,6 +48,12 @@
     <div class="context-strip" id="contextStrip">
       <span class="ctx-name" id="ctxName"></span>
       <span class="ctx-situation" id="ctxSituation"></span>
+      <!-- Names every file the template builders download ("Acme Farms - Sites - 2026-10-07.xlsx").
+           Filled from a source file's name when it carries one; what you type sticks. See IMOutName in utils.js. -->
+      <label class="ctx-client" id="ctxClientWrap" style="display:none;" title="Used in the downloaded file names: Client - Type - Date. Filled from an Implementation Data Template's file name when it carries the client; type here to set it yourself.">
+        <span>Client</span>
+        <input type="text" id="ctxClient" class="input-field" placeholder="for file names" autocomplete="off" spellcheck="false">
+      </label>
     </div>
 
     <!-- The four ways to produce an upload file. Rendered by renderBuildPicker();
@@ -850,7 +856,18 @@
             </label>
             <div class="cmp-filename" id="ts-tpl-name">No file selected</div>
             <div class="cmp-meta" id="ts-tpl-meta"></div>
-            <div class="cmp-slot-hint">Download <b>your org's personalized</b> bulk Create or Update template from PickTrace — its DROP-DOWN INPUTS sheet drives the Sites/Crop&nbsp;&amp; Variety validation.</div>
+            <div class="cmp-slot-hint">Download <b>your org's personalized</b> bulk Create or Update template from PickTrace — its DROP-DOWN INPUTS sheet drives the Site, Location Type and Crop&nbsp;&amp; Variety lists. (A locations <b>export</b> goes in Existing locations.)</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Sites template <span class="cmp-meta">(when the file has new sites)</span></div>
+            <label class="btn btn-primary cmp-upload-btn">
+              <span>&#8679; Upload Sites Template</span>
+              <input type="file" id="ts-sitetpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="ts-sitetpl-name">No file selected</div>
+            <div class="cmp-meta" id="ts-sitetpl-meta"></div>
+            <div class="cmp-slot-hint">Your org's personalized <b>Sites</b> bulk template. When the client file names sites that aren't in PickTrace yet, the tool builds the Sites upload for them too &mdash; one download, both files.</div>
           </div>
 
           <div class="cmp-slot">
@@ -911,6 +928,7 @@
               <button class="btn btn-primary btn-sm" id="ts-smartfix-apply-all">Apply all</button>
             </header>
             <p class="cmp-sites-hint">Every value in your data that isn't an exact match to the template dropdown. Each has a <b>Set to</b> dropdown: a <b>confident</b> match (spacing, punctuation, or singular&harr;plural, e.g. <code>Almonds-Other</code>&rarr;<code>Almond-Other</code>) is pre-selected; values with <b>no</b> match (e.g. <code>EQUIPMENT</code> isn't a PickTrace location type) say <b>needs a choice</b> — pick a valid value. Click <b>Apply</b> per row, or <b>Apply all</b> for every row that has a value chosen. PickTrace rejects any off-list value in a dropdown column.</p>
+            <div class="ts-sitegaps" id="ts-sitegaps" style="display:none;"></div>
             <div class="table-wrap"><table class="data-table" id="ts-smartfix-table"></table></div>
           </section>
 
@@ -923,20 +941,45 @@
             <div class="table-wrap"><table class="data-table" id="ts-sites-create-table"></table></div>
           </section>
 
+          <!-- New sites, built into a Sites file next to the Locations one
+               (template-standardize.js renderSiteFile / renderSiteAddr). -->
+          <section class="cmp-section" id="ts-section-sitefile" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-sitefile-title">Sites file</h3>
+            </header>
+            <div id="ts-sitefile-body"></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-siteaddr" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-siteaddr-title">Site addresses</h3>
+            </header>
+            <div id="ts-siteaddr-body"></div>
+          </section>
+
           <section class="cmp-section" id="ts-section-cv-create" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="ts-cv-create-title">Crops &amp; Varieties to Create in PickTrace</h3>
               <button class="btn btn-ghost btn-sm" id="ts-cv-copy">&#128203; Copy List</button>
             </header>
-            <p class="cmp-sites-hint">These Crop &amp; Variety values aren't in your template's dropdown. Create them in PickTrace, re-download the template, and re-upload. Export is blocked until they resolve.</p>
+            <p class="cmp-sites-hint">These Crop &amp; Variety values aren't in your template's dropdown, grouped by crop. Create each <b>new crop</b> first, then add its varieties; for a crop that <b>exists</b>, only the listed varieties are missing. Re-download the template and re-upload when done. Export is blocked until they resolve.</p>
             <div class="table-wrap"><table class="data-table" id="ts-cv-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="ts-section-lists-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="ts-lists-create-title">Lists your org hasn't set up</h3>
+              <button class="btn btn-ghost btn-sm" id="ts-lists-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">The template only accepts listed values in these columns (they carry a dropdown validation), but your org's list for each is <b>empty</b>, so PickTrace can reject the rows that use them. Create the values in PickTrace, re-download the template and re-upload here &mdash; or <b>Leave column out</b> to export it empty. (Free-text columns such as Rootstock or Clone/Subvariety never show here: any value goes.)</p>
+            <div class="table-wrap"><table class="data-table" id="ts-lists-create-table"></table></div>
           </section>
 
           <section class="cmp-section" id="ts-section-required" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="ts-required-title">Empty Required Columns</h3>
             </header>
-            <p class="cmp-sites-hint">Required (*) cells with no value. Pick a value from the template's dropdown or type a manual override; click Apply to fill all empty cells in that column.</p>
+            <p class="cmp-sites-hint">Required (*) cells with no value. Pick a value from the template's list (or type one) and <b>Fill</b> the empty cells in that column; <b>Show the row</b> brings them up in the preview. A filled column can be changed with <b>Apply to all</b>.</p>
             <div class="table-wrap"><table class="data-table" id="ts-required-table"></table></div>
           </section>
 
@@ -1100,6 +1143,15 @@
               <div class="table-wrap"><table class="data-table" id="tss-existing-table"></table></div>
             </section>
 
+            <section class="cmp-section" id="tss-section-folded" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tss-folded-title">Repeated Sites</h3></header>
+              <label class="cmp-sites-hint" style="display:flex;gap:6px;align-items:center;">
+                <input type="checkbox" id="tss-fold-dupes"> Keep one row per site when a name repeats with identical values
+              </label>
+              <p class="cmp-sites-hint">A block-level source lists each site once per block. Rows that repeat a site <b>Name</b> with every template column identical are the same site &mdash; ticked, they export as one row. A repeat that differs in any column stays in <b>Name Collisions</b>.</p>
+              <div class="table-wrap"><table class="data-table" id="tss-folded-table"></table></div>
+            </section>
+
             <section class="cmp-section" id="tss-section-collisions" style="display:none;">
               <header class="cmp-section-head">
                 <h3 id="tss-collisions-title">Name Collisions</h3>
@@ -1118,6 +1170,86 @@
 
           <div class="empty-state" id="tss-empty">Upload a source file AND a personalized bulk <b>Sites</b> template to start.</div>
         </div><!-- /ts-site-wrap -->
+
+        <!-- ─── Pack Styles (packstyles-standardize.js) ─── -->
+        <div id="ts-pack-wrap" style="display:none;">
+          <div class="cmp-uploads">
+            <div class="cmp-slot cmp-slot-db">
+              <div class="cmp-slot-label">1. Source data <span class="cmp-req">(required)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                <span>&#8679; Upload Excel/CSV</span>
+                <input type="file" id="tps-src-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <div class="cmp-filename" id="tps-src-name">No file selected</div>
+              <div class="cmp-meta" id="tps-src-meta"></div>
+              <div class="cmp-slot-hint">The <b>Pack Styles</b> tab of your implementation template (picked automatically from the whole workbook), or any Excel/CSV of pack styles. A weight written with its unit (<code>1 lb</code>) is split into <b>Weight</b> and <b>Unit</b>.</div>
+            </div>
+
+            <div class="cmp-slot">
+              <div class="cmp-slot-label">2. Personalized Pack Styles template <span class="cmp-req">(required)</span></div>
+              <label class="btn btn-primary cmp-upload-btn">
+                <span>&#8679; Upload Pack Styles Template</span>
+                <input type="file" id="tps-tpl-file" accept=".xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="tps-tpl-name">No file selected</div>
+              <div class="cmp-meta" id="tps-tpl-meta"></div>
+              <div class="cmp-slot-hint">Download <b>your org's personalized</b> bulk <b>Pack Styles</b> Create template from PickTrace &mdash; its DROP-DOWN INPUTS sheet drives the Crop Type / Method / Pack Type / Unit validation.</div>
+            </div>
+          </div>
+
+          <div class="cmp-actions">
+            <button class="btn btn-success" id="tps-run" disabled>&#9654; Format Sheet</button>
+            <button class="btn btn-primary" id="tps-export" disabled>&#8615; Export XLSX</button>
+            <button class="btn btn-ghost" id="tps-reset">&#8634; Reset</button>
+            <button class="btn btn-ghost" id="tps-debug" disabled title="Load your files and format the sheet first.">&#128270; Debug Dump</button>
+          </div>
+
+          <div class="cmp-summary" id="tps-summary" style="display:none;"></div>
+          <div class="dt-build" id="tps-build" style="display:none;"></div>
+
+          <div class="cmp-results" id="tps-results">
+            <section class="cmp-section" id="tps-section-mapping" style="display:none;">
+              <header class="cmp-section-head"><h3>Column Mapping</h3></header>
+              <p class="cmp-sites-hint">Auto-matched columns are pre-selected. Unmatched template columns are blank &mdash; pick a source column or leave empty. A source <b>Unit Type (for Piecework Pay)</b> holds the piecework unit, not the weight unit, so it is never matched to <b>Unit</b>.</p>
+              <div class="table-wrap"><table class="data-table" id="tps-mapping-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tps-section-matched" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tps-matched-title">Matched to the Dropdown</h3></header>
+              <p class="cmp-sites-hint">Values written differently from the template but with exactly one plausible entry, so they were matched without a Smart Fix (<code>Conventional</code> &rarr; <code>CONV</code>, <code>Clamshell</code> &rarr; <code>Clamshells</code>).</p>
+              <div class="table-wrap"><table class="data-table" id="tps-matched-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tps-section-smartfix" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="tps-smartfix-title">Smart Fixes</h3>
+                <button class="btn btn-primary btn-sm" id="tps-smartfix-apply-all">Apply all</button>
+              </header>
+              <p class="cmp-sites-hint">Every value that isn't in its template dropdown. The closest listed value is pre-selected where there is one; values with <b>no</b> match say <b>needs a choice</b>. Anything left as-is is written verbatim and <b>PickTrace will reject those rows</b>.</p>
+              <div class="table-wrap"><table class="data-table" id="tps-smartfix-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tps-section-required" style="display:none;">
+              <header class="cmp-section-head"><h3>Empty Required Columns</h3></header>
+              <p class="cmp-sites-hint">Required (*) columns. Pick from the template's dropdown or type an override, then <b>Fill blanks</b> to write it into every empty cell in that column.</p>
+              <div class="table-wrap"><table class="data-table" id="tps-required-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tps-section-dups" style="display:none;">
+              <header class="cmp-section-head"><h3 id="tps-dups-title">Duplicate Pack Style Names</h3></header>
+              <p class="cmp-sites-hint">More than one row uses the same <b>Pack Style Name</b>. Rename one in the preview (the Name cells are red) or click <b>×</b> to drop it, so each pack style is created once.</p>
+              <div class="table-wrap"><table class="data-table" id="tps-dups-table"></table></div>
+            </section>
+
+            <section class="cmp-section" id="tps-section-preview" style="display:none;">
+              <header class="cmp-section-head"><h3>Preview</h3></header>
+              <p class="cmp-sites-hint" id="tps-preview-hint"></p>
+              <div class="table-wrap"><table class="data-table ts-edit-grid" id="tps-preview-table"></table></div>
+            </section>
+          </div>
+
+          <div class="empty-state" id="tps-empty">Upload a source file AND a personalized bulk <b>Pack Styles</b> template to start.</div>
+        </div><!-- /ts-pack-wrap -->
 
         <!-- ─── Site Groups ───
              Site groups can't be bulk created — the Sites template has no column
@@ -1212,144 +1344,6 @@
       <!-- ═══ Employees mode (Standardize & Dedupe + Legacy Migration sub-tabs) ═══ -->
       <div class="cmp-page" id="cmp-mode-employees" style="display:none;">
 
-      <!-- ─── Sub-tab: Legacy → 3.0 Employee Migration ─── -->
-      <div class="cmp-page" id="cmp-mode-empmig" style="display:none;">
-        <div class="cmp-header">
-          <p>Convert a Legacy employee CSV export into the 3.0 Employee Bulk
-          Create template. Keeps only valid employees (<b>Is Valid</b> = true),
-          resolves each employee's employer from the contractor file by
-          <b>Contractor ID</b>, maps the fixed Legacy&#8594;3.0 columns, and
-          preserves the template's dropdowns. Large lists split into multiple
-          numbered files.</p>
-        </div>
-
-        <div class="cmp-uploads">
-          <div class="cmp-slot cmp-slot-db">
-            <div class="cmp-slot-label">1. Legacy employee CSV <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Employee CSV</span>
-              <input type="file" id="em-emp-file" accept=".csv,.xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="em-emp-name">No file selected</div>
-            <div class="cmp-meta" id="em-emp-meta"></div>
-            <div class="cmp-slot-hint">Legacy employee export. Only rows where <b>Is Valid</b> is true are migrated; the rest are skipped.</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">2. Active contractors CSV <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Active Contractors</span>
-              <input type="file" id="em-employer-file" accept=".csv,.xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="em-employer-name">No file selected</div>
-            <div class="cmp-meta" id="em-employer-meta"></div>
-            <div class="cmp-slot-hint"><b>Active (unarchived)</b> contractors only. Each employee's <b>Contractor ID</b> &#8594; employer <b>Name</b>.</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">3. All contractors (archived + unarchived) <span class="cmp-meta">(optional)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Full Contractor List</span>
-              <input type="file" id="em-fullcontractor-file" accept=".csv,.xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="em-fullcontractor-name">No file selected</div>
-            <div class="cmp-meta" id="em-fullcontractor-meta"></div>
-            <div class="cmp-slot-hint">Optional. The complete list. Employees whose contractor is in this list but <b>not</b> in the active list are treated as <b>archived</b> and removed (restorable below).</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">4. Already in 3.0 (cross-reference) <span class="cmp-meta">(optional)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload 3.0 Employees</span>
-              <input type="file" id="em-migrated-file" accept=".xlsx,.xls,.csv" hidden>
-            </label>
-            <div class="cmp-filename" id="em-migrated-name">No file selected</div>
-            <div class="cmp-meta" id="em-migrated-meta"></div>
-            <div class="cmp-slot-hint">Optional. A 3.0 employees export. Any Legacy employee whose <b>Alt ID</b> already appears here is skipped to avoid duplicate uploads.</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">5. 3.0 employee template <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Template</span>
-              <input type="file" id="em-tpl-file" accept=".xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="em-tpl-name">No file selected</div>
-            <div class="cmp-meta" id="em-tpl-meta"></div>
-            <div class="cmp-slot-hint">3.0 Employee Bulk Create xlsx. Its DROP-DOWN INPUTS sheet drives the Employer list; all validations are preserved in every output file.</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">Max employees per file</div>
-            <div style="padding-top:8px;">
-              <input type="number" id="em-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
-              <div class="cmp-slot-hint">Lists larger than this split into numbered files: <b>&hellip; (1 of N)</b>.</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="cmp-actions">
-          <button class="btn btn-success" id="em-run" disabled>&#9654; Build Preview</button>
-          <button class="btn btn-primary" id="em-export" disabled>&#8615; Export XLSX</button>
-          <button class="btn btn-ghost" id="em-reset">&#8634; Reset</button>
-          <button class="btn btn-ghost" id="em-debug" disabled title="Load your files and run the migration first.">&#128270; Debug Dump</button>
-        </div>
-
-        <div class="cmp-summary" id="em-summary" style="display:none;"></div>
-
-        <div class="cmp-results" id="em-results">
-          <section class="cmp-section" id="em-section-archived" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="em-archived-title">Archived Contractors — employees removed</h3>
-            </header>
-            <p class="cmp-sites-hint">These contractors are in the full list but <b>not</b> active, so their employees are excluded from the export. Click <b>Restore</b> to migrate a given contractor's employees anyway (Employer is filled from the full list). <b>Remove</b> drops them again.</p>
-            <div class="table-wrap"><table class="data-table" id="em-archived-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="em-section-create" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="em-create-title">Employers to Create in 3.0</h3>
-              <button class="btn btn-ghost btn-sm" id="em-create-copy">&#128203; Copy List</button>
-            </header>
-            <p class="cmp-sites-hint">These employer names are kept in the employees' Employer column but don't exist in PickTrace 3.0 yet. <b>Click an employer to copy its name and check it off</b> as you create it in PickTrace. Create them all (or map them to an existing employer in the panel below), then re-download the template &mdash; otherwise the upload will be rejected with &ldquo;Employer not found&rdquo;.</p>
-            <div class="table-wrap"><table class="data-table" id="em-create-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="em-section-unresolved" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="em-unresolved-title">Unresolved Employers</h3>
-            </header>
-            <p class="cmp-sites-hint">These Contractor IDs have no employer in 3.0 yet (blank, or a name not in the template's dropdown). The legacy name is kept in the Employer column. Optionally pick an existing 3.0 Employer (or type a manual override) and Apply to remap every row with that Contractor ID instead.</p>
-            <div class="table-wrap"><table class="data-table" id="em-unresolved-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="em-section-bulk" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="em-bulk-title">Bulk Edit Columns</h3>
-            </header>
-            <p class="cmp-sites-hint">Set a value for an entire column across all (non-removed) rows — same as the Unresolved Employers panel. Pick from the template dropdown where available or type a manual override, then Apply. Clear empties the column. Bulk values stick through re-runs until cleared.</p>
-            <div class="table-wrap"><table class="data-table" id="em-bulk-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="em-section-preview" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="em-preview-title">Preview</h3>
-            </header>
-            <p class="cmp-sites-hint">Cells are editable — click a cell, type, then click away to save. <b>Shift+click</b> selects a rectangular range; <b>Ctrl/Cmd+click</b> toggles individual cells; then set or clear them all at once. Empty required cells are highlighted in red. Click <b>&times;</b> at the start of a row to drop it from the preview + export.</p>
-            <div id="em-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
-              <b id="em-sel-count">0 cells selected</b>
-              <input type="text" id="em-sel-val" class="input-field" placeholder="Value for all selected cells" style="width:240px;">
-              <button class="btn btn-primary btn-sm" id="em-sel-apply">Apply to selected</button>
-              <button class="btn btn-ghost btn-sm" id="em-sel-clear">Clear contents</button>
-              <button class="btn btn-ghost btn-sm" id="em-sel-deselect">Deselect</button>
-            </div>
-            <div class="table-wrap"><table class="data-table" id="em-preview-table"></table></div>
-          </section>
-        </div>
-
-        <div class="empty-state" id="em-empty">Upload the Legacy employee CSV, the employer/contractor CSV, and the 3.0 employee template to start.</div>
-      </div>
-
       <!-- ─── Sub-tab: Employee Standardize & Dedupe (default) ─── -->
       <div class="cmp-page" id="cmp-mode-empstd">
         <div class="cmp-header">
@@ -1364,7 +1358,7 @@
 
         <div class="cmp-uploads">
           <div class="cmp-slot cmp-slot-db">
-            <div class="cmp-slot-label">1. Data Template <span class="cmp-req">(required)</span></div>
+            <div class="cmp-slot-label">1. Data Template <span class="cmp-req" id="es-src-req">(required)</span></div>
             <label class="btn btn-primary cmp-upload-btn">
               <span>&#8679; Upload Data Template</span>
               <input type="file" id="es-src-file" accept=".xlsx,.xls,.csv" hidden>
@@ -1374,7 +1368,7 @@
             <div class="cmp-slot-hint">The implementation template's <b>Employees</b> sheet of new hires. The header row (<b>First Name</b>&hellip;) is auto-detected.</div>
           </div>
 
-          <div class="cmp-slot">
+          <div class="cmp-slot es-create-only">
             <div class="cmp-slot-label">2. Existing Employees <span class="cmp-meta">(optional)</span></div>
             <label class="btn btn-primary cmp-upload-btn">
               <span>&#8679; Upload 3.0 Employees</span>
@@ -1386,14 +1380,24 @@
           </div>
 
           <div class="cmp-slot">
-            <div class="cmp-slot-label">3. Bulk Create Template <span class="cmp-req">(required)</span></div>
+            <div class="cmp-slot-label">3. Bulk Template <span class="cmp-req">(required)</span></div>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;">
+              <label class="cmp-export-option">
+                <input type="radio" name="es-target" value="create" checked>
+                <span><b>Bulk Create</b> &mdash; new employees</span>
+              </label>
+              <label class="cmp-export-option">
+                <input type="radio" name="es-target" value="update">
+                <span><b>Bulk Update</b> &mdash; change employees already in PickTrace</span>
+              </label>
+            </div>
             <label class="btn btn-primary cmp-upload-btn">
               <span>&#8679; Upload Template</span>
               <input type="file" id="es-tpl-file" accept=".xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="es-tpl-name">No file selected</div>
             <div class="cmp-meta" id="es-tpl-meta"></div>
-            <div class="cmp-slot-hint">3.0 Employee Bulk Create xlsx. Its DROP-DOWN INPUTS drive value-snapping; all validations are preserved in every output file.</div>
+            <div class="cmp-slot-hint">The 3.0 Employee Bulk Create or Bulk Update xlsx &mdash; which one is read from its columns. The <b>Update</b> template comes pre-filled with the org's employees (<b>Employee ID</b> first): those are the rows you edit, a Data Template is optional, and only employees with a change export. Empty a value (or <b>Clear</b> a column) and it's written as <code>&lt;CLEAR&gt;</code>, which is how PickTrace clears a field &mdash; a blank cell leaves it as it is. Its DROP-DOWN INPUTS drive value-snapping; all validations are preserved in every output file.</div>
           </div>
 
           <div class="cmp-slot">
@@ -1432,6 +1436,14 @@
             </header>
             <p class="cmp-sites-hint">Kept in the export and flagged for review (a confident duplicate must agree on name <b>and</b> not be contradicted by SSN): <b>Name + DOB — SSN differs</b> = same name and birth date but a <i>different SSN</i>, so treated as two different people; <b>Alt ID/SSN — name differs</b> = shares an ID with a record having a completely different name (recycled or test ID); <b>Name only</b> = shares just a name with nothing to rule it out. Click <b>Exclude</b> to drop any you confirm is truly a duplicate.</p>
             <div class="table-wrap"><table class="data-table" id="es-possible-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="es-section-unmatched" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="es-unmatched-title">Not in PickTrace</h3>
+            </header>
+            <p class="cmp-sites-hint">Data Template rows that match no employee in the Update template &mdash; by Employee ID, by Alt ID or SSN with the name agreeing, or by name + date of birth. They're new people: add them with a <b>Bulk Create</b>. Nothing from them is in the Update file.</p>
+            <div class="table-wrap"><table class="data-table" id="es-unmatched-table"></table></div>
           </section>
 
           <section class="cmp-section" id="es-section-create" style="display:none;">
@@ -1482,9 +1494,13 @@
       <!-- ─── Mode: Bulk Template Standardize ─── -->
       <div class="cmp-page" id="cmp-mode-datatemplate" style="display:none;">
         <div class="cmp-header">
-          <p>Fill every personalized bulk-create template from one set of PickTrace account exports, instead of running the Sites, Locations and Employees tabs one at a time. Each domain exports its own file with <code>DATA ENTRY</code>, <code>DROP-DOWN INPUTS</code> and all validations intact. Values pass through raw so they match the dropdown lists; dates are normalized to <code>YYYY-MM-DD</code> and archived rows are dropped.</p>
+          <p>Fill every personalized bulk-create template from one set of PickTrace account exports, instead of running the Sites, Locations, Employees and Pack Styles tabs one at a time. Each domain exports its own file with <code>DATA ENTRY</code>, <code>DROP-DOWN INPUTS</code> and all validations intact. Values pass through raw so they match the dropdown lists; dates are normalized to <code>YYYY-MM-DD</code> and archived rows are dropped.</p>
         </div>
 
+        <!-- Once files are loaded the upload slots fold into this one-line strip;
+             "Change files" opens them again. -->
+        <div class="dt-files-strip" id="dt-files-strip" style="display:none;"></div>
+        <div id="dt-files">
         <div class="cmp-uploads cmp-uploads-tpl">
           <div class="cmp-slot cmp-slot-db">
             <div class="cmp-slot-label">Load everything at once</div>
@@ -1493,7 +1509,7 @@
               <input type="file" id="dt-bulk-file" accept=".csv,.xlsx,.xls" multiple hidden>
             </label>
             <div class="cmp-filename">Select any number of files</div>
-            <div class="cmp-slot-hint">Each file is routed by its header row. A workbook with a <code>DATA ENTRY</code> sheet is treated as a template; anything else is treated as an export. A workbook with several sheets &mdash; a client's Implementation Data Template, say &mdash; opens a picker so you can load several sheets at once, each into the template it fills. Unrecognized files are reported so you can place them by hand.</div>
+            <div class="cmp-slot-hint">Each file is routed by its header row. A workbook with a <code>DATA ENTRY</code> sheet is treated as a template; anything else is treated as an export. A workbook with several sheets &mdash; a client's Implementation Data Template, say &mdash; opens a picker so you can load several sheets at once, each into the template it fills. When one file type gets two exports, the client's own sheet (or the one whose values the destination template doesn't list) is the upload, and a PickTrace export of the destination org is read as <b>already in PickTrace</b> &mdash; you're asked when it isn't clear. Unrecognized files are reported so you can place them by hand.</div>
           </div>
         </div>
 
@@ -1510,6 +1526,11 @@
               <input type="file" id="dt-employees-tpl-file" accept=".xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="dt-employees-tpl-name">No template</div>
+            <label class="btn btn-ghost cmp-upload-btn" title="A PickTrace export of what the destination org already has — those rows are left out of the upload">
+              <span>&#8679; Existing <span class="cmp-opt">(optional)</span></span>
+              <input type="file" id="dt-employees-exist-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-employees-exist-name">None</div>
             <div class="cmp-slot-hint">Bulk employee create template. Its dropdowns validate Employer, Crew, Gender, Title, Language and H2A.</div>
           </div>
 
@@ -1525,6 +1546,11 @@
               <input type="file" id="dt-locations-tpl-file" accept=".xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="dt-locations-tpl-name">No template</div>
+            <label class="btn btn-ghost cmp-upload-btn" title="A PickTrace export of what the destination org already has — those rows are left out of the upload">
+              <span>&#8679; Existing <span class="cmp-opt">(optional)</span></span>
+              <input type="file" id="dt-locations-exist-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-locations-exist-name">None</div>
             <div class="dt-src-override" id="dt-locations-site-wrap" style="display:none;">
               <label for="dt-locations-site-src">Site* from</label>
               <select id="dt-locations-site-src" class="input-field"></select>
@@ -1544,7 +1570,32 @@
               <input type="file" id="dt-sites-tpl-file" accept=".xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="dt-sites-tpl-name">No template</div>
+            <label class="btn btn-ghost cmp-upload-btn" title="A PickTrace export of what the destination org already has — those rows are left out of the upload">
+              <span>&#8679; Existing <span class="cmp-opt">(optional)</span></span>
+              <input type="file" id="dt-sites-exist-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-sites-exist-name">None</div>
             <div class="cmp-slot-hint">The export is one row per location, so it is de-duplicated to unique site names. Columns whose dropdown offers a single choice are auto-filled.</div>
+          </div>
+
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Pack Styles</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Export</span>
+              <input type="file" id="dt-packstyles-src-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-packstyles-src-name">No export</div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Template</span>
+              <input type="file" id="dt-packstyles-tpl-file" accept=".xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-packstyles-tpl-name">No template</div>
+            <label class="btn btn-ghost cmp-upload-btn" title="A PickTrace export of what the destination org already has — those rows are left out of the upload">
+              <span>&#8679; Existing <span class="cmp-opt">(optional)</span></span>
+              <input type="file" id="dt-packstyles-exist-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-packstyles-exist-name">None</div>
+            <div class="cmp-slot-hint">Usually the <b>Pack Styles</b> tab of an Implementation Data Template. A weight written with its unit (<code>1 lb</code>) is split into <b>Weight</b> and <b>Unit</b>; <code>Conventional</code> / <code>Organic</code> match the Method codes.</div>
           </div>
 
           <div class="cmp-slot">
@@ -1554,15 +1605,22 @@
               <input type="file" id="dt-jobs-src-file" accept=".csv,.xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="dt-jobs-src-name">No export</div>
+            <label class="btn btn-ghost cmp-upload-btn" title="A PickTrace export of what the destination org already has — those rows are left out of the upload">
+              <span>&#8679; Existing <span class="cmp-opt">(optional)</span></span>
+              <input type="file" id="dt-jobs-exist-file" accept=".csv,.xlsx,.xls" hidden>
+            </label>
+            <div class="cmp-filename" id="dt-jobs-exist-name">None</div>
             <div class="cmp-slot-hint">Jobs have no bulk-create template, so this is written as a plain <code>DATA ENTRY</code> sheet using the export's own columns.</div>
           </div>
         </div>
+        </div><!-- /dt-files -->
 
         <div class="cmp-actions">
           <button class="btn btn-success" id="dt-dl-all" disabled>&#8615; Download All</button>
           <button class="btn btn-primary" id="dt-dl-employees" disabled>&#8615; Employees</button>
           <button class="btn btn-primary" id="dt-dl-locations" disabled>&#8615; Locations</button>
           <button class="btn btn-primary" id="dt-dl-sites" disabled>&#8615; Sites</button>
+          <button class="btn btn-primary" id="dt-dl-packstyles" disabled>&#8615; Pack Styles</button>
           <button class="btn btn-primary" id="dt-dl-jobs" disabled>&#8615; Jobs</button>
           <button class="btn btn-ghost" id="dt-reset">&#8634; Reset</button>
           <button class="btn btn-ghost" id="dt-debug" disabled title="Load your exports and templates first.">&#128270; Debug Dump</button>
@@ -1576,272 +1634,397 @@
           </label>
         </div>
 
-        <div class="cmp-summary" id="dt-summary" style="display:none;"></div>
-        <div class="dt-build" id="dt-build-banner" style="display:none;"></div>
-
-        <div class="cmp-results" id="dt-results">
-          <section class="cmp-section" id="dt-section-underage" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-underage-title">Under Minimum Age</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Employees whose Date of Birth puts them under 12 &mdash; nearly always a typo'd birth year. Set the correct date per row, or fill one date below and apply it to everyone listed. Nothing is changed until you enter a value.</div>
-            <div class="ts-addr-all-wrap" style="margin-bottom:10px;">
-              <input type="date" id="dt-age-all" class="input-field" style="width:170px;">
-              <button class="btn btn-primary btn-sm" id="dt-age-apply">Apply to all listed</button>
-              <button class="btn btn-ghost btn-sm" id="dt-age-clear">Clear corrections</button>
+        <!-- Preview — pinned to the top of the scroll area, so the template's
+             columns and every change the tool makes stay in view while you
+             work through the sections below. Cells are marked by data-template.js
+             (renderPreview): red = required and empty, amber = not in the
+             dropdown, corner tick = changed by the tool (hover: was → now · why). -->
+        <section class="dt-pv" id="dt-section-preview" style="display:none;">
+          <div class="dt-pv-bar">
+            <div class="dt-pv-pills" id="dt-preview-pills"></div>
+            <div class="dt-pv-tools">
+              <span id="dt-pv-filterbar"></span>
+              <button type="button" class="btn btn-ghost btn-sm" id="dt-pv-toggle" aria-expanded="true">Hide grid</button>
             </div>
-            <div class="table-wrap"><table class="data-table" id="dt-underage-table"></table></div>
-          </section>
+          </div>
+          <div class="dt-pv-legend">
+            <span class="dt-lg dt-lg-req">Required, empty</span>
+            <span class="dt-lg dt-lg-off">Not in the dropdown</span>
+            <span class="dt-lg dt-lg-chg">Changed by the tool &mdash; hover a cell for was &rarr; now</span>
+            <span class="dt-pv-note" id="dt-preview-note"></span>
+          </div>
+          <div class="dt-pv-wrap" id="dt-pv-wrap"><table class="data-table dt-pv-table ts-edit-grid" id="dt-preview-table"></table></div>
+        </section>
 
-          <section class="cmp-section" id="dt-section-preview" style="display:none;">
-            <header class="cmp-section-head">
-              <h3>Preview</h3>
-            </header>
-            <div id="dt-preview-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;"></div>
-            <div class="cmp-meta" id="dt-preview-note" style="margin-bottom:8px;"></div>
-            <div class="table-wrap"><table class="data-table" id="dt-preview-table"></table></div>
-          </section>
+        <!-- One button per job: what it's for, and how many items wait in it. -->
+        <nav class="dt-nav" id="dt-nav" aria-label="Sections" style="display:none;"></nav>
 
-          <section class="cmp-section" id="dt-section-smartfix" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-smartfix-title">Smart Fixes</h3>
-              <div class="cmp-bulk-actions"><button class="btn btn-primary btn-sm" id="dt-smartfix-all">Apply all suggested</button></div>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values that don't exist in the template's dropdown. Pick what to write instead &mdash; the closest match is pre-selected. Anything left as-is is written verbatim and <b>PickTrace will reject those rows</b>.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-smartfix-table"></table></div>
-          </section>
+        <!-- The open section. Exactly one .dt-panel shows at a time (renderNav). -->
+        <div class="dt-panels" id="dt-results" style="display:none;">
+          <div class="dt-panel" data-panel="required">
+            <div class="dt-reqsum" id="dt-reqsum"></div>
+            <section class="cmp-section" id="dt-section-fill" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-fill-title">Column Fill</h3>
+                <div class="cmp-bulk-actions">
+                  <input type="text" id="dt-fill-filter" class="input-field" placeholder="Filter columns&hellip;" style="width:150px;">
+                  <select id="dt-fill-scope" class="input-field" style="width:150px;">
+                    <option value="attn" selected>Needs attention</option>
+                    <option value="all">All columns</option>
+                    <option value="req">Required only</option>
+                    <option value="empty">Has empty cells</option>
+                    <option value="filled">Fully filled</option>
+                  </select>
+                  <button class="btn btn-ghost btn-sm" id="dt-fill-reset">Undo all fills</button>
+                </div>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">For the file shown in the preview. Pick from the template's dropdown (or type an override), then <b>All rows</b> to overwrite, <b>Blanks</b> to fill only empty cells, or <b>Clear</b> to empty the column. Optional columns are folded under <b>Optional columns</b> &mdash; click it to edit them.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-fill-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-fill" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-fill-title">Column Fill</h3>
-              <div class="cmp-bulk-actions">
-                <input type="text" id="dt-fill-filter" class="input-field" placeholder="Filter columns&hellip;" style="width:150px;">
-                <select id="dt-fill-scope" class="input-field" style="width:150px;">
-                  <option value="attn" selected>Needs attention</option>
-                  <option value="all">All columns</option>
-                  <option value="req">Required only</option>
-                  <option value="empty">Has empty cells</option>
-                  <option value="filled">Fully filled</option>
+          <div class="dt-panel" data-panel="dropdown">
+            <section class="cmp-section" id="dt-section-smartfix" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-smartfix-title">Smart Fixes</h3>
+                <div class="cmp-bulk-actions"><button class="btn btn-primary btn-sm" id="dt-smartfix-all">Apply all suggested</button></div>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Values that aren't in the template's dropdown. Pick what to write instead &mdash; the closest match is pre-selected. Anything left as-is is written verbatim and <b>PickTrace will reject those rows</b>. A value that's genuinely new belongs in <b>Build in PickTrace</b>.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-smartfix-table"></table></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="build">
+            <div class="dt-build" id="dt-build-banner" style="display:none;"></div>
+            <section class="cmp-section" id="dt-section-nooptions" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-nooptions-title">Optional Columns With No Options Yet</h3>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Your org has no options at all for these optional columns, so each value has to be created in PickTrace before it will import. The files still download either way.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-nooptions-table"></table></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="spelling">
+            <div class="dt-spell" id="dt-spell-box" style="display:none;"></div>
+          </div>
+
+          <div class="dt-panel" data-panel="siteaddr">
+            <section class="cmp-section" id="dt-section-siteaddr" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-siteaddr-title">Site addresses</h3></header>
+              <div id="dt-siteaddr-body"></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="fillsite">
+            <section class="cmp-section" id="dt-section-sitegaps" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-sitegaps-title">Blank Site</h3>
+                <div class="cmp-bulk-actions"><button class="btn btn-primary btn-sm" id="dt-sitegaps-all">Copy down all</button></div>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">These locations have no Site, right under a row that does &mdash; usually the client wrote each site once for its group. <b>Nothing is copied until you confirm</b> a group. Row numbers match the preview's <b>#</b> column.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-sitegaps-table"></table></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="collisions">
+            <section class="cmp-section" id="dt-section-collisions" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-collisions-title">Name collisions</h3>
+                <div class="cmp-bulk-actions"><button class="btn btn-ghost btn-sm" id="dt-collisions-all">Keep the first of each</button></div>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">PickTrace keeps one site, pack style or job per name, and one location per Site + Name &mdash; <b>the others are dropped on upload without a word</b>. Rows that repeat a name with the same values were already folded into one; these differ. Give one a new name, or leave it out. <b>Differs in</b> shows what tells them apart.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-collisions-table"></table></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="possible">
+            <section class="cmp-section" id="dt-section-possible" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-possible-title">Possible duplicates</h3>
+                <div class="cmp-bulk-actions"><button class="btn btn-ghost btn-sm" id="dt-possible-reset">Review again</button></div>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Kept in the upload, but each could be someone already listed: an Alt ID or SSN shared with a different name, a name + birth date whose SSN differs, or a name that nothing rules out. People confidently the same &mdash; matching Alt ID or SSN with the name, or name + birth date &mdash; were left out already (<b>Already in PickTrace</b>, <b>Dropped rows</b>).</div>
+              <div class="table-wrap"><table class="data-table" id="dt-possible-table"></table></div>
+            </section>
+          </div>
+
+          <div class="dt-panel" data-panel="dates">
+            <section class="cmp-section" id="dt-section-dates" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-dates-title">Year-only dates</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">PickTrace needs a full date. These cells hold only a year (<code>2012</code>) or a range (<code>2010-2011</code>). Pick a month and day &mdash; each row keeps its own year. Start Date isn&rsquo;t touched.</div>
+              <div class="ts-addr-all-wrap" style="margin-bottom:10px;">
+                <input type="number" id="dt-dates-mm" class="input-field" min="1" max="12" placeholder="MM" style="width:70px;flex:none;">
+                <input type="number" id="dt-dates-dd" class="input-field" min="1" max="31" placeholder="DD" style="width:70px;flex:none;">
+                <select id="dt-dates-range" class="input-field" style="width:auto;flex:none;">
+                  <option value="first">Range: first year</option>
+                  <option value="last">Range: last year</option>
                 </select>
-                <button class="btn btn-ghost btn-sm" id="dt-fill-reset">Undo all fills</button>
+                <button class="btn btn-primary btn-sm" id="dt-dates-apply">Apply</button>
+                <button class="btn btn-ghost btn-sm" id="dt-dates-clear">Clear</button>
               </div>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;"><b>Needs attention</b> lists required columns with blanks, columns holding values the dropdown won't take, and empty columns that have a dropdown to pick from; switch to <b>All columns</b> to bulk-set anything else. Switch domains with the preview pills, and type in the filter box to jump to a column. <b>All rows</b> overwrites everything, <b>Blanks</b> only writes where the cell is empty, <b>Clear</b> empties the column. Where the template has a dropdown, pick from it so the value matches exactly; where it doesn't, type an override.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-fill-table"></table></div>
-          </section>
+              <div class="table-wrap"><table class="data-table" id="dt-dates-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-fills" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-fills-title">Column Fills Applied</h3>
-            </header>
-            <div class="table-wrap"><table class="data-table" id="dt-fills-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="underage">
+            <section class="cmp-section" id="dt-section-underage" style="display:none;">
+              <header class="cmp-section-head">
+                <h3 id="dt-underage-title">Under Minimum Age</h3>
+              </header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Employees whose Date of Birth puts them under 12 &mdash; nearly always a typo'd birth year. Set the correct date per row, or fill one date below and apply it to everyone listed. Nothing is changed until you enter a value.</div>
+              <div class="ts-addr-all-wrap" style="margin-bottom:10px;">
+                <input type="date" id="dt-age-all" class="input-field" style="width:170px;">
+                <button class="btn btn-primary btn-sm" id="dt-age-apply">Apply to all listed</button>
+                <button class="btn btn-ghost btn-sm" id="dt-age-clear">Clear corrections</button>
+              </div>
+              <div class="table-wrap"><table class="data-table" id="dt-underage-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-derived" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-derived-title">Derived Columns</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">The source packed several template fields into one column, so they were split out. Names are title-cased; addresses are parsed into street / city / state / zip.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-derived-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="changes">
+            <section class="cmp-section" id="dt-section-remap" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-remap-title">Rewritten Values</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;"><b>Only option in this org</b>: the template allows one value, so it was migrated &mdash; uncheck <b>Migrate values</b> above to keep the originals. <b>Only matching dropdown entry</b>: exactly one plausible entry (<code>Cherries</code> &rarr; <code>Cherries-Other</code>, <code>M</code> &rarr; <code>MALE</code>). <b>Crews tab</b>: a crew code written as its Crew Name.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-remap-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-autofill" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-autofill-title">Auto-Filled Columns</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Empty columns whose dropdown offers exactly one choice, so that choice was written in.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-autofill-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-fills" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-fills-title">Column Fills Applied</h3></header>
+              <div class="table-wrap"><table class="data-table" id="dt-fills-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-derived" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-derived-title">Derived Columns</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">One source column split into several template columns (names, addresses, a weight and its unit), or two joined into one (Crop Type + Variety).</div>
+              <div class="table-wrap"><table class="data-table" id="dt-derived-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-fuzzy" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-fuzzy-title">Fuzzy Column Matches</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">These source columns didn't match a template column by name, so they were paired by similarity &mdash; a misspelled header like <code>ADRESS</code>, for instance. Check each one; anything wrong here silently lands in the wrong column.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-fuzzy-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="columns">
+            <section class="cmp-section" id="dt-section-fuzzy" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-fuzzy-title">Fuzzy Column Matches</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Paired by similarity because no name matched (a misspelled header like <code>ADRESS</code>). Check each one &mdash; a wrong pair puts data in the wrong column.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-fuzzy-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-unmapped" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-unmapped-title">Unmapped Source Columns</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Export columns holding data the template has no column for. Nothing here is written.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-unmapped-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-addrflag" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-addrflag-title">Addresses Needing a Look</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">The city couldn't be identified in these addresses &mdash; the street line was written whole and City left blank. Fill them in the exported file.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-addrflag-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="contact">
+            <section class="cmp-section" id="dt-section-addrflag" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-addrflag-title">Addresses Needing a Look</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">The city couldn't be identified &mdash; the street line was written whole and City left blank.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-addrflag-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-phonebad" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-phonebad-title">Phone Numbers PickTrace Will Reject</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">A phone must start with <code>1</code> or <code>52</code> followed by 10 digits. These couldn't be made to fit, so they were left as they are.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-phonebad-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-phonebad" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-phonebad-title">Phone Numbers PickTrace Will Reject</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">PickTrace requires a phone to start with <code>1</code> or <code>52</code> followed by 10 digits. These couldn't be made to fit, so they were left exactly as they are &mdash; correct them in the source or clear the column.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-phonebad-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="existing">
+            <section class="cmp-section" id="dt-section-existing" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-existing-title">Already in PickTrace</h3></header>
+              <div class="cmp-slot-hint" style="margin-bottom:8px;">Rows the existing PickTrace export already has, left out so the upload doesn&rsquo;t hit duplicates. Locations match on Site + Name + Crop &amp; Variety when the export has a crop &mdash; a different block reusing a name is a <b>Name collision</b> instead. Employees match on Alt ID or SSN with the name, or on name + birth date.</div>
+              <div class="table-wrap"><table class="data-table" id="dt-existing-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-mismatch" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-mismatch-title">Off-Dropdown Values</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values that don't appear in the template's <code>DROP-DOWN INPUTS</code> list for that column. PickTrace will reject them &mdash; create them in PickTrace and re-download the template, or correct the export.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-mismatch-table"></table></div>
-          </section>
+          <div class="dt-panel" data-panel="dropped">
+            <section class="cmp-section" id="dt-section-removed" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-removed-title">Left out by you</h3></header>
+              <div class="table-wrap"><table class="data-table" id="dt-removed-table"></table></div>
+            </section>
+            <section class="cmp-section" id="dt-section-dropped" style="display:none;">
+              <header class="cmp-section-head"><h3 id="dt-dropped-title">Dropped Rows</h3></header>
+              <div class="table-wrap"><table class="data-table" id="dt-dropped-table"></table></div>
+            </section>
+          </div>
 
-          <section class="cmp-section" id="dt-section-remap" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-remap-title">Rewritten Values</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Values written differently from the export, and why. <b>Only option in this org</b>: the template allows exactly one value, so it was migrated &mdash; uncheck <b>Migrate values</b> above to keep the originals. <b>Only matching dropdown entry</b>: the value had exactly one plausible entry in the dropdown (<code>Cherries</code> &rarr; <code>Cherries-Other</code>, <code>M</code> &rarr; <code>MALE</code>), so it was matched without a Smart Fix. <b>Crews tab</b>: the employee's Crew held a payroll code from the workbook's Crews tab, so it was written as that crew's Crew Name (<code>IRR01</code> &rarr; <code>Irrigation</code>).</div>
-            <div class="table-wrap"><table class="data-table" id="dt-remap-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="dt-section-nooptions" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-nooptions-title">Needs Building in PickTrace</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">The template's dropdown for this column is <b>empty</b>, so there is nothing to migrate to. Create each value below in PickTrace and re-download the template. The files still download either way.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-nooptions-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="dt-section-autofill" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-autofill-title">Auto-Filled Columns</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Columns with no source data whose dropdown offers exactly one choice, so that choice was written to every row.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-autofill-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="dt-section-required" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-required-title">Empty Required Columns</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Template columns marked <code>*</code> that no export supplies. Fill these before uploading.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-required-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="dt-section-unmapped" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-unmapped-title">Unmapped Source Columns</h3>
-            </header>
-            <div class="cmp-slot-hint" style="margin-bottom:8px;">Export columns holding data that the template has no column for. Nothing here is written.</div>
-            <div class="table-wrap"><table class="data-table" id="dt-unmapped-table"></table></div>
-          </section>
-
-          <section class="cmp-section" id="dt-section-dropped" style="display:none;">
-            <header class="cmp-section-head">
-              <h3 id="dt-dropped-title">Dropped Rows</h3>
-            </header>
-            <div class="table-wrap"><table class="data-table" id="dt-dropped-table"></table></div>
-          </section>
+          <div class="dt-panel-empty" id="dt-panel-empty" style="display:none;"></div>
         </div>
 
-        <div class="empty-state" id="dt-empty">Upload an export plus its bulk-create template to start. Each domain works on its own &mdash; you don't need all four.</div>
+        <div class="empty-state" id="dt-empty">Upload an export plus its bulk-create template to start. Each file type works on its own &mdash; you don't need them all.</div>
       </div><!-- /cmp-mode-datatemplate -->
 
-      <!-- ═══ Legacy → 3.0 Sites & Locations Migration ═══ -->
-      <div class="cmp-page" id="cmp-mode-sitesloc" style="display:none;">
+      <!-- ═══ Legacy → 3.0: sites, locations and employees on one page ═══ -->
+      <div class="cmp-page" id="cmp-mode-legacy" style="display:none;">
         <div class="cmp-header">
-          <p>Convert a Legacy locations export (<code>pt_locations.csv</code>) plus a
-          Legacy sites export into the two 3.0 bulk-create workbooks. Legacy stores
-          Site, Crop and Location Type as bare numeric IDs: <b>site_id</b> is joined
-          against the sites export, while <b>crop_id</b> and <b>location_type_id</b>
-          are resolved in the mapping panels below. Archived rows
-          (<b>is_archived</b> = true) are dropped.</p>
+          <p>Turn Legacy exports into filled 3.0 bulk templates &mdash; <b>Sites</b>, <b>Locations</b> and
+          <b>Employees</b> &mdash; in one go. Load every file at once; Legacy's numeric site, crop, type and
+          contractor IDs are resolved in the panels below. Anything still missing becomes a short questions page for the client in the
+          export; drop the page they send back on <b>Upload all files</b> and their answers are applied.</p>
         </div>
 
-        <div class="cmp-uploads">
-          <div class="cmp-slot cmp-slot-db">
-            <div class="cmp-slot-label">1. Legacy locations CSV <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
+        <div class="cmp-uploads lg-uploads">
+          <div class="cmp-slot cmp-slot-db lg-drop" id="lg-drop"></div>
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">Legacy locations export <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
               <span>&#8679; Upload Locations CSV</span>
               <input type="file" id="lm-loc-file" accept=".csv,.xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="lm-loc-name">No file selected</div>
             <div class="cmp-meta" id="lm-loc-meta"></div>
-            <div class="cmp-slot-hint">The <code>pt_locations</code> export. Rows with <b>is_archived</b> = true are skipped.</div>
+            <div class="cmp-slot-hint">The <code>pt_locations</code> export. Archived rows are skipped.</div>
           </div>
-
           <div class="cmp-slot">
-            <div class="cmp-slot-label">2. Legacy sites export <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
+            <div class="cmp-slot-label">Legacy sites export <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
               <span>&#8679; Upload Sites Export</span>
               <input type="file" id="lm-sites-file" accept=".csv,.xlsx,.xls" hidden>
             </label>
             <div class="cmp-filename" id="lm-sites-name">No file selected</div>
             <div class="cmp-meta" id="lm-sites-meta"></div>
-            <div class="cmp-slot-hint">Needs <b>ID</b> and <b>Site</b> (or <b>Name</b>) columns. Resolves each location's <b>site_id</b> and doubles as the source for the Sites workbook.</div>
+            <div class="cmp-slot-hint">Turns each location’s <b>site_id</b> into a site name, and is the source for the Sites file.</div>
           </div>
-
           <div class="cmp-slot">
-            <div class="cmp-slot-label">3. Legacy crops lookup <span class="cmp-meta">(optional)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Crops CSV</span>
-              <input type="file" id="lm-croplk-file" accept=".csv,.xlsx,.xls" hidden>
+            <div class="cmp-slot-label">Legacy employee export <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Employee CSV</span>
+              <input type="file" id="em-emp-file" accept=".csv,.xlsx,.xls" hidden>
             </label>
-            <div class="cmp-filename" id="lm-croplk-name">No file selected</div>
-            <div class="cmp-meta" id="lm-croplk-meta"></div>
-            <div class="cmp-slot-hint">Optional <b>ID</b> &#8594; <b>Name</b> list. Without it, crop suggestions are inferred from each ID's own location names &mdash; far less reliable.</div>
+            <div class="cmp-filename" id="em-emp-name">No file selected</div>
+            <div class="cmp-meta" id="em-emp-meta"></div>
+            <div class="cmp-slot-hint">The Legacy employees CSV. Only rows where <b>Is Active</b> is true are migrated.</div>
           </div>
-
           <div class="cmp-slot">
-            <div class="cmp-slot-label">4. Legacy location types lookup <span class="cmp-meta">(optional)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload Types CSV</span>
-              <input type="file" id="lm-typelk-file" accept=".csv,.xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="lm-typelk-name">No file selected</div>
-            <div class="cmp-meta" id="lm-typelk-meta"></div>
-            <div class="cmp-slot-hint">Optional <b>ID</b> &#8594; <b>Name</b> list. Legacy usually leaves <b>location_type_id</b> as <code>-1</code>, so this is normally just one dropdown pick in the panel below.</div>
-          </div>
-
-          <div class="cmp-slot">
-            <div class="cmp-slot-label">5. Already in 3.0 (cross-reference) <span class="cmp-meta">(optional)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
-              <span>&#8679; Upload 3.0 Sites</span>
-              <input type="file" id="lm-migrated-file" accept=".csv,.xlsx,.xls" hidden>
-            </label>
-            <div class="cmp-filename" id="lm-migrated-name">No file selected</div>
-            <div class="cmp-meta" id="lm-migrated-meta"></div>
-            <div class="cmp-slot-hint">Optional. A 3.0 sites export &mdash; any Legacy site whose <b>Name</b> already appears here is skipped to avoid duplicates.</div>
-          </div>
-        </div>
-
-        <div class="cmp-uploads cmp-uploads-tpl">
-          <div class="cmp-slot cmp-slot-tpl">
-            <div class="cmp-slot-label">6. 3.0 Locations template <span class="cmp-req">(required)</span></div>
-            <label class="btn btn-primary cmp-upload-btn">
+            <div class="cmp-slot-label">3.0 Locations template <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
               <span>&#8679; Upload Locations Template</span>
-              <input type="file" id="lm-loctpl-file" accept=".xlsx,.xls" hidden>
+              <input type="file" id="lm-loctpl-file" accept=".xlsx" hidden>
             </label>
             <div class="cmp-filename" id="lm-loctpl-name">No file selected</div>
             <div class="cmp-meta" id="lm-loctpl-meta"></div>
-            <div class="cmp-slot-hint">Its <code>DROP-DOWN INPUTS</code> sheet supplies the Site, Location Type and Crop &amp; Variety lists; every validation is preserved in the output.</div>
+            <div class="cmp-slot-hint">The org’s personalized Locations Bulk Create template. Its Site, Location Type and Crop &amp; Variety lists are checked against.</div>
           </div>
-
-          <div class="cmp-slot cmp-slot-tpl">
-            <div class="cmp-slot-label">7. 3.0 Sites template <span class="cmp-opt">(optional)</span></div>
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3.0 Sites template <span class="cmp-opt">(optional)</span></div>
             <label class="btn btn-ghost cmp-upload-btn">
               <span>&#8679; Upload Sites Template</span>
-              <input type="file" id="lm-sitetpl-file" accept=".xlsx,.xls" hidden>
+              <input type="file" id="lm-sitetpl-file" accept=".xlsx" hidden>
             </label>
             <div class="cmp-filename" id="lm-sitetpl-name">No file selected</div>
             <div class="cmp-meta" id="lm-sitetpl-meta"></div>
-            <div class="cmp-slot-hint">Skip &#8594; no Sites workbook is produced; the sites export is then used only to resolve <b>Site*</b>.</div>
+            <div class="cmp-slot-hint">With it, the Legacy sites go out in a Sites file too. Skip it if every site already exists in 3.0.</div>
           </div>
-
-          <div class="cmp-slot cmp-slot-tpl">
-            <div class="cmp-slot-label">Options</div>
-            <div style="padding-top:8px;">
-              <label class="cmp-export-option" style="margin-bottom:8px;">
-                <input type="checkbox" id="lm-refonly" checked>
-                <span>Only export sites the locations file references</span>
+          <div class="cmp-slot">
+            <div class="cmp-slot-label">3.0 Employees template <span class="cmp-opt">(optional)</span></div>
+            <label class="btn btn-ghost cmp-upload-btn">
+              <span>&#8679; Upload Employees Template</span>
+              <input type="file" id="em-tpl-file" accept=".xlsx" hidden>
+            </label>
+            <div class="cmp-filename" id="em-tpl-name">No file selected</div>
+            <div class="cmp-meta" id="em-tpl-meta"></div>
+            <div class="cmp-slot-hint">The org’s personalized Employee Bulk Create template. Its Employer list and every dropdown carry into the export.</div>
+          </div>
+          <details class="lg-more">
+            <summary>More files <span class="cmp-opt">(optional)</span> &mdash; already in 3.0, contractors, client addresses, crop &amp; type lookups</summary>
+            <div class="lg-more-grid">
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Sites already in 3.0 <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload 3.0 Sites</span>
+                <input type="file" id="lm-migrated-file" accept=".csv,.xlsx,.xls" hidden>
               </label>
-              <div class="cmp-slot-hint" style="margin-bottom:10px;">Off &#8594; every site in the export is migrated, which can be thousands of rows.</div>
-              <div class="cmp-slot-label" style="margin-bottom:4px;">Max rows per file</div>
-              <input type="number" id="lm-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
-              <div class="cmp-slot-hint">Larger sets split into numbered files: <b>&hellip; (1 of N)</b>.</div>
+              <div class="cmp-filename" id="lm-migrated-name">No file selected</div>
+              <div class="cmp-meta" id="lm-migrated-meta"></div>
+              <div class="cmp-slot-hint">A 3.0 sites export. A Legacy site with the same <b>Name</b> is left out of the Sites file.</div>
             </div>
-          </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Employees already in 3.0 <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload 3.0 Employees</span>
+                <input type="file" id="em-migrated-file" accept=".xlsx,.xls,.csv" hidden>
+              </label>
+              <div class="cmp-filename" id="em-migrated-name">No file selected</div>
+              <div class="cmp-meta" id="em-migrated-meta"></div>
+              <div class="cmp-slot-hint">A 3.0 employees export. Anyone matching on <b>Alt ID</b> or <b>name + birth date</b> is left out; an SSN or name-only match is flagged.</div>
+            </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Active contractors <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload Contractors</span>
+                <input type="file" id="em-employer-file" accept=".csv,.xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="em-employer-name">No file selected</div>
+              <div class="cmp-meta" id="em-employer-meta"></div>
+              <div class="cmp-slot-hint">Legacy’s contractors export — turns each employee’s Contractor ID into an employer. If it has no ID column (Legacy’s usually doesn’t), contractors are numbered by the date they were created; check the names under <b>Build in PickTrace</b>. Its Site column is ignored.</div>
+            </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">All contractors (archived + active) <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload Full List</span>
+                <input type="file" id="em-fullcontractor-file" accept=".csv,.xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="em-fullcontractor-name">No file selected</div>
+              <div class="cmp-meta" id="em-fullcontractor-meta"></div>
+              <div class="cmp-slot-hint">With the active list: employees of a contractor that’s only in this list are archived and left out (restorable).</div>
+            </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Site addresses from the client <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload Address Sheet</span>
+                <input type="file" id="lm-addr-file" accept=".csv,.xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="lm-addr-name">No file selected</div>
+              <div class="cmp-meta" id="lm-addr-meta"></div>
+              <div class="cmp-slot-hint">The sheet the client filled in: a <b>Site</b> (or Name / Ranch) column plus <b>Address1, City, State, Zip</b> (or one <b>Address</b> column). You can also type addresses under <b>Site addresses</b>.</div>
+            </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Crops lookup <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload Crops List</span>
+                <input type="file" id="lm-croplk-file" accept=".csv,.xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="lm-croplk-name">No file selected</div>
+              <div class="cmp-meta" id="lm-croplk-meta"></div>
+              <div class="cmp-slot-hint">Rarely needed. Legacy’s locations export only has a crop <b>number</b> per location; a two-column list of <b>ID</b> and <b>Name</b> for those numbers lets the Crops panel suggest the right 3.0 crop. Without it, type the crop for each number in <b>Crops</b>.</div>
+            </div>
+            <div class="cmp-slot cmp-slot-opt">
+              <div class="cmp-slot-label">Location types lookup <span class="cmp-opt">(optional)</span></div>
+              <label class="btn btn-ghost cmp-upload-btn">
+                <span>&#8679; Upload Types List</span>
+                <input type="file" id="lm-typelk-file" accept=".csv,.xlsx,.xls" hidden>
+              </label>
+              <div class="cmp-filename" id="lm-typelk-name">No file selected</div>
+              <div class="cmp-meta" id="lm-typelk-meta"></div>
+              <div class="cmp-slot-hint">Almost never needed — Legacy usually leaves location type unset (<code>-1</code>). Same idea: <b>ID</b> and <b>Name</b> for each location-type number. Otherwise pick it in <b>Location types</b>.</div>
+            </div>
+            </div>
+          </details>
+          <details class="lg-more">
+            <summary>Options</summary>
+            <div class="lg-more-opts">
+              <label class="cmp-export-option">
+                <input type="checkbox" id="lm-refonly" checked>
+                <span>Only migrate sites the locations use</span>
+              </label>
+              <div class="cmp-slot-hint">Off &#8594; every site in the export is migrated, which can be thousands of rows.</div>
+              <label class="cmp-slot-label" for="lm-batch">Max rows per file</label>
+              <input type="number" id="lm-batch" class="input-field" value="5000" min="1" step="1" style="width:140px;">
+              <div class="cmp-slot-hint">Larger files split into numbered parts: <b>&hellip; (1 of N)</b>.</div>
+            </div>
+          </details>
         </div>
 
         <div class="cmp-actions">
           <button class="btn btn-success" id="lm-run" disabled>&#9654; Build Preview</button>
-          <button class="btn btn-primary" id="lm-export" disabled>&#8615; Export XLSX</button>
+          <button class="btn btn-primary" id="lm-export" disabled>&#8615; Export all</button>
           <button class="btn btn-ghost" id="lm-reset">&#8634; Reset</button>
-          <button class="btn btn-ghost" id="lm-debug" disabled title="Load your files and run the migration first.">&#128270; Debug Dump</button>
+          <button class="btn btn-ghost" id="lm-debug" disabled title="Load your files first.">&#128270; Debug Dump</button>
         </div>
 
         <div class="cmp-summary" id="lm-summary" style="display:none;"></div>
+        <div class="cmp-summary" id="em-summary" style="display:none;"></div>
 
         <div id="lm-preset-banner" style="display:none;margin:10px 0;padding:10px 12px;border:1px solid #6ee7b7;border-radius:6px;background:#ecfdf5;"></div>
 
@@ -1857,7 +2040,7 @@
           <section class="cmp-section" id="lm-section-type" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="lm-type-title">Location Type Mapping</h3>
-              <button class="btn btn-ghost btn-sm" id="lm-type-accept-all">&#10003; Accept all suggestions</button>
+              <button class="btn btn-ghost btn-sm" id="lm-type-accept-all">&#10003; Accept / confirm all</button>
             </header>
             <p class="cmp-sites-hint">Legacy's <b>location_type_id</b> is usually <code>-1</code> (never set), so this is normally a single pick applied to every row. Choose the 3.0 <b>Location Type*</b> each legacy ID becomes. Picks are sticky across re-runs.</p>
             <div class="table-wrap"><table class="data-table" id="lm-type-table"></table></div>
@@ -1865,10 +2048,10 @@
 
           <section class="cmp-section" id="lm-section-crop" style="display:none;">
             <header class="cmp-section-head">
-              <h3 id="lm-crop-title">Crop Mapping</h3>
-              <button class="btn btn-ghost btn-sm" id="lm-crop-accept-all">&#10003; Accept all suggestions</button>
+              <h3 id="lm-crop-title">Crops</h3>
+              <button class="btn btn-ghost btn-sm" id="lm-crop-accept-all">&#10003; Accept / confirm all</button>
             </header>
-            <p class="cmp-sites-hint">Legacy exports <b>crop_id</b> with no name attached. Upload a crops lookup (slot 3) for reliable suggestions; otherwise each suggestion is inferred from that ID's own location names and is shown with a confidence score &mdash; <b>check the low-confidence ones</b>. Note that Legacy often tags non-crop locations (an office, a shop) with a crop ID; those rows still need a <b>Crop &amp; Variety*</b> value, and their <b>Location Type*</b> is better set per-row in the preview.</p>
+            <p class="cmp-sites-hint">Legacy keeps the crop as a number (<b>crop_id</b>) and the variety as text (<b>plant_name</b>). 3.0’s <b>Crop &amp; Variety*</b> is <b>Crop-Variety</b>, so name each crop here and check the varieties below. A block with no variety gets <b>Other</b>; one with no crop gets <b>Other-Other</b>. Suggestions come from a crops lookup if you add one (under More files), otherwise from location names &mdash; <b>check them</b>.</p>
             <div class="table-wrap"><table class="data-table" id="lm-crop-table"></table></div>
           </section>
 
@@ -1877,8 +2060,46 @@
               <h3 id="lm-create-title">Sites to Create in 3.0</h3>
               <button class="btn btn-ghost btn-sm" id="lm-create-copy">&#128203; Copy List</button>
             </header>
-            <p class="cmp-sites-hint">These site names are referenced by the locations but aren't in the Locations template's <b>Site</b> dropdown yet. Upload the Sites workbook first, or <b>click a site to copy its name and check it off</b> as you create it in PickTrace &mdash; otherwise the locations upload is rejected with &ldquo;Site not found&rdquo;.</p>
+            <p class="cmp-sites-hint">These site names are referenced by the locations but are neither in the Locations template's <b>Site</b> list nor in the Sites file (add the Sites template to build one). <b>Click a site to copy its name and check it off</b> as you create it in PickTrace &mdash; otherwise the locations upload is rejected with &ldquo;Site not found&rdquo;.</p>
             <div class="table-wrap"><table class="data-table" id="lm-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-cv-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-cv-create-title">Crops &amp; location types to create in 3.0</h3>
+            </header>
+            <p class="cmp-sites-hint">Crop &amp; Variety and Location Type values these locations use that the Locations template doesn't list (an empty list means the org has none yet). Create them in PickTrace, re-download the Locations template, then upload. <b>Click one to copy it and check it off.</b></p>
+            <div class="table-wrap"><table class="data-table" id="lm-cv-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-smartfix" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="lm-smartfix-title">Not in dropdown</h3>
+              <button class="btn btn-ghost btn-sm" id="lm-smartfix-apply-all">&#10003; Apply all chosen</button>
+            </header>
+            <p class="cmp-sites-hint">Values a template's dropdown doesn't list, in either file &mdash; PickTrace rejects them. Pick the value each one becomes (a close match is suggested), then Apply. Choices stick through re-runs.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-smartfix-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-sitefile" style="display:none;">
+            <header class="cmp-section-head"><h3>Sites file</h3></header>
+            <div id="lm-sitefile-body"></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-siteaddr" style="display:none;">
+            <header class="cmp-section-head"><h3>Site addresses</h3></header>
+            <div id="lm-siteaddr-body"></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-collisions" style="display:none;">
+            <header class="cmp-section-head"><h3 id="lm-collisions-title">Name collisions</h3></header>
+            <p class="cmp-sites-hint">PickTrace keeps only one location per Site + Name, and one site per Name. Rename one of each pair in the preview, or drop it with &times;.</p>
+            <div class="table-wrap"><table class="data-table" id="lm-collisions-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="lm-section-left" style="display:none;">
+            <header class="cmp-section-head"><h3>Left out</h3></header>
+            <div id="lm-left-body"></div>
           </section>
 
           <section class="cmp-section" id="lm-section-bulk" style="display:none;">
@@ -1889,14 +2110,81 @@
             <div class="table-wrap"><table class="data-table" id="lm-bulk-table"></table></div>
           </section>
 
+          <section class="cmp-section" id="em-section-unresolved" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-unresolved-title">Employers</h3>
+            </header>
+            <p class="cmp-sites-hint">These Contractor IDs have no employer in 3.0 yet (blank, or a name not in the template's dropdown). The legacy name is kept in the Employer column. Optionally pick an existing 3.0 Employer (or type a manual override) and Apply to remap every row with that Contractor ID instead.</p>
+            <div class="table-wrap"><table class="data-table" id="em-unresolved-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-create" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-create-title">Employers to Create in 3.0</h3>
+              <button class="btn btn-ghost btn-sm" id="em-create-copy">&#128203; Copy List</button>
+            </header>
+            <p class="cmp-sites-hint">These employer names are kept in the employees' Employer column but don't exist in PickTrace 3.0 yet. <b>Click an employer to copy its name and check it off</b> as you create it in PickTrace. Create them all (or map them to an existing employer in the panel below), then re-download the template &mdash; otherwise the upload will be rejected with &ldquo;Employer not found&rdquo;.</p>
+            <div class="table-wrap"><table class="data-table" id="em-create-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-smartfix" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-smartfix-title">Not in dropdown</h3>
+              <button class="btn btn-ghost btn-sm" id="em-smartfix-apply-all">&#10003; Apply all chosen</button>
+            </header>
+            <p class="cmp-sites-hint">Values the template's dropdown doesn't list &mdash; PickTrace rejects them on upload. Pick the 3.0 value each one becomes (a close match is suggested), then Apply. Choices stick through re-runs.</p>
+            <div class="table-wrap"><table class="data-table" id="em-smartfix-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-possible" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-possible-title">Possible duplicates</h3>
+            </header>
+            <p class="cmp-sites-hint">Kept in the export, but each matches someone on SSN or name &mdash; in this file, or in the 3.0 export. Check each one; <b>Exclude</b> leaves it out.</p>
+            <div class="table-wrap"><table class="data-table" id="em-possible-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-names" style="display:none;">
+            <header class="cmp-section-head">
+              <h3>Legacy codes in names</h3>
+            </header>
+            <div id="em-names-body"></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-archived" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-archived-title">Archived Contractors — employees removed</h3>
+            </header>
+            <p class="cmp-sites-hint">These contractors are in the full list but <b>not</b> active, so their employees are excluded from the export. Click <b>Restore</b> to migrate a given contractor's employees anyway (Employer is filled from the full list). <b>Remove</b> drops them again.</p>
+            <div class="table-wrap"><table class="data-table" id="em-archived-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-existing" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-existing-title">Already in 3.0</h3>
+            </header>
+            <p class="cmp-sites-hint">Matched in the 3.0 employees export on Alt ID, or on name + birth date, so they're left out of the export.</p>
+            <div class="table-wrap"><table class="data-table" id="em-existing-table"></table></div>
+          </section>
+
+          <section class="cmp-section" id="em-section-bulk" style="display:none;">
+            <header class="cmp-section-head">
+              <h3 id="em-bulk-title">Bulk Edit Columns</h3>
+            </header>
+            <p class="cmp-sites-hint">Set a value for an entire column across all (non-removed) rows — same as the Unresolved Employers panel. Pick from the template dropdown where available or type a manual override, then Apply. Clear empties the column. Bulk values stick through re-runs until cleared.</p>
+            <div class="table-wrap"><table class="data-table" id="em-bulk-table"></table></div>
+          </section>
+
           <section class="cmp-section" id="lm-section-preview" style="display:none;">
             <header class="cmp-section-head">
               <h3 id="lm-preview-title">Preview</h3>
               <div class="ts-domain-toggle" style="display:flex;align-items:center;gap:8px;">
                 <button type="button" class="btn btn-sm ts-domain-pill lm-domain-pill ts-domain-active" data-domain="locations">&#128205; Locations</button>
                 <button type="button" class="btn btn-sm ts-domain-pill lm-domain-pill" data-domain="sites">&#127970; Sites</button>
+                <button type="button" class="btn btn-sm ts-domain-pill lm-domain-pill" data-domain="employees">&#128100; Employees</button>
               </div>
             </header>
+            <div id="lm-pv-box">
             <p class="cmp-sites-hint">Editable &mdash; click a cell, type, then click away to save.</p>
             <div id="lm-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
               <b id="lm-sel-count">0 cells selected</b>
@@ -1906,11 +2194,23 @@
               <button class="btn btn-ghost btn-sm" id="lm-sel-deselect">Deselect</button>
             </div>
             <div class="table-wrap"><table class="data-table ts-edit-grid" id="lm-preview-table"></table></div>
+            </div>
+            <div id="em-section-preview" class="lg-pv-em">
+              <p class="cmp-sites-hint">Cells are editable — click a cell, type, then click away to save. <b>Shift+click</b> selects a rectangular range; <b>Ctrl/Cmd+click</b> toggles individual cells; then set or clear them all at once. Empty required cells are highlighted in red. Click <b>&times;</b> at the start of a row to drop it from the preview + export.</p>
+              <div id="em-sel-bar" style="display:none;align-items:center;gap:8px;margin:6px 0;padding:8px 10px;background:var(--bg-sunken,#eef2ff);border:1px solid #c7d2fe;border-radius:6px;">
+                <b id="em-sel-count">0 cells selected</b>
+                <input type="text" id="em-sel-val" class="input-field" placeholder="Value for all selected cells" style="width:240px;">
+                <button class="btn btn-primary btn-sm" id="em-sel-apply">Apply to selected</button>
+                <button class="btn btn-ghost btn-sm" id="em-sel-clear">Clear contents</button>
+                <button class="btn btn-ghost btn-sm" id="em-sel-deselect">Deselect</button>
+              </div>
+              <div class="table-wrap"><table class="data-table ts-edit-grid" id="em-preview-table"></table></div>
+            </div>
           </section>
         </div>
 
-        <div class="empty-state" id="lm-empty">Upload the Legacy locations CSV, the Legacy sites export, and the 3.0 Locations template to start.</div>
-      </div><!-- /cmp-mode-sitesloc -->
+        <div class="empty-state" id="lm-empty">Click <b>Upload all files</b> and pick every Legacy export and 3.0 template at once &mdash; or load them into their slots one by one.</div>
+      </div><!-- /cmp-mode-legacy -->
     </div>
 
 
@@ -1941,9 +2241,10 @@
 <!-- xlsx-template-writer.js patches a template's zip in place, keeping its
      dropdowns and writing literal inline strings — SheetJS's writer drops the
      first and emits t="str" for the second, which uploaders reject. -->
-<script src="xlsx-template-writer.js?v=1"></script>
+<script src="xlsx-template-writer.js?v=5"></script>
 <script src="gcv-ocr.js?v=2"></script>
-<script src="utils.js?v=2"></script>
+<script src="utils.js?v=5"></script>
+<script src="workbench.js?v=10"></script>
 <script src="app.js?v=2"></script>
 <script src="review-data.js"></script>
 <script src="review-logic.js"></script>
@@ -1952,13 +2253,18 @@
 <script src="compare-logic.js?v=73"></script>
 <!-- highlight-filter.js defines window.IMHighlight (leave out / keep only
      rows a client highlighted), used by the Standardize modules below. -->
-<script src="highlight-filter.js?v=1"></script>
-<script src="template-standardize.js?v=26"></script>
-<script src="sites-standardize.js?v=14"></script>
-<script src="employee-migrate.js?v=17"></script>
-<script src="employee-standardize.js?v=11"></script>
-<script src="data-template.js?v=17"></script>
-<script src="locations-migrate.js?v=4"></script>
+<script src="highlight-filter.js?v=2"></script>
+<script src="column-directives.js?v=1"></script>
+<script src="template-standardize.js?v=45"></script>
+<script src="sites-standardize.js?v=23"></script>
+<script src="legacy-drop.js?v=8"></script>
+<script src="legacy-form.js?v=22"></script>
+<script src="legacy-page.js?v=8"></script>
+<script src="employee-migrate.js?v=33"></script>
+<script src="employee-standardize.js?v=16"></script>
+<script src="data-template.js?v=29"></script>
+<script src="packstyles-standardize.js?v=6"></script>
+<script src="locations-migrate.js?v=21"></script>
 <script>
 // ═══ Router ═══
 // The topbar holds one entry per destination: Build, then the prep tools.
@@ -1982,6 +2288,7 @@ const BUILD_TOOLS = {
       { key: 'locations',  label: 'Locations' },
       { key: 'sites',      label: 'Sites' },
       { key: 'employees',  label: 'Employees' },
+      { key: 'packstyles', label: 'Pack Styles' },
       { key: 'sitegroups', label: 'Site Groups' }
     ]
   },
@@ -1989,7 +2296,7 @@ const BUILD_TOOLS = {
     name: 'Bulk Template Standardize',
     situation: 'Every template, from account exports',
     give: 'PickTrace account exports (or a multi-sheet Implementation Data Template) and their templates — drop them all at once',
-    get:  'Four filled templates: employees, locations, sites, jobs',
+    get:  'Five filled templates: employees, locations, sites, pack styles, jobs',
     when: 'Standing up a new account from an existing one. The export shape is known, so columns carry across almost 1:1 and there is no mapping step. Faster than the single version, with less control.'
   },
   compare: {
@@ -2004,11 +2311,7 @@ const BUILD_TOOLS = {
     situation: 'Convert a Legacy export',
     give: 'A Legacy CSV export and the matching 3.0 template',
     get:  'Filled 3.0 templates',
-    when: 'Migrating off Legacy PickTrace. Resolves Legacy’s numeric site, crop and type IDs back to names.',
-    entities: [
-      { key: 'sitesloc',  label: 'Sites & Locations' },
-      { key: 'employees', label: 'Employees' }
-    ]
+    when: 'Migrating off Legacy PickTrace. Sites, locations and employees on one page; resolves Legacy’s numeric site, crop, type and contractor IDs back to names.'
   }
 };
 
@@ -2037,6 +2340,12 @@ document.getElementById('buildPicker').addEventListener('click', e => {
   if (!card) return;
   activeBuild = card.dataset.build;
   switchPage('build');
+});
+
+// Client box: typing makes the value stick; clearing it lets the next source
+// file fill it again.
+document.getElementById('ctxClient').addEventListener('input', e => {
+  e.target.dataset.typed = e.target.value.trim() ? '1' : '';
 });
 
 // Entity picker sits in the context strip and re-renders the same builder.
@@ -2098,6 +2407,9 @@ function setContext(pageName) {
   const t = onBuild ? BUILD_TOOLS[activeBuild] : PAGES[pageName];
   document.getElementById('ctxName').textContent = t.name;
   document.getElementById('ctxSituation').textContent = t.situation || '';
+  // The builders that download filled templates name them after the client.
+  document.getElementById('ctxClientWrap').style.display =
+    onBuild && (activeBuild === 'standardize' || activeBuild === 'bundle') ? '' : 'none';
   const box = document.getElementById('ctxEntity');
   const bar = document.getElementById('entityBar');
   // Bulk Template Standardize and Block Compare write every template at once,
@@ -2118,7 +2430,6 @@ function setContext(pageName) {
 function showBuild(tool, entity) {
   const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
   const stdEmp = tool === 'standardize' && entity === 'employees';
-  const legEmp = tool === 'legacy' && entity === 'employees';
 
   show('cmp-mode-compare',      tool === 'compare');
   show('cmp-mode-datatemplate', tool === 'bundle');
@@ -2128,19 +2439,19 @@ function showBuild(tool, entity) {
   show('ts-std-header',         tool === 'standardize' && !stdEmp && !stdGrp);
   show('ts-loc-wrap',           tool === 'standardize' && entity === 'locations');
   show('ts-site-wrap',          tool === 'standardize' && entity === 'sites');
+  show('ts-pack-wrap',          tool === 'standardize' && entity === 'packstyles');
   show('ts-sitegroup-wrap',     stdGrp);
   if (tool === 'standardize' && entity === 'sitegroups' && typeof window.tssRenderGroups === 'function') {
     window.tssRenderGroups();
   }
   // #cmp-mode-employees is the wrapper holding both employee panes; it stays
   // in the DOM where it is and is shown for whichever one is in play.
-  show('cmp-mode-employees',    stdEmp || legEmp);
+  show('cmp-mode-employees',    stdEmp);
   show('cmp-mode-empstd',       stdEmp);
-  show('cmp-mode-empmig',       legEmp);
-  show('cmp-mode-sitesloc',     tool === 'legacy' && entity === 'sitesloc');
+  show('cmp-mode-legacy',       tool === 'legacy');
 
   if (tool === 'bundle' && typeof window.dtInit === 'function') window.dtInit();
-  if (tool === 'legacy' && entity === 'sitesloc' && typeof window.locMigInit === 'function') window.locMigInit();
+  if (tool === 'legacy' && typeof window.locMigInit === 'function') window.locMigInit();
 }
 
 // ═══ Shared Helpers ═══

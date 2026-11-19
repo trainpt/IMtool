@@ -19,6 +19,45 @@
   const norm = h => String(h == null ? '' : h).trim().toLowerCase().replace(/^#/, '');
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // ─── Diagnostics for the Debug Dump ───
+  // Every message this tool shows you, and every error thrown while it is on
+  // screen, is kept here, so a dump taken after something breaks (even before
+  // Build Preview has ever worked) still says what happened and where.
+  const MODULE_FILE = 'employee-migrate.js';
+  const events = [];
+  function logEvent(kind, msg, err) {
+    events.push({
+      at: new Date().toISOString(),
+      kind: kind,
+      message: String(msg == null ? '' : msg).slice(0, 2000),
+      stack: err && err.stack ? String(err.stack).split('\n').slice(0, 15).join('\n') : null
+    });
+    if (events.length > 200) events.shift();
+    if (window.IMDebug) IMDebug.refresh('employee-migrate');
+  }
+  // Shadows window.alert inside this module so every message is recorded.
+  function alert(msg) { logEvent('message', msg); window.alert(msg); }
+  // A caught error: recorded with its stack, then shown.
+  function fail(what, err, more) {
+    const text = what + ': ' + (err && err.message ? err.message : err);
+    logEvent('error', text, err);
+    window.alert(text + (more || ''));
+  }
+  const paneShown = () => { const p = $('cmp-mode-legacy'); return !!(p && p.offsetParent !== null); };
+  window.addEventListener('error', e => {
+    const err = e.error;
+    const here = String(e.filename || '').indexOf(MODULE_FILE) >= 0 ||
+      !!(err && err.stack && String(err.stack).indexOf(MODULE_FILE) >= 0);
+    // "ResizeObserver loop …" is the browser noting a resize it will finish next frame — not an error.
+    if (/ResizeObserver loop/.test(e.message || '')) return;
+    if (here || paneShown()) logEvent('uncaught error', e.message || (err && err.message), err);
+  });
+  window.addEventListener('unhandledrejection', e => {
+    const err = e.reason;
+    const here = !!(err && err.stack && String(err.stack).indexOf(MODULE_FILE) >= 0);
+    if (here || paneShown()) logEvent('uncaught error (promise)', err && err.message ? err.message : err, err);
+  });
+
   // 3.0 Employee Bulk Create — DATA ENTRY columns, exact order. Required
   // columns end with '*' (First Name*, Last Name*, Date of Birth*, Employer*).
   const EMP_HEADERS = [
@@ -42,17 +81,44 @@
   let archivedStats = {};      // cid → { count, name } for the Archived panel
   let completedEmployers = new Set(); // employer names ticked off the "to create" checklist
   let migratedAltIds = null;   // Set<altId> of employees already in 3.0 (optional)
+  let existingIdx = null;      // { byNameDob, bySsn, byName } over the same 3.0 export (optional)
   let alreadyMigratedCount = 0;// per-build count of skips due to cross-reference
+  let skippedExisting = [];    // [{ name, by, existing }] — rows left out as already in 3.0
   let tplData = null;          // { headers, employerList[], rawBuffer, fileName }
-  let formattedRows = null;    // [[...34]] mapped rows (post Is-Valid filter)
+  let formattedRows = null;    // [[...34]] mapped rows (post Is-Active filter)
   let srcKept = null;          // source rows that survived the filter (parallel to formattedRows)
+  let srcIdxKept = null;       // empData.rows index behind each formattedRows row
   let employerOverrides = {};  // ContractorID → chosen Employer (sticky across rebuilds)
+  let employerIdsAssumed = false; // the contractors file had no ID column — IDs numbered by date created
+  let contractorInfo = {};     // ContractorID → { phone, email } from the contractors file
+  let employerDetails = {};    // ContractorID → what the client told us about a new employer (name, type, address…)
   let columnFills = {};        // colIdx → { val, mode:'all'|'blank' } (sticky bulk fill)
-  let removedRows = new Set(); // formattedRows indexes excluded from preview + export
+  let smartFixMap = {};        // "colIdx||UPPERVALUE" → template value (sticky Smart Fixes)
+  let cellEdits = {};          // "srcIdx|colIdx" → value — hand edits, kept through rebuilds
+  let removedSrc = new Set();  // empData.rows indexes you dropped (kept through rebuilds)
+  let removedRows = new Set(); // formattedRows indexes excluded from preview + export (from removedSrc)
+  let dupPossible = [];        // [{ ri, name, reason, existing }] — kept, but worth a look
+  // Legacy writes its own employee ID into the name: "doe {1234}". Whether
+  // 3.0 keeps it is the client's call, so it's a switch (on = as Legacy has it).
+  let keepNameCode = true;
+  let codeAnswered = false;    // the client already said whether the Legacy number stays in last names
+  let altIdMode = null;        // null: Legacy's Alt ID as is · 'legacy' | 'altOrLegacy' | 'alt' | 'none' (the client's answer)
+  let pvMode = 'all';          // preview rows: 'all' | 'fix' | 'chg' | 'any' (IMWorkbench.filterBar)
+  let pvColsOnly = false;      // preview: only columns with a flag or a change
   let selCells = new Set();    // "ri:ci" keys of multi-selected preview cells
   let selAnchor = null;        // { ri, ci } anchor for shift-range selection
   let previewOrder = [];       // ri's in displayed order (for shift-range math)
   let initialized = false;
+
+  // Output column → the Legacy column it is copied from (the fixed field map).
+  const SRC_KEYS = {
+    0: 'first name', 1: 'middle name', 2: 'last name', 3: 'birth date',
+    5: 'alt id', 6: 'ssn', 8: 'hired date', 17: 'mobile phone #', 18: 'email',
+    19: 'address 1', 20: 'address 2', 21: 'city', 22: 'state', 23: 'postal code', 24: 'country'
+  };
+  const NAME_CODE = /\s*\{\d+\}\s*$/;   // Legacy's " {3937}" employee-ID suffix
+  const NAME_COLS = [0, 1, 2];
+  const stripCode = v => String(v == null ? '' : v).replace(NAME_CODE, '').trim();
 
   // ─── Mode-pill switcher (manages only this module's pane) ───
   function attachModeSwitcher() {
@@ -184,7 +250,7 @@
 
   // ─── Load handlers ───
   function handleEmpFile(file) {
-    parseCsvFile(file).then(d => {
+    return parseCsvFile(file).then(d => {
       const idx = {};
       d.headers.forEach((h, i) => { const k = norm(h); if (k && idx[k] == null) idx[k] = i; });
       if (idx['is active'] == null || idx['contractor id'] == null) {
@@ -192,37 +258,64 @@
         return;
       }
       empData = { headers: d.headers, rows: d.rows, fileName: file.name, idx };
+      // Edits and removed rows point at this file's rows — a new file starts clean.
+      cellEdits = {}; removedSrc = new Set();
+      const coded = d.rows.filter(r => NAME_CODE.test(String(r[idx['last name']] == null ? '' : r[idx['last name']]))).length;
+      if (coded) logEvent('note', coded + ' of ' + d.rows.length + ' last names carry a Legacy {code}.');
       $('em-emp-name').textContent = file.name;
       $('em-emp-meta').textContent = d.rows.length + ' rows · ' + d.headers.length + ' columns';
       maybeRun();
-    }).catch(err => alert('Failed to read employee file: ' + (err && err.message ? err.message : err)));
+    }).catch(err => fail('Failed to read employee file', err));
   }
 
   function handleEmployerFile(file) {
-    parseCsvFile(file).then(d => {
-      const idI = d.headers.findIndex(h => norm(h) === 'id');
-      const nameI = d.headers.findIndex(h => norm(h) === 'name');
-      if (idI < 0 || nameI < 0) {
-        alert('Employer file must have "ID" and "Name" columns.');
-        return;
-      }
+    return parseCsvFile(file).then(d => {
+      const col = (...ks) => d.headers.findIndex(h => ks.includes(norm(h)));
+      const idI = col('id', 'contractor id'), nameI = col('name');
+      const phoneI = col('phone', 'phone #', 'phone number'), emailI = col('email');
+      const createdI = col('created on', 'created');
+      if (nameI < 0) { alert('The contractors file needs a "Name" column.'); return; }
+      const g = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
+      const rows = d.rows.filter(r => g(r, nameI));
       const m = new Map();
-      d.rows.forEach(r => {
-        const id = String(r[idI] == null ? '' : r[idI]).trim();
-        const nm = String(r[nameI] == null ? '' : r[nameI]).trim();
-        if (id) m.set(id, nm);
-      });
+      contractorInfo = {};
+      employerIdsAssumed = idI < 0;
+      if (idI >= 0) {
+        rows.forEach(r => { const id = g(r, idI); if (id) { m.set(id, g(r, nameI)); contractorInfo[id] = { phone: g(r, phoneI), email: g(r, emailI) }; } });
+      } else {
+        // Legacy's contractors export has no ID column. Its IDs count up as
+        // contractors are created, so number them by "Created On" (oldest = #1).
+        // That's an assumption — it's shown in the Employers panels and the
+        // client is asked to confirm the names against each group's people.
+        rows.map((r, i) => ({ r, i, t: Date.parse(g(r, createdI)) || 0 }))
+          .sort((a, b) => a.t - b.t || a.i - b.i)
+          .forEach((x, k) => { const id = String(k + 1); m.set(id, g(x.r, nameI)); contractorInfo[id] = { phone: g(x.r, phoneI), email: g(x.r, emailI) }; });
+        logEvent('note', 'Contractors file has no ID column — numbered by Created On: ' + [...m.entries()].map(([id, n]) => '#' + id + ' ' + n).join(', '));
+      }
       employerMap = m;
       $('em-employer-name').textContent = file.name;
-      $('em-employer-meta').textContent = m.size + ' active contractor' + (m.size === 1 ? '' : 's');
+      $('em-employer-meta').textContent = m.size + ' contractor' + (m.size === 1 ? '' : 's') +
+        (employerIdsAssumed ? ' · no ID column — numbered by date created (check under Employers)' : '');
       maybeRun();
-    }).catch(err => alert('Failed to read active contractors file: ' + (err && err.message ? err.message : err)));
+    }).catch(err => fail('Failed to read active contractors file', err));
+  }
+
+  // Employer names compare without punctuation or a company suffix:
+  // "Acme Farm-n-Pack, LLC" is the template's "Acme Farm-N-Pack".
+  const employerKey = s => String(s == null ? '' : s).toUpperCase().replace(/&/g, ' AND ')
+    .replace(/\b(LLC|L L C|INC|INCORPORATED|CO|CORP|CORPORATION|LTD|COMPANY|LP|LLP)\b\.?/g, ' ').replace(/[^A-Z0-9]+/g, '');
+  function looseEmployer(name) {
+    const list = (tplData && tplData.employerList) || [];
+    const k = employerKey(name);
+    if (!k) return null;
+    const hits = list.filter(e => employerKey(e) === k);
+    return hits.length === 1 ? hits[0] : null;
   }
 
   // Optional full (archived + unarchived) contractor list. Contractors in here
   // but NOT in the active list ⇒ archived ⇒ their employees are dropped.
   function handleFullContractorFile(file) {
-    parseCsvFile(file).then(d => {
+    return parseCsvFile(file).then(d => {
       const idI = d.headers.findIndex(h => norm(h) === 'id');
       const nameI = d.headers.findIndex(h => norm(h) === 'name');
       if (idI < 0 || nameI < 0) {
@@ -239,36 +332,56 @@
       $('em-fullcontractor-name').textContent = file.name;
       $('em-fullcontractor-meta').textContent = m.size + ' contractor' + (m.size === 1 ? '' : 's') + ' (full list)';
       maybeRun();
-    }).catch(err => alert('Failed to read full contractor file: ' + (err && err.message ? err.message : err)));
+    }).catch(err => fail('Failed to read full contractor file', err));
   }
 
   // Optional: a 3.0 employees export. We extract Alt ID and skip any Legacy
   // employee whose Alt ID is already present (avoids duplicate uploads).
   function handleAlreadyMigratedFile(file) {
-    parseCsvFile(file).then(d => {
-      const altI = d.headers.findIndex(h => norm(h) === 'alt id');
-      if (altI < 0) {
-        alert('Already-in-3.0 file must have an "Alt ID" column to cross-reference.');
+    return parseCsvFile(file).then(d => {
+      const col = (...names) => d.headers.findIndex(h => names.includes(norm(h).replace(/\*$/, '').trim()));
+      const altI = col('alt id');
+      const fnI = col('first name'), lnI = col('last name');
+      const dobI = col('date of birth', 'birth date', 'dob');
+      const ssnI = col('ssn', 'social security number');
+      if (altI < 0 && (fnI < 0 || lnI < 0)) {
+        alert('Already-in-3.0 file needs an "Alt ID" column, or "First Name" and "Last Name", to cross-reference.');
         return;
       }
+      const g = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
       const s = new Set();
+      const idx = { byNameDob: new Map(), bySsn: new Map(), byName: new Map() };
       d.rows.forEach(r => {
-        const v = String(r[altI] == null ? '' : r[altI]).trim();
+        const v = g(r, altI);
         if (v) s.add(v);
+        const name = (g(r, fnI) + ' ' + g(r, lnI)).trim();
+        const nk = nameKey(name);
+        if (!nk) return;
+        const who = name + (v ? ' (Alt ID ' + v + ')' : '');
+        const dob = normDate(g(r, dobI));
+        if (dob) idx.byNameDob.set(nk + '|' + dob, who);
+        const sk = ssnKey(g(r, ssnI));
+        if (sk) idx.bySsn.set(sk, who);
+        if (!idx.byName.has(nk)) idx.byName.set(nk, who);
       });
       migratedAltIds = s;
+      existingIdx = (fnI >= 0 && lnI >= 0) ? idx : null;
       $('em-migrated-name').textContent = file.name;
-      $('em-migrated-meta').textContent = s.size + ' Alt ID' + (s.size === 1 ? '' : 's') + ' to skip';
-      if (empData && employerMap && tplData) runMigrate();
-    }).catch(err => alert('Failed to read 3.0 employees file: ' + (err && err.message ? err.message : err)));
+      $('em-migrated-meta').textContent = d.rows.length + ' employee' + (d.rows.length === 1 ? '' : 's') + ' · matched on ' +
+        [altI >= 0 ? 'Alt ID' : '', existingIdx && dobI >= 0 ? 'name + birth date' : '', existingIdx && ssnI >= 0 ? 'SSN' : '']
+          .filter(Boolean).join(', ');
+      maybeRun();
+    }).catch(err => fail('Failed to read 3.0 employees file', err));
   }
 
   function handleTplFile(file) {
+    // Resolves once the file is read (Load everything places files in turn).
+    return new Promise(done => {
     const r = new FileReader();
     r.onload = e => {
       try {
         const buf = e.target.result;
-        const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true });
+        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
         const dataName = wb.SheetNames.find(n => /data.?entry/i.test(n)) || wb.SheetNames[0];
         const dataWs = wb.Sheets[dataName];
         if (!dataWs) { alert('Could not find DATA ENTRY sheet in this template.'); return; }
@@ -295,11 +408,24 @@
           ' (' + ghost + ' with trailing space)';
         maybeRun();
       } catch (err) {
-        alert('Failed to read template: ' + (err && err.message ? err.message : err));
+        fail('Failed to read template', err);
       }
     };
-    r.onerror = () => alert('Failed to read template file.');
+    r.onerror = () => { alert('Failed to read template file.'); done(); };
+    r.onloadend = () => done();
     r.readAsArrayBuffer(file);
+    });
+  }
+
+  // Name / SSN keys for duplicate matching: case, accents, punctuation and
+  // Legacy's {code} don't count; SSNs compare on their digits.
+  function nameKey(s) {
+    return stripCode(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function ssnKey(s) {
+    const d = String(s == null ? '' : s).replace(/\D/g, '');
+    return d.length >= 7 && !/^0+$/.test(d) && !/^(\d)\1+$/.test(d) ? d : '';
   }
 
   // ─── Index helper for the employee source ───
@@ -310,28 +436,44 @@
   }
 
   // ─── Transformation ───
-  // Filter (Is Valid = true) + fixed Legacy→3.0 column map. Builds
-  // formattedRows and the parallel srcKept array IN THE SAME PASS — the
-  // unresolved-employers panel relies on formattedRows[i] ↔ srcKept[i].
+  // Filter (Is Active = true) + fixed Legacy→3.0 column map. Builds
+  // formattedRows and the parallel srcKept / srcIdxKept arrays IN THE SAME
+  // PASS — the panels rely on formattedRows[i] ↔ srcKept[i].
   function buildFormattedRowsRaw() {
     if (!empData) return null;
     const get = (row, key) => { const i = eIdx(key); return i < 0 ? '' : String(row[i] == null ? '' : row[i]).trim(); };
     const iaI = eIdx('is active');
     const altI = eIdx('alt id');
     srcKept = [];
+    srcIdxKept = [];
     archivedStats = {};
     alreadyMigratedCount = 0;
+    skippedExisting = [];
     const out = [];
-    empData.rows.forEach(srcRow => {
+    empData.rows.forEach((srcRow, srcIdx) => {
       // Active filter: Is Active column is the sole determinant. Skip if not
       // literally "true" (false / blank both excluded).
       const ia = iaI < 0 ? '' : String(srcRow[iaI] == null ? '' : srcRow[iaI]).trim().toLowerCase();
       if (ia !== 'true') return;
-      // Cross-reference: skip employees already migrated to 3.0 (joined on
-      // Alt ID). Blank Alt IDs can't be cross-referenced and pass through.
+      // Cross-reference: skip employees already in 3.0 — on Alt ID, or on
+      // name + birth date (Legacy leaves most Alt IDs blank).
+      const dispName = (stripCode(get(srcRow, 'first name')) + ' ' + stripCode(get(srcRow, 'last name'))).trim();
       if (migratedAltIds && altI >= 0) {
         const aid = String(srcRow[altI] == null ? '' : srcRow[altI]).trim();
-        if (aid && migratedAltIds.has(aid)) { alreadyMigratedCount++; return; }
+        if (aid && migratedAltIds.has(aid)) {
+          alreadyMigratedCount++;
+          skippedExisting.push({ name: dispName, by: 'Alt ID ' + aid, existing: '' });
+          return;
+        }
+      }
+      if (existingIdx) {
+        const nk = nameKey(dispName), dob = normDate(get(srcRow, 'birth date'));
+        const hit = nk && dob ? existingIdx.byNameDob.get(nk + '|' + dob) : null;
+        if (hit) {
+          alreadyMigratedCount++;
+          skippedExisting.push({ name: dispName, by: 'Name + birth date', existing: hit });
+          return;
+        }
       }
 
       // Classify the contractor: active (in active list) → resolve name;
@@ -356,7 +498,9 @@
       r[2]  = get(srcRow, 'last name');
       r[3]  = normDate(get(srcRow, 'birth date'));
       r[4]  = employer; // Employer*
-      r[5]  = get(srcRow, 'alt id');
+      // Alt ID — what 3.0's payroll export carries. altIdMode is the client's answer.
+      const legacyId = get(srcRow, 'id'), altId = get(srcRow, 'alt id');
+      r[5]  = altIdMode === 'legacy' ? legacyId : altIdMode === 'altOrLegacy' ? (altId || legacyId) : altIdMode === 'none' ? '' : altId;
       r[6]  = get(srcRow, 'ssn');
       const male = get(srcRow, 'is male').toLowerCase();
       r[7]  = male === 'true' ? 'MALE' : (male === 'false' ? 'FEMALE' : '');
@@ -370,8 +514,10 @@
       r[22] = get(srcRow, 'state');
       r[23] = get(srcRow, 'postal code');
       r[24] = get(srcRow, 'country');
+      if (!keepNameCode) NAME_COLS.forEach(ci => { r[ci] = stripCode(r[ci]); });
       out.push(r);
       srcKept.push(srcRow);
+      srcIdxKept.push(srcIdx);
     });
 
     // Canonicalize Employer* to the template's dropdown literal when it
@@ -382,7 +528,7 @@
     if (tplData && tplData.employerList && tplData.employerList.length) {
       const cm = buildCaseMap(tplData.employerList);
       out.forEach(r => {
-        if (r[4]) r[4] = cm.get(String(r[4]).toUpperCase().trim()) || r[4];
+        if (r[4]) r[4] = cm.get(String(r[4]).toUpperCase().trim()) || looseEmployer(r[4]) || r[4];
       });
     }
 
@@ -422,9 +568,24 @@
     return v;
   }
 
+  // Raw rows, then (in this order) Smart Fixes, employer overrides, column
+  // fills and hand edits. Removed rows and edits are keyed by the Legacy row
+  // behind them, so restoring a contractor or flipping a switch (which changes
+  // which rows exist) never moves them onto someone else.
   function rebuildFormattedRows() {
     formattedRows = buildFormattedRowsRaw();
     if (!formattedRows) return;
+    removedRows = new Set();
+    srcIdxKept.forEach((si, ri) => { if (removedSrc.has(si)) removedRows.add(ri); });
+    if (Object.keys(smartFixMap).length) {
+      formattedRows.forEach(r => {
+        for (let ci = 0; ci < r.length; ci++) {
+          if (!r[ci]) continue;
+          const hit = smartFixMap[ci + '||' + String(r[ci]).toUpperCase().trim()];
+          if (hit != null) r[ci] = hit;
+        }
+      });
+    }
     // Re-apply sticky per-Contractor-ID employer overrides (trusted as-is,
     // like Template Standardize's manualFills).
     formattedRows.forEach((r, i) => {
@@ -441,32 +602,99 @@
         else r[ci] = val;
       });
     });
+    formattedRows.forEach((r, ri) => {
+      for (let ci = 0; ci < r.length; ci++) {
+        const e = cellEdits[srcIdxKept[ri] + '|' + ci];
+        if (e != null) r[ci] = e;
+      }
+    });
+    findPossibleDuplicates();
   }
 
+  function removeRow(ri) {
+    removedRows.add(ri);
+    if (srcIdxKept && srcIdxKept[ri] != null) removedSrc.add(srcIdxKept[ri]);
+  }
+  function restoreRows(list) {
+    (list || [...removedRows]).forEach(ri => {
+      removedRows.delete(ri);
+      if (srcIdxKept && srcIdxKept[ri] != null) removedSrc.delete(srcIdxKept[ri]);
+    });
+  }
+
+  // Kept, but worth a look: the same SSN, or the same name + birth date, twice
+  // in this file; or someone in the 3.0 export with the same SSN or name
+  // (rows matching on name + birth date there were already left out).
+  function findPossibleDuplicates() {
+    dupPossible = [];
+    if (!formattedRows) return;
+    const seenSsn = new Map(), seenNd = new Map();
+    const disp = r => [stripCode(r[0]), stripCode(r[2])].filter(Boolean).join(' ');
+    formattedRows.forEach((r, ri) => {
+      const name = disp(r), nk = nameKey(name), sk = ssnKey(r[6]);
+      const nd = nk && r[3] ? nk + '|' + r[3] : '';
+      let reason = '', existing = '';
+      if (sk && seenSsn.has(sk)) { reason = 'Same SSN as another row in this file'; existing = seenSsn.get(sk); }
+      else if (nd && seenNd.has(nd)) { reason = 'Same name + birth date as another row in this file'; existing = seenNd.get(nd); }
+      else if (existingIdx && sk && existingIdx.bySsn.has(sk)) { reason = 'SSN already in 3.0'; existing = existingIdx.bySsn.get(sk); }
+      else if (existingIdx && nk && existingIdx.byName.has(nk)) { reason = 'Name already in 3.0 (birth date differs or missing)'; existing = existingIdx.byName.get(nk); }
+      if (reason) dupPossible.push({ ri, name, reason, existing });
+      const who = name + ' (row ' + (ri + 1) + ')';
+      if (sk && !seenSsn.has(sk)) seenSsn.set(sk, who);
+      if (nd && !seenNd.has(nd)) seenNd.set(nd, who);
+    });
+  }
+
+  // A crash while building used to surface as "Failed to read <the file you
+  // just loaded>", because each file handler's catch swallowed it. Catch it
+  // here instead, record the stack, and say it was the build.
+  // The contractor list is optional: without it every Contractor ID lands in
+  // the Employers panel, where you pick the 3.0 employer for each one.
+  const ready = () => !!(empData && tplData);
   function runMigrate() {
-    if (!empData || !employerMap || !tplData) {
-      alert('Upload the employee CSV, the employer CSV, and the 3.0 template first.');
+    if (!ready()) {
+      alert('Upload the Legacy employee CSV and the 3.0 employee template first.');
       return;
     }
-    employerOverrides = {};
-    columnFills = {};
-    removedRows = new Set();
-    restoredArchived = new Set();
-    completedEmployers = new Set();
+    try { runMigrateInner(); }
+    catch (err) {
+      fail('Build Preview failed', err,
+        '\n\nUse Debug Dump to save what happened, and send it over.');
+    }
+    if (window.IMDebug) IMDebug.refresh('employee-migrate');
+  }
+
+  // Your choices (employers, fills, Smart Fixes, edits, removed rows) stay
+  // through a re-run — loading another file shouldn't undo them. Reset clears
+  // them; a new employee CSV clears the ones tied to its rows.
+  function runMigrateInner() {
     selCells = new Set(); selAnchor = null;
     rebuildFormattedRows();
+    renderAll();
+  }
+
+  function renderAll() {
     renderArchived();
     renderUnresolved();
+    renderSmartFixes();
+    renderPossible();
+    renderExisting();
+    renderNames();
     renderBulkEdit();
     renderPreview();
     updateSummary();
-    $('em-empty').style.display = 'none';
+  }
+  // After any change that alters rows: rebuild, then redraw everything.
+  function rebuildAndRender() {
+    rebuildFormattedRows();
+    renderAll();
   }
 
   function maybeRun() {
-    const ready = !!(empData && employerMap && tplData);
-    $('em-run').disabled = !ready;
-    if (ready) runMigrate();
+    const ok = ready();
+    if (ok) runMigrate();
+    else if (window.IMDebug) IMDebug.refresh('employee-migrate');
+    if (window.IMLegacyPage) IMLegacyPage.refresh();
   }
 
   // ─── Archived contractors (removed, restorable) ───
@@ -514,12 +742,7 @@
         const cid = e.target.dataset.cid;
         if (restoredArchived.has(cid)) restoredArchived.delete(cid);
         else restoredArchived.add(cid);
-        rebuildFormattedRows();
-        renderArchived();
-        renderUnresolved();
-        renderBulkEdit();
-        renderPreview();
-        updateSummary();
+        rebuildAndRender();
       });
     });
   }
@@ -558,6 +781,7 @@
     formattedRows.forEach((r, ri) => {
       if (removedRows.has(ri)) return;
       if (employerValid(r[4])) return; // valid 3.0 employer — nothing to resolve
+      if (employerOverrides[srcCid(srcKept[ri])]) return; // you (or the client) named one — it's under Build in PickTrace if it's new
       const src = srcKept[ri];
       const cid = srcCid(src);
       const e = m.get(cid) ||
@@ -583,6 +807,14 @@
     return out;
   }
 
+  // What the client told us about a new employer, for the Build in PickTrace list.
+  function detailCells(cids) {
+    const d = cids.map(c => employerDetails[c]).find(Boolean);
+    if (!d) return '<td colspan="3" class="text-muted small">No details yet — the client is asked for them</td>';
+    const addr = [d.address1, d.address2, d.city, [d.state, d.zip].filter(Boolean).join(' '), d.country].filter(Boolean).join(', ');
+    return '<td>' + escHtml(d.type || '—') + (d.type === 'Contractor' && d.flc ? '<div class="text-muted small">FLC: ' + escHtml(d.flc) + '</div>' : '') + '</td>' +
+      '<td>' + escHtml(addr || '—') + '</td><td>' + escHtml([d.phone, d.email].filter(Boolean).join(' · ') || '—') + '</td>';
+  }
   function renderEmployersToCreate() {
     const sec = $('em-section-create');
     const tbl = $('em-create-table');
@@ -595,7 +827,7 @@
     if (title) title.textContent = 'Employers to Create in 3.0 (' +
       (m.size - done) + ' to create' + (done ? ' · ' + done + ' done' : '') + ')';
     let html = '<thead><tr><th></th><th>Employer to create</th><th>Employees</th>' +
-      '<th>Legacy Contractor IDs</th></tr></thead><tbody>';
+      '<th>Legacy Contractor IDs</th><th>Type</th><th>Address</th><th>Phone / email</th></tr></thead><tbody>';
     [...m.entries()].sort((a, b) => b[1].count - a[1].count).forEach(([name, info]) => {
       const isDone = completedEmployers.has(name);
       const mark = isDone
@@ -608,10 +840,15 @@
         '<td style="text-align:center;">' + mark + '</td>' +
         '<td><b' + nameStyle + '>' + escHtml(name) + '</b></td>' +
         '<td>' + info.count + '</td>' +
-        '<td>' + escHtml([...info.cids].sort((x, y) => x - y).join(', ')) + '</td></tr>';
+        '<td>' + escHtml([...info.cids].sort((x, y) => x - y).join(', ')) + '</td>' + detailCells([...info.cids]) + '</tr>';
     });
     html += '</tbody>';
     tbl.innerHTML = html;
+    const note = $('em-create-note') || (() => { const p = document.createElement('p'); p.id = 'em-create-note'; p.className = 'cmp-sites-hint'; tbl.parentNode.before(p); return p; })();
+    note.innerHTML = employerIdsAssumed && employerMap
+      ? '<b>Check:</b> the contractors file has no ID column, so Legacy contractor numbers were matched by the order they were created — ' +
+        [...employerMap.entries()].map(([id, n]) => '#' + escHtml(id) + ' ' + escHtml(n)).join(' · ') + '. The client is asked to confirm each name against its people.'
+      : '';
     tbl.querySelectorAll('.em-create-row').forEach(tr => {
       tr.addEventListener('click', () => {
         const name = tr.dataset.emp;
@@ -641,7 +878,8 @@
     [...m.entries()].sort((a, b) => b[1].count - a[1].count).forEach(([cid, info]) => {
       const why = info.raw
         ? 'Mapped to “' + escHtml(info.raw) + '” — not in template dropdown'
-        : 'No employer record for this Contractor ID';
+        : employerMap ? 'No employer record for this Contractor ID'
+        : 'No contractor list loaded — pick its 3.0 employer';
       const sel = employerOverrides[cid] || '';
       const opts = list.length
         ? '<option value="">— pick —</option>' +
@@ -670,9 +908,7 @@
       if (removedRows.has(ri)) return;
       if (srcCid(srcKept[ri]) === cid) r[4] = val;
     });
-    renderPreview();
-    renderUnresolved();
-    updateSummary();
+    renderAll();
   }
 
   function wireUnresolvedHandlers() {
@@ -760,24 +996,23 @@
   // empty cells (e.g. "give every missing Employer this value").
   function applyColumnFill(idx, val, mode) {
     columnFills[idx] = { val, mode: mode === 'blank' ? 'blank' : 'all' }; // sticky
+    // A whole-column fill replaces earlier hand edits in that column.
+    if (mode !== 'blank') Object.keys(cellEdits).forEach(k => { if (+k.split('|')[1] === idx) delete cellEdits[k]; });
     formattedRows.forEach((r, ri) => {
       if (removedRows.has(ri)) return;
       if (mode === 'blank') { if (!r[idx]) r[idx] = val; }
       else r[idx] = val;
     });
-    renderBulkEdit();
-    if (idx === 4) renderUnresolved(); // Employer column affects unresolved panel
-    renderPreview();
-    updateSummary();
+    renderAll();
   }
 
+  // Empties the column for good: kept as a blank fill so a rebuild doesn't
+  // bring the Legacy values back.
   function clearColumnFill(idx) {
-    delete columnFills[idx];
+    columnFills[idx] = { val: '', mode: 'all' };
+    Object.keys(cellEdits).forEach(k => { if (+k.split('|')[1] === idx) delete cellEdits[k]; });
     formattedRows.forEach((r, ri) => { if (!removedRows.has(ri)) r[idx] = ''; });
-    renderBulkEdit();
-    if (idx === 4) renderUnresolved();
-    renderPreview();
-    updateSummary();
+    renderAll();
   }
 
   function wireBulkEditHandlers() {
@@ -864,97 +1099,311 @@
   // Write one value into every selected cell at once (Apply / Clear contents).
   function setSelectedCells(val) {
     if (!formattedRows || !selCells.size) return;
-    let employerTouched = false;
     selCells.forEach(k => {
       const i = k.indexOf(':');
       const ri = +k.slice(0, i), ci = +k.slice(i + 1);
       if (!formattedRows[ri]) return;
       formattedRows[ri][ci] = val;
-      if (ci === 4) employerTouched = true;
+      cellEdits[srcIdxKept[ri] + '|' + ci] = val;
     });
-    renderPreview();           // re-renders + re-paints the kept selection
-    if (employerTouched) renderUnresolved();
-    updateSummary();
+    renderAll();               // re-renders + re-paints the kept selection
   }
 
   // ─── Preview ───
+  // Red: a required (*) cell is empty. Amber: a value the template's dropdown
+  // doesn't list (PickTrace would reject it). Corner tick: changed from what
+  // Legacy had — hover for was → now and why.
+  const FLAG_STYLE = { req: 'background:#fee2e2;color:#7f1d1d;', off: 'background:#fffbeb;color:#92400e;' };
+  const FLAG_TIP = { req: 'Required — empty', off: 'Not in the template’s dropdown — see Not in dropdown' };
+  let optCache = null;   // colIdx → Set<UPPER option> | null, per render
+  function optSet(ci) {
+    if (!optCache) optCache = {};
+    if (!(ci in optCache)) {
+      const o = colOptions(EMP_HEADERS[ci]);
+      optCache[ci] = o && o.length ? new Set(o.map(v => String(v).toUpperCase().trim())) : null;
+    }
+    return optCache[ci];
+  }
+  function cellFlag(ri, ci) {
+    const v = formattedRows[ri][ci];
+    if (!v) return /\*$/.test(EMP_HEADERS[ci]) ? 'req' : '';
+    const s = optSet(ci);
+    return s && !s.has(String(v).toUpperCase().trim()) ? 'off' : '';
+  }
+
+  // "Was … → now … · why" when the cell differs from what Legacy had.
+  function changeOf(ri, ci) {
+    const src = srcKept ? srcKept[ri] : null;
+    if (!src) return '';
+    const key = SRC_KEYS[ci];
+    const now = formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci]);
+    const edit = cellEdits[srcIdxKept[ri] + '|' + ci];
+    if (ci === 4) {   // Employer: resolved from Contractor ID, not copied
+      const cid = srcCid(src);
+      if (edit != null) return IMWorkbench.changeNote('', now, 'Your edit') || '';
+      if (employerOverrides[cid] === now) return 'Contractor ID ' + cid + ' → “' + now + '” · Employer you picked';
+      const f = columnFills[4];
+      if (f && f.val === now) return 'Contractor ID ' + cid + ' → “' + now + '” · Column fill you applied';
+      return '';
+    }
+    if (ci === 7) {   // Gender from "Is Male"
+      const i = eIdx('is male'), was = i < 0 ? '' : String(src[i] == null ? '' : src[i]).trim().toLowerCase();
+      const derived = was === 'true' ? 'MALE' : was === 'false' ? 'FEMALE' : '';
+      return derived.toUpperCase() === now.toUpperCase().trim() ? '' :
+        IMWorkbench.changeNote(derived, now, edit != null ? 'Your edit' : 'Changed after import');
+    }
+    if (!key) {
+      return now ? IMWorkbench.changeNote('', now, edit != null ? 'Your edit'
+        : columnFills[ci] && columnFills[ci].val === now ? 'Column fill you applied' : 'Filled after import') : '';
+    }
+    const i = eIdx(key);
+    const was = i < 0 ? '' : String(src[i] == null ? '' : src[i]).trim();
+    let why = 'Changed after import';
+    if (edit != null) why = 'Your edit';
+    else if (columnFills[ci] && columnFills[ci].val === now) why = 'Column fill you applied';
+    else if (smartFixMap[ci + '||' + was.toUpperCase()] === now) why = 'Smart Fix you applied';
+    else if (NAME_COLS.includes(ci) && stripCode(was) === now) why = 'Legacy {code} taken out';
+    else if ((ci === 3 || ci === 8) && normDate(was) === now) return '';   // only the date format changed
+    else if (/country$/i.test(EMP_HEADERS[ci])) why = 'Matched to the template’s country';
+    return IMWorkbench.changeNote(was, now, why);
+  }
+
   function renderPreview() {
     if (!empData || !tplData || !formattedRows) return;
     const sec = $('em-section-preview');
     const tbl = $('em-preview-table');
     sec.style.display = '';
-    let html = '<thead><tr>' +
-      '<th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
-    EMP_HEADERS.forEach(h => {
-      const req = /\*$/.test(h);
-      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-    const reqIdx = EMP_HEADERS.map((h, i) => /\*$/.test(h) ? i : -1).filter(i => i >= 0);
-    const isProblem = ri => reqIdx.some(i => !formattedRows[ri][i]);
+    optCache = null;
+    const possibleSet = new Set(dupPossible.map(d => d.ri));
     const vis = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
-    // ALWAYS show every row missing a required cell so nothing problematic is
-    // hidden from the export. Complete rows are capped for performance.
-    const CLEAN_CAP = 50;
-    let cleanShown = 0;
-    const show = [];
+    // Every row, drawn as you scroll (IMWorkbench.rows). A row needs a fix
+    // when a cell is red or amber, or it may duplicate someone.
+    const info = new Map(), counts = { all: vis.length, fix: 0, chg: 0, any: 0 };
     vis.forEach(ri => {
-      if (isProblem(ri)) show.push(ri);
-      else if (cleanShown < CLEAN_CAP) { show.push(ri); cleanShown++; }
+      const f = [], c = [];
+      for (let i = 0; i < EMP_HEADERS.length; i++) {
+        if (cellFlag(ri, i)) f.push(i);
+        if (changeOf(ri, i)) c.push(i);
+      }
+      const fix = f.length > 0 || possibleSet.has(ri);
+      info.set(ri, { f, c, fix });
+      if (fix) counts.fix++;
+      if (c.length) counts.chg++;
+      if (fix || c.length) counts.any++;
     });
-    const problemCount = vis.reduce((n, ri) => n + (isProblem(ri) ? 1 : 0), 0);
-    const cleanTotal = vis.length - problemCount;
-    // Track displayed order for shift-range math; drop selections whose row
-    // is no longer visible (e.g. removed) so the toolbar count stays honest.
-    previewOrder = show.slice();
+    const show = vis.filter(ri => IMWorkbench.rowMatch(pvMode, info.get(ri).fix, info.get(ri).c.length));
+    let cols = EMP_HEADERS.map((_, i) => i);
+    if (pvColsOnly) {
+      const keep = new Set([0, 2]);
+      show.forEach(ri => { const x = info.get(ri); x.f.forEach(i => keep.add(i)); x.c.forEach(i => keep.add(i)); });
+      cols = cols.filter(i => keep.has(i));
+    }
     const visSet = new Set(vis);
     selCells.forEach(k => { if (!visSet.has(+k.slice(0, k.indexOf(':')))) selCells.delete(k); });
-    show.forEach(ri => {
+    const head = '<thead><tr><th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>' + cols.map(i =>
+      '<th' + (/\*$/.test(EMP_HEADERS[i]) ? ' style="color:#dc2626;"' : '') + '>' + escHtml(EMP_HEADERS[i]) + '</th>').join('') + '</tr></thead>';
+    const rowHtml = ri => {
       const row = formattedRows[ri];
-      html += '<tr><td style="text-align:center;padding:0;">' +
+      const dup = possibleSet.has(ri) ? dupPossible.find(d => d.ri === ri) : null;
+      let html = '<tr' + (dup ? ' title="Possible duplicate — ' + escHtml(dup.reason) + '" style="background:#fffbeb;"' : '') +
+        '><td style="text-align:center;padding:0;">' +
         '<button class="em-row-remove" data-ri="' + ri + '" title="Remove this row from preview + export" ' +
         'style="all:unset;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:2px 6px;">&times;</button></td>';
-      EMP_HEADERS.forEach((h, i) => {
-        const empty = !row[i];
-        const cs = (/\*$/.test(h) && empty) ? ' style="background:#fee2e2;color:#7f1d1d;"' : '';
-        html += '<td class="em-cell" contenteditable="true" spellcheck="false" ' +
-          'data-ri="' + ri + '" data-ci="' + i + '"' + cs + '>' + escHtml(row[i]) + '</td>';
+      cols.forEach(i => {
+        const fl = cellFlag(ri, i), note = changeOf(ri, i);
+        const tip = [FLAG_TIP[fl], note].filter(Boolean).join(' · ');
+        html += '<td class="em-cell' + (note ? ' is-chg' : '') + '" contenteditable="true" spellcheck="false" ' +
+          'data-ri="' + ri + '" data-ci="' + i + '"' + (fl ? ' style="' + FLAG_STYLE[fl] + '"' : '') +
+          (tip ? ' title="' + escHtml(tip) + '"' : '') + '>' + escHtml(row[i]) + '</td>';
       });
-      html += '</tr>';
-    });
-    html += '</tbody>';
-    tbl.innerHTML = html;
+      return html + '</tr>';
+    };
+    // Shift-click ranges follow the order on screen, sorted or not.
+    IMWorkbench.rows(tbl, { head: head, ids: show, row: rowHtml, cols: cols.length + 1,
+      after: () => { previewOrder = IMWorkbench.rowOrder(tbl); paintSelection(); },
+      keys: [null].concat(cols.map(i => EMP_HEADERS[i])), cell: (ri, p) => formattedRows[ri][cols[p - 1]],
+      widths: [28].concat(cols.map(i => IMWorkbench.fitWidth(EMP_HEADERS[i], show.map(ri => formattedRows[ri][i])))),
+      empty: pvMode === 'fix' ? 'No row needs a fix ✓' : 'Nothing here has been changed.' });
     const hint = sec.querySelector('.cmp-sites-hint');
-    let ht = 'Editable — click a cell, type, then click away (or press Enter) to save. Empty required (*) cells are red. Click <b>×</b> to drop a row from the export.';
-    if (problemCount) {
-      ht = '<b style="color:#dc2626;">' + problemCount + ' row' + (problemCount === 1 ? '' : 's') +
-        ' missing a required (*) cell</b> — all shown below' +
-        (cleanTotal > cleanShown ? ', plus first ' + cleanShown + ' of ' + cleanTotal + ' complete rows' : '') +
-        '. ' + ht;
-    } else if (cleanTotal > cleanShown) {
-      ht = 'All required cells filled. Showing first ' + cleanShown + ' of ' + cleanTotal + ' rows. ' + ht;
-    }
-    if (removedRows.size) ht += ' &nbsp; <button class="btn btn-ghost btn-sm" id="em-restore-rows">' +
+    let ht = IMWorkbench.filterBar({ mode: pvMode, counts: counts, colsOnly: pvColsOnly, shownCols: cols.length, totalCols: EMP_HEADERS.length }) +
+      '<span class="wb-filter-note">' + (show.length === vis.length ? 'All ' + vis.length : show.length + ' of ' + vis.length) +
+      ' rows · editable — click a cell, type, then click away (or press Enter) to save. <b>Shift+click</b> selects a range, <b>Ctrl/Cmd+click</b> single cells. ' +
+      '<span style="background:#fffbeb;">Amber rows</span> are possible duplicates. Click <b>×</b> to drop a row from the export.</span>';
+    if (removedRows.size) ht += ' <button class="btn btn-ghost btn-sm" id="em-restore-rows">' +
       'Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
     if (hint) hint.innerHTML = ht;
-    tbl.querySelectorAll('.em-row-remove').forEach(btn => {
-      btn.addEventListener('click', e => {
+    // Rows come and go as you scroll, and the bar is redrawn every render —
+    // their handlers live on the table / section, once.
+    if (!tbl._emRowsWired) {
+      tbl._emRowsWired = true;
+      tbl.addEventListener('click', e => {
+        const rm = e.target.closest('.em-row-remove');
+        if (!rm) return;
         e.stopPropagation();
-        removedRows.add(+e.currentTarget.dataset.ri);
-        renderPreview();
-        renderUnresolved();
-        updateSummary();
+        removeRow(+rm.dataset.ri);
+        renderAll();
       });
-    });
-    const rb = $('em-restore-rows');
-    if (rb) rb.addEventListener('click', () => {
-      removedRows.clear();
-      renderPreview();
-      renderUnresolved();
-      updateSummary();
-    });
+      sec.addEventListener('change', e => {
+        if (e.target.classList.contains('wb-rowfilter')) { pvMode = e.target.value; IMWorkbench.rowsTop(tbl); renderPreview(); }
+        else if (e.target.classList.contains('wb-colfilter')) { pvColsOnly = e.target.checked; renderPreview(); }
+      });
+      sec.addEventListener('click', e => {
+        if (!e.target.closest('#em-restore-rows')) return;
+        restoreRows();
+        renderAll();
+      });
+    }
     paintSelection();
     updateExportButton();
+  }
+
+  // ─── Not in dropdown (Smart Fixes) ───
+  // Every dropdown-backed column except Employer (it has its own panel): the
+  // values the template doesn't list, each with a picker. A close match
+  // (case, spacing, punctuation, one inside the other) is suggested.
+  const squash = s => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  function suggestOption(val, opts) {
+    const q = squash(val);
+    if (!q) return '';
+    const exact = opts.find(o => squash(o) === q);
+    if (exact) return exact;
+    const inside = opts.filter(o => { const s = squash(o); return s && (s.indexOf(q) >= 0 || q.indexOf(s) >= 0); });
+    return inside.length === 1 ? inside[0] : '';
+  }
+  function computeSmartFixes() {
+    if (!formattedRows || !tplData) return [];
+    const out = [];
+    for (let ci = 0; ci < EMP_HEADERS.length; ci++) {
+      if (ci === 4) continue;
+      const opts = colOptions(EMP_HEADERS[ci]);
+      if (!opts || !opts.length) continue;
+      const set = new Set(opts.map(o => String(o).toUpperCase().trim()));
+      const seen = new Map();
+      formattedRows.forEach((r, ri) => {
+        if (removedRows.has(ri) || !r[ci]) return;
+        const u = String(r[ci]).toUpperCase().trim();
+        if (set.has(u)) return;
+        const e = seen.get(u) || { colIdx: ci, header: EMP_HEADERS[ci], from: r[ci], count: 0, options: opts, suggestion: suggestOption(r[ci], opts) };
+        e.count++;
+        seen.set(u, e);
+      });
+      seen.forEach(e => out.push(e));
+    }
+    out.sort((a, b) => (b.suggestion ? 1 : 0) - (a.suggestion ? 1 : 0) || b.count - a.count);
+    return out;
+  }
+  let smartFixOpts = new Map();
+  function renderSmartFixes() {
+    const sec = $('em-section-smartfix'), tbl = $('em-smartfix-table');
+    if (!sec || !tbl) return;
+    const fixes = computeSmartFixes();
+    if (!fixes.length) { sec.style.display = 'none'; tbl.innerHTML = ''; return; }
+    sec.style.display = '';
+    let rows = 0, needPick = 0;
+    fixes.forEach(f => { rows += f.count; if (!f.suggestion) needPick++; });
+    $('em-smartfix-title').textContent = 'Not in dropdown (' + fixes.length + ' value' + (fixes.length === 1 ? '' : 's') + ', ' + rows + ' row' + (rows === 1 ? '' : 's') +
+      (needPick ? ' — ' + needPick + ' need your choice' : '') + ')';
+    const optsByCol = new Map();
+    let html = '<thead><tr><th>Column</th><th>Value in Legacy</th><th>Set to</th><th>Rows</th><th></th></tr></thead><tbody>';
+    fixes.forEach(f => {
+      optsByCol.set(f.colIdx, f.options);
+      html += '<tr><td>' + escHtml(f.header.replace(/\*$/, '')) + '</td>' +
+        '<td><span style="color:#7c2d12;background:#fef3c7;padding:1px 6px;border-radius:3px;">' + escHtml(f.from) + '</span></td>' +
+        '<td>' + IMWorkbench.pickButton(f.suggestion || '', ' data-ci="' + f.colIdx + '" style="min-width:180px;"', { kind: 'fix', cls: 'em-smartfix-pick input-field' }) +
+          (f.suggestion ? ' <span class="text-muted small">suggested</span>' : ' <span style="color:#b45309;font-weight:600;" class="small">needs a choice</span>') + '</td>' +
+        '<td>' + f.count + '</td>' +
+        '<td><button class="btn btn-primary btn-sm em-smartfix-apply" data-ci="' + f.colIdx + '" data-from="' + escHtml(f.from) + '">Apply</button></td></tr>';
+    });
+    tbl.innerHTML = html + '</tbody>';
+    smartFixOpts = optsByCol;
+    IMWorkbench.wirePicks(tbl, ci => smartFixOpts.get(ci), { kind: 'fix' });
+    if (!tbl._emWired) {
+      tbl._emWired = true;
+      tbl.addEventListener('click', e => {
+        const b = e.target.closest('.em-smartfix-apply');
+        if (!b) return;
+        const pick = b.closest('tr').querySelector('.em-smartfix-pick');
+        const to = pick ? String(pick.value || '').trim() : '';
+        if (!to) { alert('Pick a value to set "' + b.dataset.from + '" to first.'); return; }
+        smartFixMap[b.dataset.ci + '||' + String(b.dataset.from).toUpperCase().trim()] = to;
+        rebuildAndRender();
+      });
+    }
+  }
+  function applyAllSmartFixes() {
+    const tbl = $('em-smartfix-table');
+    if (!tbl) return;
+    let n = 0;
+    tbl.querySelectorAll('.em-smartfix-apply').forEach(b => {
+      const pick = b.closest('tr').querySelector('.em-smartfix-pick');
+      const to = pick ? String(pick.value || '').trim() : '';
+      if (!to) return;
+      smartFixMap[b.dataset.ci + '||' + String(b.dataset.from).toUpperCase().trim()] = to;
+      n++;
+    });
+    if (!n) { alert('No values chosen yet. Pick a target for at least one row (suggested ones are pre-filled).'); return; }
+    rebuildAndRender();
+  }
+
+  // ─── Possible duplicates ───
+  function renderPossible() {
+    const sec = $('em-section-possible'), tbl = $('em-possible-table');
+    if (!sec || !tbl) return;
+    const live = dupPossible.filter(d => !removedRows.has(d.ri));
+    if (!live.length) { sec.style.display = 'none'; tbl.innerHTML = ''; return; }
+    sec.style.display = '';
+    $('em-possible-title').textContent = 'Possible duplicates (' + live.length + ')';
+    let html = '<thead><tr><th>Employee</th><th>Why</th><th>Matches</th><th></th></tr></thead><tbody>';
+    live.forEach(d => {
+      html += '<tr><td><b>' + escHtml(d.name || '—') + '</b></td>' +
+        '<td><span style="color:#b45309;font-weight:600;">' + escHtml(d.reason) + '</span></td>' +
+        '<td>' + escHtml(d.existing || '') + '</td>' +
+        '<td><button class="btn btn-ghost btn-sm em-possible-drop" data-ri="' + d.ri + '" title="Leave this row out of the export">Exclude</button></td></tr>';
+    });
+    tbl.innerHTML = html + '</tbody>';
+    if (!tbl._emWired) {
+      tbl._emWired = true;
+      tbl.addEventListener('click', e => {
+        const b = e.target.closest('.em-possible-drop');
+        if (!b) return;
+        removeRow(+b.dataset.ri);
+        renderAll();
+      });
+    }
+  }
+
+  // ─── Already in 3.0 (left out) ───
+  function renderExisting() {
+    const sec = $('em-section-existing'), tbl = $('em-existing-table');
+    if (!sec || !tbl) return;
+    if (!skippedExisting.length) { sec.style.display = 'none'; tbl.innerHTML = ''; return; }
+    sec.style.display = '';
+    $('em-existing-title').textContent = 'Already in 3.0 — left out (' + skippedExisting.length + ')';
+    tbl.innerHTML = '<thead><tr><th>Legacy employee</th><th>Matched on</th><th>In 3.0 as</th></tr></thead><tbody>' +
+      skippedExisting.map(s => '<tr><td>' + escHtml(s.name) + '</td><td>' + escHtml(s.by) + '</td><td>' + escHtml(s.existing) + '</td></tr>').join('') +
+      '</tbody>';
+  }
+
+  // ─── Legacy codes in names ───
+  function namesWithCode() {
+    if (!srcKept) return 0;
+    const i = eIdx('last name'), f = eIdx('first name');
+    return srcKept.filter(r => NAME_CODE.test(String(i < 0 ? '' : r[i] || '')) || NAME_CODE.test(String(f < 0 ? '' : r[f] || ''))).length;
+  }
+  function renderNames() {
+    const sec = $('em-section-names'), body = $('em-names-body');
+    if (!sec || !body) return;
+    const n = namesWithCode();
+    if (!n) { sec.style.display = 'none'; body.innerHTML = ''; return; }
+    sec.style.display = '';
+    const li = eIdx('last name');
+    const sample = srcKept.map(r => String(li < 0 ? '' : r[li] || '')).find(v => NAME_CODE.test(v)) || '';
+    body.innerHTML = '<p class="cmp-sites-hint"><b>' + n + '</b> of ' + srcKept.length + ' names end in a Legacy code like <code>' +
+      escHtml(sample) + '</code> &mdash; the employee’s Legacy ID. Keep it as part of the name in 3.0, or take it out ' +
+      '(the client decides; Alt ID is what 3.0’s payroll export carries).</p>' +
+      '<label class="cmp-export-option"><input type="checkbox" id="em-keep-code"' + (keepNameCode ? ' checked' : '') + '> ' +
+      '<span>Keep the Legacy code in names (<code>' + escHtml(sample) + '</code>)</span></label>' +
+      (keepNameCode ? '' : '<p class="cmp-sites-hint" style="color:#15803d;">✓ Taken out &mdash; <code>' + escHtml(stripCode(sample)) + '</code></p>');
   }
 
   // ─── Summary ───
@@ -972,8 +1421,7 @@
     });
     const unresolved = getUnresolved().size;
     const toCreate = pendingEmployersToCreate().length;
-    let limit = parseInt($('em-batch').value, 10);
-    if (!Number.isFinite(limit) || limit < 1) limit = 5000;
+    const limit = batchLimit();
     const files = visible ? Math.ceil(visible / limit) : 0;
     const sum = $('em-summary');
     sum.style.display = '';
@@ -988,29 +1436,175 @@
       (unresolved ? '<div class="cmp-stat cmp-warn"><b>' + unresolved + '</b> unresolved employer' + (unresolved === 1 ? '' : 's') + '</div>' : '') +
       (toCreate ? '<div class="cmp-stat cmp-warn"><b>' + toCreate + '</b> employer' + (toCreate === 1 ? '' : 's') + ' to create in 3.0</div>' : '') +
       '<div class="cmp-stat"><b>' + files + '</b> output file' + (files === 1 ? '' : 's') + '</div>';
+    if (wb) wb.refresh();
   }
 
   function updateExportButton() {
-    const btn = $('em-export');
-    const visible = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
-    btn.disabled = !(empData && employerMap && tplData && visible);
+    if (window.IMLegacyPage) IMLegacyPage.refresh();
     if (window.IMDebug) IMDebug.refresh('employee-migrate');
   }
 
+  // ─── The one Legacy page (legacy-page.js) ───
+  // This engine's share of the page: its section counts, its files for
+  // Export all, and how "Upload all files" recognises its files. `wb` stands
+  // in for the shared workbench, so the rest of this module calls
+  // wb.refresh() / wb.open() as before.
+  const wb = {
+    refresh: () => { if (window.IMLegacyPage) IMLegacyPage.refresh(); },
+    open: k => { if (window.IMLegacyPage) IMLegacyPage.open(k); },
+    reset: () => {}
+  };
+  const visRows = () => formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)) : [];
+  const COUNTS = {
+    required: () => { const rows = visRows(); return EMP_HEADERS.filter((h, i) => /\*$/.test(h) && rows.some(r => !r[i])).length; },
+    employers: () => getUnresolved().size,
+    dropdown: () => computeSmartFixes().length,
+    build: () => pendingEmployersToCreate().length,
+    possible: () => dupPossible.filter(d => !removedRows.has(d.ri)).length,
+    names: () => keepNameCode ? namesWithCode() : 0,
+    archived: () => archivedRemovedCount(),
+    existing: () => skippedExisting.length
+  };
+  function registerPage() {
+    if (!window.IMLegacyPage) return;
+    IMLegacyPage.register('em', {
+      ready: () => ready(),
+      built: () => !!(ready() && formattedRows),
+      rows: () => visRows().length,
+      count: key => COUNTS[key] ? COUNTS[key]() : 0,
+      run: () => runMigrate(),
+      reset: () => reset(),
+      exportParts: limit => exportParts(limit),
+      questions: () => questions(),
+      applyAnswers: a => applyAnswers(a),
+      debugReady: () => !!(empData || employerMap || fullContractorMap || migratedAltIds || tplData || events.length),
+      drop: {
+        kinds: { emp: 'Legacy employee export', tpl: '3.0 Employees template', employer: 'Active contractors',
+          fullcontractor: 'All contractors (archived + active)', migrated: 'Employees already in 3.0' },
+        order: ['tpl', 'employer', 'fullcontractor', 'migrated', 'emp'],
+        classify: i => {
+          const H = (...k) => IMLegacyDrop.has(i, ...k), A = (...k) => IMLegacyDrop.hasAny(i, ...k);
+          if (i.isTemplate) return i.norm[0] === 'first name' && A('employer') ? 'tpl' : null;
+          if (H('contractor id') && A('is active', 'is valid')) return 'emp';
+          if (H('first name', 'last name') && !A('contractor id')) return 'migrated';   // a 3.0 export
+          if (H('id', 'name') && !A('first name') && i.norm.filter(Boolean).length <= 6) return 'contractor';   // settled below
+          // Legacy's contractors export: Name, Phone, Email, Created On — no ID column (numbered on load).
+          if (H('name') && A('created on', 'last modified') && A('phone', 'email') && !A('first name', 'contractor id', 'site_id', 'virtual', 'address1', 'job')) return 'contractor';
+          return null;
+        },
+        // Contractor lists: one is the active list; with two, the bigger file
+        // is the full (archived + active) one.
+        arrange: infos => {
+          const cs = infos.filter(i => i.key === 'contractor').sort((a, b) => b.size - a.size);
+          cs.forEach(i => { i.key = null; i.guess = 'employer'; });
+          if (cs.length === 1) cs[0].key = 'employer';
+          else if (cs.length >= 2) { cs[0].key = 'fullcontractor'; cs[1].key = 'employer'; }
+        },
+        place: (key, file) => ({
+          emp: handleEmpFile, tpl: handleTplFile, employer: handleEmployerFile,
+          fullcontractor: handleFullContractorFile, migrated: handleAlreadyMigratedFile
+        })[key](file)
+      }
+    });
+  }
+  // One "Max rows per file" for the whole page.
+  function batchLimit() {
+    const n = parseInt(($('lm-batch') || $('em-batch') || {}).value, 10);
+    return Number.isFinite(n) && n >= 1 ? n : 5000;
+  }
+
   // ─── Debug dump ───
+  // The Legacy columns this module reads. A missing one never stops the
+  // build; it just leaves its 3.0 column blank, so the dump lists each one
+  // and whether the uploaded file has it.
+  const EMP_KEYS = ['is active', 'contractor id', 'first name', 'middle name', 'last name',
+    'birth date', 'alt id', 'ssn', 'is male', 'hired date', 'mobile phone #', 'email',
+    'address 1', 'address 2', 'city', 'state', 'postal code', 'country'];
+  function columnCheck() {
+    if (!empData || !empData.idx) return null;
+    return EMP_KEYS.map(k => ({ column: k, found: empData.idx[k] != null,
+      sourceIndex: empData.idx[k] != null ? empData.idx[k] : null,
+      sourceHeader: empData.idx[k] != null ? empData.headers[empData.idx[k]] : null }));
+  }
+  // The output is written by position, so the template's header row has to
+  // line up with EMP_HEADERS column for column.
+  function headerCheck() {
+    if (!tplData || !tplData.headers) return null;
+    const diffs = [];
+    for (let i = 0; i < Math.max(EMP_HEADERS.length, tplData.headers.length); i++) {
+      const want = EMP_HEADERS[i] || null, got = tplData.headers[i] || null;
+      if (norm(want || '') !== norm(got || '')) diffs.push({ index: i, expected: want, template: got });
+    }
+    return { matches: !diffs.length, expectedCount: EMP_HEADERS.length,
+      templateCount: tplData.headers.length, differences: diffs };
+  }
+
   function collectDebug() {
-    if (!empData || !tplData || !formattedRows) return null;
+    const diagnostics = {
+      note: 'events = every message the tool showed and every error thrown while this tool was open, oldest first.',
+      events: events.slice(),
+      legacyEmployeeColumns: columnCheck(),
+      templateHeaders: headerCheck(),
+      onScreen: {
+        summary: $('em-summary') && $('em-summary').style.display !== 'none' ? $('em-summary').innerText : null,
+        buildPreviewEnabled: !!($('lm-run') && !$('lm-run').disabled),
+        exportEnabled: !!($('lm-export') && !$('lm-export').disabled)
+      }
+    };
+    // Not built yet (a file missing, or the build itself failed): dump what
+    // is loaded so the problem can still be seen.
+    if (!ready() || !formattedRows) {
+      const missing = [];
+      if (!empData) missing.push('Legacy employee CSV');
+      if (!tplData) missing.push('3.0 employee template');
+      return partialDump(diagnostics, missing.length ? 'Still missing: ' + missing.join(', ') + '.'
+        : 'All required files are loaded but there is no preview: the build failed. See diagnostics.events.');
+    }
+    // If the full dump trips over bad data, keep everything else.
+    try { return fullDump(diagnostics); }
+    catch (err) {
+      const d = partialDump(diagnostics, 'The preview is built, but the full dump failed — see collectorError.');
+      d.collectorError = { message: err && err.message ? err.message : String(err), stack: err && err.stack ? err.stack : null };
+      return d;
+    }
+  }
+
+  function debugInputs() {
+    return [
+      IMDebug.file('legacy employee export', empData),
+      { role: 'active contractor list', loaded: !!employerMap,
+        contractorCount: employerMap ? employerMap.size : null },
+      { role: 'full contractor list (archived + active)', loaded: !!fullContractorMap,
+        contractorCount: fullContractorMap ? fullContractorMap.size : null,
+        note: 'Optional. Without it, archived contractors cannot be told apart from unknown ones.' },
+      { role: 'employees already in PickTrace 3.0', loaded: !!migratedAltIds,
+        altIdCount: migratedAltIds ? migratedAltIds.size : null,
+        note: 'Optional. Joined on Alt ID to skip employees already migrated.' },
+      IMDebug.file('personalized bulk Employees template', tplData, {
+        employerList: tplData ? tplData.employerList || null : null,
+        dropdowns: tplData && tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) =>
+          ({ column: k, count: v.length, values: v.slice(0, 300) })) : [] })
+    ];
+  }
+
+  function partialDump(diagnostics, reason) {
+    return {
+      state: { built: !!formattedRows, reason: reason },
+      diagnostics: diagnostics,
+      inputs: debugInputs(),
+      asked: [],
+      output: null
+    };
+  }
+
+  function fullDump(diagnostics) {
     const H = EMP_HEADERS;
     const keptIdxs = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
     const keptRows = keptIdxs.map(i => formattedRows[i]);
 
     // This module uses a fixed Legacy→3.0 field map rather than auto-matching,
     // so the mapping section reports that fixed map by source header name.
-    const FIXED_MAP = {
-      0: 'first name', 1: 'middle name', 2: 'last name', 3: 'birth date',
-      5: 'alt id', 6: 'ssn', 8: 'hired date', 17: 'mobile phone #', 18: 'email',
-      19: 'address 1', 20: 'address 2', 21: 'city', 22: 'state', 23: 'postal code', 24: 'country'
-    };
+    const FIXED_MAP = SRC_KEYS;
     const colToSrc = {};
     const cols = H.map((h, i) => {
       const key = FIXED_MAP[i];
@@ -1054,7 +1648,11 @@
         blocksExport: false,
         detail: archivedRemoved + ' employee rows removed. Restore a contractor to keep its employees.',
         items: Object.keys(archivedStats).filter(cid => !restoredArchived.has(cid))
-          .map(cid => ({ contractorId: cid, name: archivedStats[cid].name, rows: archivedStats[cid].count })) })
+          .map(cid => ({ contractorId: cid, name: archivedStats[cid].name, rows: archivedStats[cid].count })) }),
+      IMDebug.ask('smart-fixes', 'smartfix', 'Values not in a template dropdown, awaiting a Smart Fix', {
+        blocksExport: false, items: computeSmartFixes().map(x => ({ column: x.header, value: x.from, rows: x.count, suggestion: x.suggestion || null })) }),
+      IMDebug.ask('possible-duplicates', 'data', 'Possible duplicates kept but flagged', {
+        blocksExport: false, items: dupPossible.filter(d => !removedRows.has(d.ri)).map(d => ({ row: d.ri, name: d.name, reason: d.reason, matches: d.existing })) })
     ];
 
     const prov = IMDebug.deriveProvenance({
@@ -1063,25 +1661,16 @@
       note: 'exportedRowIndexes[n] is the formattedRows index behind exported row n. Export is batched — see settings.batchSize.' });
     out.exportedRowIndexes = keptIdxs;
 
-    let batch = parseInt($('em-batch') ? $('em-batch').value : '', 10);
-    if (!Number.isFinite(batch) || batch < 1) batch = 5000;
+    const batch = batchLimit();
     const skippedInactive = empData.rows.length - formattedRows.length - archivedRemoved - alreadyMigratedCount;
 
     return {
-      settings: { batchSize: batch, outputFiles: keptRows.length ? Math.ceil(keptRows.length / batch) : 0 },
-      inputs: [
-        IMDebug.file('legacy employee export', empData),
-        { role: 'active contractor list', loaded: !!employerMap,
-          contractorCount: employerMap ? employerMap.size : null },
-        { role: 'full contractor list (archived + active)', loaded: !!fullContractorMap,
-          contractorCount: fullContractorMap ? fullContractorMap.size : null,
-          note: 'Optional. Without it, archived contractors cannot be told apart from unknown ones.' },
-        { role: 'employees already in PickTrace 3.0', loaded: !!migratedAltIds,
-          altIdCount: migratedAltIds ? migratedAltIds.size : null,
-          note: 'Optional. Joined on Alt ID to skip employees already migrated.' },
-        IMDebug.file('personalized bulk Employees template', tplData, {
-          employerList: tplData.employerList || null })
-      ],
+      settings: { batchSize: batch, outputFiles: keptRows.length ? Math.ceil(keptRows.length / batch) : 0,
+        legacyCodeInNames: keepNameCode ? 'kept' : 'taken out', namesCarryingCode: namesWithCode(),
+        contractorListLoaded: !!employerMap },
+      state: { built: true },
+      diagnostics: diagnostics,
+      inputs: debugInputs(),
       mapping: IMDebug.mapping(cols, empData.headers, {
         srcRows: empData.rows,
         note: 'This module does not auto-match columns — it applies a fixed Legacy→3.0 field map.' }),
@@ -1100,12 +1689,13 @@
       fills: Object.keys(columnFills).map(i => ({
         column: H[+i], value: columnFills[i].val,
         scope: columnFills[i].mode === 'blank' ? 'blank cells only' : 'all rows', kind: 'column fill' })),
-      edits: { cells: [], names: [],
-        note: 'Preview cells are edited in place; see provenance for cells that no longer match their source.' },
+      edits: { cells: Object.keys(cellEdits).slice(0, 500).map(k => { const [si, ci] = k.split('|'); return { legacyRow: +si + 2, column: H[+ci], value: cellEdits[k] }; }),
+        smartFixes: Object.keys(smartFixMap).map(k => { const i = k.indexOf('||'); return { column: H[+k.slice(0, i)], from: k.slice(i + 2), to: smartFixMap[k] }; }),
+        note: 'legacyRow = the row number in the Legacy employee CSV (header = row 1).' },
       dropped: {
         removedByHand: { count: removedRows.size, rowIndexes: [...removedRows].slice(0, 500) },
         skippedInactive: { count: skippedInactive, reason: 'Is Active was not literally "true".' },
-        alreadyInPickTrace: { count: alreadyMigratedCount, reason: 'Alt ID found in the 3.0 cross-reference file.' },
+        alreadyInPickTrace: { count: alreadyMigratedCount, reason: 'Matched in the 3.0 export on Alt ID or name + birth date.', rows: skippedExisting.slice(0, 500) },
         archivedContractor: {
           count: archivedRemoved,
           restoredByHand: [...restoredArchived],
@@ -1117,94 +1707,302 @@
     };
   }
 
-  // ─── Export (batched, pristine template per file) ───
-  async function doExport() {
-    if (!formattedRows || !tplData) return;
-    const exportRows = formattedRows.filter((_, i) => !removedRows.has(i)).map(r => r.slice());
-    if (!exportRows.length) { alert('No employees to export.'); return; }
-    // Warn if employers still need to be created in PickTrace 3.0 — uploading
-    // before they exist will be rejected with "Employer not found".
-    const pending = pendingEmployersToCreate();
-    if (pending.length) {
-      const names = pending.sort((a, b) => b[1].count - a[1].count)
-        .map(([n, info]) => '  • ' + n + ' (' + info.count + ')').join('\n');
-      const ok = window.confirm(
-        pending.length + ' employer' + (pending.length === 1 ? '' : 's') +
-        ' in this export are not yet created in PickTrace 3.0:\n\n' + names +
-        '\n\nCreate these employers in PickTrace first (click each in the ' +
-        '"Employers to Create" list to copy + check it off), or the upload ' +
-        'will be rejected with "Employer not found".\n\nExport anyway?');
-      if (!ok) return;
+  // ─── Export: this engine's files for "Export all" (legacy-page.js) ───
+  // Nothing blocks. Flagged cells are highlighted; the column's header note
+  // says what it needs, and a cell's own question ("Which employer is Legacy
+  // contractor #3?") sits on that cell. Questions about a whole column (the
+  // {code} in names, missing Alt IDs) are header notes. Things only we can do
+  // (create an employer) go to `team`.
+  function askFor(ci, flag) {
+    const h = EMP_HEADERS[ci].replace(/\*$/, '');
+    if (ci === 4 && flag === 'req') return { title: 'Tell us each person’s employer',
+      detail: 'Legacy only kept a contractor number. Pick the employer for each person — each cell’s note says which Legacy contractor it was.' };
+    if (ci === 4) return { title: 'Check these employer names', detail: 'They aren’t set up in 3.0 yet — make sure each is spelled the way you want it.' };
+    if (ci === 2 && flag === 'off') return { title: 'Check possible duplicates', detail: 'These people may be listed twice (or already be in 3.0). Same person, or someone else?' };
+    return flag === 'req' ? { title: 'Fill in ' + h, detail: '' }
+      : { title: 'Pick a valid ' + h, detail: 'These values aren’t options in 3.0 — pick one from the list below.' };
+  }
+  function noteFor(ri, ci, flag) {
+    const r = formattedRows[ri];
+    if (ci === 4 && flag === 'req') {
+      const cid = srcCid(srcKept[ri]);
+      const raw = (employerMap && employerMap.get(cid)) || (fullContractorMap && fullContractorMap.get(cid)) || '';
+      return 'Legacy contractor #' + cid + (raw ? ' (“' + raw + '”)' : '');
     }
-    let limit = parseInt($('em-batch').value, 10);
-    if (!Number.isFinite(limit) || limit < 1) limit = 5000;
-    const chunks = chunkArr(exportRows, limit);
-    const N = chunks.length;
+    if (ci === 2 && flag === 'off') { const d = dupPossible.find(x => x.ri === ri); return d ? d.reason + (d.existing ? ': ' + d.existing : '') : ''; }
+    if (flag === 'off') return '“' + r[ci] + '” isn’t an option in 3.0.';
+    return '';
+  }
+
+  // ─── Questions for the client (legacy-form.js) — and their answers back ───
+  // People are keyed by their row in the Legacy employee CSV, contractors by
+  // their Legacy Contractor ID, so answers land on the same people when the
+  // same Legacy file is loaded again.
+  const people = (n) => n + ' ' + (n === 1 ? 'person' : 'people');
+  function questions() {
+    optCache = null;
+    const Q = [];
+    if (!formattedRows) return Q;
+    const kept = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
+    const who = r => [stripCode(r[0]), stripCode(r[2])].filter(Boolean).join(' ');
+    // 1. Employers. Contractor numbers with no name at all → "who is it?".
+    //    Employers that aren't in 3.0 yet → a card per employer with what
+    //    3.0's "Create New Employer" asks for.
+    const un = getUnresolved();
+    const nameless = [...un.entries()].filter(([cid, info]) => !info.raw && !employerOverrides[cid]);
+    if (nameless.length) Q.push({ id: 'em.employer', type: 'pick', other: true, where: 'Employees · ' + people(nameless.reduce((n, [, x]) => n + x.count, 0)),
+      title: 'Who is the employer for each of these groups?',
+      help: 'Legacy only kept a contractor number for each person. Pick their employer in 3.0 — or type the name if it’s a new one.',
+      options: (tplData && tplData.employerList) || [],
+      items: nameless.sort((a, b) => b[1].count - a[1].count).map(([cid, info]) => ({ key: cid,
+        label: 'Legacy contractor #' + cid, sub: people(info.count) + ', e.g. ' + stripCode(info.sampleName || '') })) });
+    const toMake = new Map();   // cid → { name, count, samples }
+    kept.forEach(ri => {
+      const r = formattedRows[ri];
+      if (!r[4] || employerValid(r[4])) return;
+      const cid = srcCid(srcKept[ri]);
+      if (employerDetails[cid]) return;          // the client already told us about this one
+      const e = toMake.get(cid) || toMake.set(cid, { name: r[4], count: 0, samples: [] }).get(cid);
+      e.count++;
+      if (e.samples.length < 3) e.samples.push(who(r));
+    });
+    if (toMake.size) {
+      Q.push({ id: 'em.newemployers', type: 'cards', where: 'Employers · ' + toMake.size + ' new',
+        title: 'Tell us about ' + (toMake.size === 1 ? 'this employer' : 'these employers'),
+        help: (toMake.size === 1 ? 'It isn’t' : 'They aren’t') + ' set up in PickTrace 3.0 yet, so we need ' + (toMake.size === 1 ? 'its' : 'their') + ' details. ' +
+          (employerIdsAssumed ? 'We matched Legacy’s contractor numbers to names by the order they were created — if the people listed don’t work for that employer, fix the name. ' : '') +
+          'Each employer has its own tab. Everything marked Required is needed to create them in 3.0.',
+        // Laid out like 3.0's Create New Employer: who they are, contact, payroll.
+        // Address parts sit in section 'addr' — not drawn as fields (the address
+        // box fills them) but they count toward "required left".
+        sections: [{ key: 'who', label: 'Who they are', hint: 'Their name and what kind of employer they are' },
+          { key: 'contact', label: 'Contact', hint: 'Paste the address and it fills the boxes' },
+          { key: 'pay', label: 'Payroll', hint: 'When their pay cycle starts and how many days it runs' },
+          { key: 'more', label: 'Optional', hint: 'Only if you use them' }],
+        address: 'contact',
+        fields: [
+          { key: 'name', label: 'Employer name', required: true, section: 'who' },
+          { key: 'type', label: 'Employer type', type: 'buttons', options: ['Regular', 'Internal contractor', 'Contractor'], required: true, section: 'who', full: true },
+          { key: 'flc', label: 'FLC organization', required: true, section: 'who', showIf: { field: 'type', values: ['Contractor'] } },
+          { key: 'ein', label: 'Employer Identification Number (EIN)', section: 'who' },
+          { key: 'phone', label: 'Phone number', type: 'tel', required: true, section: 'contact', placeholder: '(555) 555-0100' },
+          { key: 'email', label: 'Email', type: 'email', required: true, section: 'contact' },
+          { key: 'paystart', label: 'Pay cycle start date', type: 'date', required: true, section: 'pay' },
+          { key: 'payDays', label: 'Pay cycle length (days)', type: 'number', required: true, section: 'pay', placeholder: '7' },
+          { key: 'commission', label: 'Commission %', type: 'number', section: 'more', showIf: { field: 'type', values: ['Internal contractor', 'Contractor'] } },
+          { key: 'altid', label: 'Employer Alt ID', section: 'more' },
+          { key: 'address1', label: 'Street', required: true, section: 'addr' }, { key: 'city', label: 'City', required: true, section: 'addr' },
+          { key: 'state', label: 'State', required: true, section: 'addr' }, { key: 'zip', label: 'Zip', required: true, section: 'addr' },
+          { key: 'country', label: 'Country', required: true, section: 'addr' }
+        ],
+        items: [...toMake.entries()].sort((a, b) => b[1].count - a[1].count).map(([cid, e]) => {
+          const d = employerDetails[cid] || {}, ci = contractorInfo[cid] || {};
+          return { key: cid, label: e.name, sub: 'Legacy contractor #' + cid + ' · ' + people(e.count) + ', e.g. ' + e.samples.join(', '),
+            values: Object.assign({ name: e.name, country: 'US', payDays: '7', phone: ci.phone || '', email: ci.email || '' }, d) };
+        }) });
+    }
+    // 2. Other required columns that are empty, one question per column.
+    EMP_HEADERS.forEach((h, ci) => {
+      if (!/\*$/.test(h) || ci === 4) return;
+      const miss = kept.filter(ri => !formattedRows[ri][ci]);
+      if (!miss.length) return;
+      Q.push({ id: 'em.req.' + ci, type: 'pick', other: true, where: 'Employees · ' + people(miss.length),
+        title: 'What is the ' + h.replace(/\*$/, '').toLowerCase() + ' for ' + (miss.length === 1 ? 'this person' : 'these people') + '?',
+        help: 'Legacy didn’t have it, and 3.0 needs it.', placeholder: ci === 3 ? 'YYYY-MM-DD' : '',
+        options: colOptions(h), items: miss.map(ri => ({ key: String(srcIdxKept[ri]), label: who(formattedRows[ri]) || '(no name)' })) });
+    });
+    // 3. Possible duplicates.
+    const dups = dupPossible.filter(d => !removedRows.has(d.ri));
+    if (dups.length) Q.push({ id: 'em.dups', type: 'pick', where: 'Employees · ' + people(dups.length),
+      title: 'Are these the same person as someone else?',
+      help: 'They match another person on SSN or name. Tell us if each one is a duplicate.',
+      extra: [{ value: 'same', label: 'Same person — leave this one out' }, { value: 'different', label: 'Different person — keep both' }],
+      items: dups.map(d => ({ key: String(srcIdxKept[d.ri]), label: d.name, sub: d.reason + (d.existing ? ' — ' + d.existing : '') })) });
+    // 4. Values that aren't options in 3.0 — one question per column.
+    const byCol = new Map();
+    computeSmartFixes().forEach(f => (byCol.get(f.colIdx) || byCol.set(f.colIdx, []).get(f.colIdx)).push(f));
+    byCol.forEach((list, ci) => Q.push({ id: 'em.fix.' + ci, type: 'pick', where: 'Employees · ' + list[0].header.replace(/\*$/, ''),
+      title: 'Which ' + list[0].header.replace(/\*$/, '') + ' do you mean?',
+      help: 'These values from Legacy aren’t options in 3.0. Pick the one each should be.',
+      options: list[0].options.slice().sort(),
+      items: list.map(f => ({ key: String(f.from).toUpperCase().trim(), label: '“' + f.from + '”', sub: people(f.count), value: f.suggestion || '' })) }));
+    // 5–6. Names and Alt IDs, shown on real employees so it's clear which
+    //      number is which: Legacy writes its own ID into the last name, and
+    //      a few people also have a separate Alt ID.
+    const li = eIdx('last name'), fi = eIdx('first name'), ii = eIdx('id'), ai = eIdx('alt id');
+    const gs = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
+    const coded = srcKept.filter((r, k) => !removedRows.has(k) && NAME_CODE.test(gs(r, li)));
+    const withAlt = srcKept.filter((r, k) => !removedRows.has(k) && gs(r, ai));
+    const samples = [].concat(withAlt.filter(r => NAME_CODE.test(gs(r, li))).slice(0, 1), coded.filter(r => !gs(r, ai)).slice(0, 2), withAlt.slice(0, 1))
+      .filter((r, k, arr) => arr.indexOf(r) === k).slice(0, 3);
+    const exRows = samples.map(r => [gs(r, fi), gs(r, li).replace(/(\{\d+\})$/, '`$1`'), gs(r, ii) || '—', gs(r, ai) || '— none —']);
+    const examples = { columns: ['First name', 'Last name in Legacy', 'Legacy ID', 'Alt ID in Legacy'], rows: exRows };
+    // One question, Alt ID first (it's the number payroll gets), then whether
+    // the Legacy number still belongs in the last name. The example table gets
+    // a column per part showing what the pick does to those same people.
+    const parts = [];
+    if (kept.length && altIdMode == null) {
+      const nAlt = kept.filter(ri => gs(srcKept[ri], ai)).length;
+      // Two different people: one with only a Legacy ID, one who also has an Alt ID.
+      const sL = samples.find(r => !gs(r, ai)) || srcKept[kept[0]], sA = withAlt.find(r => r !== sL);
+      parts.push({ key: 'altid', column: 'Alt ID in 3.0',
+        title: 'Which number should be each employee’s Alt ID?',
+        help: 'Only ' + people(nAlt) + ' have an Alt ID in Legacy; everyone has a Legacy ID.',
+        choices: [{ value: 'legacy', label: 'Their Legacy ID', note: 'e.g. ' + gs(sL, fi) + ' → ' + (gs(sL, ii) || '—'), cells: samples.map(r => gs(r, ii)) },
+          { value: 'altOrLegacy', label: 'Their Alt ID from Legacy when they have one, otherwise their Legacy ID',
+            note: sA ? 'e.g. ' + gs(sA, fi) + ' → ' + gs(sA, ai) + ', and ' + gs(sL, fi) + ' → ' + (gs(sL, ii) || '—') : '', cells: samples.map(r => gs(r, ai) || gs(r, ii)) },
+          { value: 'alt', label: 'Only the Alt ID from Legacy', note: 'The other ' + people(kept.length - nAlt) + ' get no Alt ID', cells: samples.map(r => gs(r, ai)) },
+          { value: 'none', label: 'No Alt ID for anyone', note: 'Leave it empty — you can add them in 3.0 later', cells: samples.map(() => '') }] });
+    }
+    if (keepNameCode && coded.length && !codeAnswered) {
+      const s0 = samples.find(r => NAME_CODE.test(gs(r, li))) || coded[0];
+      parts.push({ key: 'code', column: 'Last name in 3.0',
+        title: 'Take the Legacy number out of their last names?',
+        help: 'In Legacy, ' + people(coded.length) + ' have their Legacy ID added to the end of their last name. In 3.0 the number travels to payroll in the Alt ID, so it isn’t needed in the name.',
+        choices: [{ value: 'remove', label: 'Take the number out', note: 'Last name becomes “' + stripCode(gs(s0, li)) + '”', cells: samples.map(r => stripCode(gs(r, li))) },
+          { value: 'keep', label: 'Keep it as it is', note: 'Last name stays “' + gs(s0, li) + '”', cells: samples.map(r => gs(r, li)) }] });
+    }
+    if (parts.length) {
+      Q.push({ id: 'em.ids', type: 'choices', where: 'Employees · ' + people(kept.length),
+        title: parts.length > 1 ? 'Employee Alt IDs and last names' : parts[0].title,
+        help: 'In PickTrace 3.0 the Alt ID is what goes out to your payroll in the payroll export, so it should be the number your payroll system knows each person by. ' +
+          'Here are a few of your employees as they are in Legacy — the blue columns show what they’ll be in 3.0 with your picks:',
+        examples, parts });
+    }
+    return Q;
+  }
+
+  function applyAnswers(A) {
+    const out = [];
+    let n = 0;
+    Object.entries(A['em.employer'] || {}).forEach(([cid, v]) => { if (v) { employerOverrides[cid] = v; n++; } });
+    // New employers' details. A changed name renames that contractor's people's Employer.
+    let det = 0;
+    // "none", "NA", "-" typed into a box is the client saying there isn't one:
+    // the box is left empty in "Employers to create" rather than written out.
+    const NO_VALUE = /^(n\/?a|none|null|nil|unknown|tbd|-+|—|\?+|x)$/i;
+    let blanked = 0;
+    Object.entries(A['em.newemployers'] || {}).forEach(([cid, d]) => {
+      if (!d) return;
+      d = Object.assign({}, d);
+      Object.keys(d).forEach(k => { if (typeof d[k] === 'string' && NO_VALUE.test(d[k].trim())) { d[k] = ''; blanked++; } });
+      employerDetails[cid] = Object.assign({}, employerDetails[cid] || {}, d);
+      if (d.name && d.name.trim()) employerOverrides[cid] = d.name.trim();
+      det++;
+    });
+    if (det) out.push('New employers: details for ' + det + (blanked ? ' (' + blanked + ' “none” / “NA” left empty)' : ''));
+    if (n) out.push('Employers: ' + n + ' contractor' + (n === 1 ? '' : 's') + ' matched');
+    Object.keys(A).filter(k => k.indexOf('em.req.') === 0).forEach(k => {
+      const ci = +k.slice(7); let c = 0;
+      Object.entries(A[k] || {}).forEach(([si, v]) => { if (v) { cellEdits[si + '|' + ci] = v; c++; } });
+      if (c) out.push(EMP_HEADERS[ci].replace(/\*$/, '') + ': ' + c + ' filled in');
+    });
+    let same = 0;
+    Object.entries(A['em.dups'] || {}).forEach(([si, v]) => { if (v === 'same') { removedSrc.add(+si); same++; } });
+    if (A['em.dups']) out.push('Possible duplicates: ' + same + ' left out');
+    Object.keys(A).filter(k => k.indexOf('em.fix.') === 0).forEach(k => {
+      const ci = k.slice(7); let c = 0;
+      Object.entries(A[k] || {}).forEach(([u, v]) => { if (v) { smartFixMap[ci + '||' + u] = v; c++; } });
+      if (c) out.push('Fixed ' + c + ' value' + (c === 1 ? '' : 's') + ' not in a dropdown');
+    });
+    // em.ids = { altid, code } (one question); em.code / em.altid from older pages.
+    const ids = A['em.ids'] || {};
+    const code = ids.code ? { choice: ids.code } : A['em.code'];
+    if (code && code.choice) { keepNameCode = code.choice === 'keep'; codeAnswered = true; out.push('Legacy number in last names: ' + (keepNameCode ? 'kept' : 'taken out')); }
+    const alt = ids.altid ? { choice: ids.altid } : A['em.altid'];
+    if (alt && typeof alt === 'object' && alt.choice) {
+      altIdMode = alt.choice;
+      out.push('Alt ID: ' + ({ legacy: 'their Legacy ID', altOrLegacy: 'Legacy Alt ID, else Legacy ID', alt: 'Legacy Alt ID only', none: 'left empty' })[altIdMode]);
+    } else if (alt) out.push('Alt ID — the client says: “' + String(alt).trim() + '”');
+    rebuildAndRender();
+    return out;
+  }
+
+  async function exportParts(limit) {
+    optCache = null;
+    const kept = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
     const origName = (tplData.fileName || '3.0_Employee_bulk_create.xlsx').trim();
-    const dotIdx = origName.lastIndexOf('.');
-    const base = dotIdx > 0 ? origName.substring(0, dotIdx) : origName;
-    const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
-
-    for (let i = 0; i < N; i++) {
-      const rows = chunks[i];
-      // Re-read the ORIGINAL template buffer for every file so each workbook
-      // keeps shared strings, the DROP-DOWN INPUTS sheet, and all data
-      // validations intact (same recipe as Template Standardize's doExport).
-      const wb = XLSX.read(new Uint8Array(tplData.rawBuffer), {
-        type: 'array', cellStyles: true, cellDates: true, sheetStubs: true
-      });
-      const dataName = wb.SheetNames.find(n => /data.?entry/i.test(n)) || wb.SheetNames[0];
-      const ws = wb.Sheets[dataName];
-      if (!ws) { alert('Template missing DATA ENTRY sheet — cannot export.'); return; }
-
-      // Wipe existing data rows (keep header row 0); leave sheet-level
-      // properties (!cols, !merges, !dataValidation, …) intact.
-      const range = ws['!ref']
-        ? XLSX.utils.decode_range(ws['!ref'])
-        : { s: { r: 0, c: 0 }, e: { r: 0, c: EMP_HEADERS.length - 1 } };
-      for (let r = 1; r <= range.e.r; r++) {
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const ref = XLSX.utils.encode_cell({ r, c });
-          if (ws[ref]) delete ws[ref];
-        }
-      }
-
-      // Write chunk rows starting at row 1. All values as text — employee
-      // data is names / ISO dates / SSN / phone / Alt ID and must match the
-      // template's list validations literally and keep any leading zeros.
-      const colCount = Math.max(range.e.c + 1, EMP_HEADERS.length);
-      rows.forEach((row, ri) => {
-        for (let c = 0; c < colCount; c++) {
-          const val = row[c];
-          if (val == null || val === '') continue;
-          ws[XLSX.utils.encode_cell({ r: ri + 1, c })] = { v: String(val), t: 's' };
-        }
-      });
-
-      ws['!ref'] = XLSX.utils.encode_range({
-        s: { r: 0, c: 0 },
-        e: { r: Math.max(0, rows.length), c: colCount - 1 }
-      });
-
-      const name = N === 1
-        ? base + ' — filled' + ext
-        : base + ' — filled (' + (i + 1) + ' of ' + N + ')' + ext;
-      // bookSST:true forces shared-string output — that is the only writer
-      // path where SheetJS emits xml:space="preserve", which is required to
-      // keep trailing "ghost spaces" on employer names (otherwise the reader
-      // trims them and PickTrace reports "Employer not found").
-      XLSX.writeFile(wb, name, { cellStyles: true, bookSST: true });
-      if (i < N - 1) await sleep(300); // let each download settle
+    const dot = origName.lastIndexOf('.');
+    const base = dot > 0 ? origName.substring(0, dot) : origName;
+    const nameOf = (chunk, total) => base + ' — filled' + (total > 1 ? ' (' + (chunk + 1) + ' of ' + total + ')' : '') + '.xlsx';
+    const dups = new Set(dupPossible.filter(d => !removedRows.has(d.ri)).map(d => d.ri));
+    const who = r => [stripCode(r[0]), stripCode(r[2])].filter(Boolean).join(' ');
+    // Whole-column questions: no highlight, a header note and a read-me line.
+    const headerOnly = [];
+    if (keepNameCode && namesWithCode()) {
+      const li = eIdx('last name');
+      const sample = srcKept.map(r => String(li < 0 ? '' : r[li] || '')).find(v => NAME_CODE.test(v)) || '';
+      headerOnly.push({ ci: 2, count: namesWithCode(), title: 'Keep the Legacy number in last names?',
+        detail: 'Last names end in the person’s Legacy ID, e.g. “' + sample + '”. Should we keep the number, or take it out?' });
     }
+    const noAlt = kept.filter(ri => !formattedRows[ri][5]).length;
+    if (noAlt) headerOnly.push({ ci: 5, count: noAlt, title: 'Do these people need an Alt ID?',
+      detail: 'They have no Alt ID in Legacy. The Alt ID is what 3.0’s payroll export uses — should they get one, and what should it be?' });
+    const a = IMLegacyDrop.annotate({
+      label: 'Employees', H: EMP_HEADERS, total: kept.length, limit, file: nameOf,
+      unit: ['person', 'people'],
+      options: ci => colOptions(EMP_HEADERS[ci]),
+      cells: pos => {
+        const ri = kept[pos], out = [];
+        for (let ci = 0; ci < EMP_HEADERS.length; ci++) {
+          const flag = cellFlag(ri, ci);
+          if (flag) out.push({ ci, flag, note: noteFor(ri, ci, flag) });
+        }
+        if (dups.has(ri) && !out.some(c => c.ci === 2)) out.push({ ci: 2, flag: 'off', note: noteFor(ri, 2, 'off') });
+        return out;
+      },
+      nameOf: pos => who(formattedRows[kept[pos]]),
+      ask: askFor,
+      headerOnly
+    });
+    const chunks = chunkArr(kept.map(ri => formattedRows[ri].slice()), limit);
+    const files = [];
+    // Each file patches the template's own zip (IMXlsxTemplate): only the
+    // DATA ENTRY rows change, so every dropdown, style and the header row ship
+    // as PickTrace made them; inline strings keep an employer's trailing space.
+    for (let i = 0; i < chunks.length; i++) {
+      const blob = await IMXlsxTemplate.build({ rawBuffer: tplData.rawBuffer, headers: EMP_HEADERS, rows: chunks[i],
+        marks: a.chunks[i].marks, notes: a.chunks[i].notes, noteAuthor: 'PickTrace' });
+      files.push({ label: 'Employees', name: nameOf(i, chunks.length), data: new Uint8Array(await blob.arrayBuffer()) });
+    }
+    const team = [];
+    const toMake = pendingEmployersToCreate().map(([n]) => n);
+    if (toMake.length) {
+      team.push('Create employer' + (toMake.length === 1 ? '' : 's') + ' in 3.0 (details in “Employers to create”): ' + IMLegacyDrop.examples(toMake, 10));
+      // One row per employer to create, with whatever the client has told us —
+      // laid out like 3.0's "Create New Employer" screen, top to bottom.
+      const H = ['Employer Name', 'Employer Type', 'FLC Organization', 'Employer Identification Number', 'Address 1', 'Address 2', 'City', 'State',
+        'Zip Code', 'Country', 'Phone Number', 'Email', 'Pay Cycle Start Date', 'Pay Cycle Duration (days)', 'Commission %', 'Employer Alt ID',
+        'Legacy Contractor IDs', 'Employees'];
+      const rows = pendingEmployersToCreate().map(([name, info]) => {
+        const cids = [...info.cids].sort((x, y) => x - y);
+        const d = cids.map(c => employerDetails[c]).find(Boolean) || {};
+        const ci = cids.map(c => contractorInfo[c]).find(Boolean) || {};
+        return [d.name || name, d.type || '', d.type === 'Contractor' ? d.flc || '' : '', d.ein || '', d.address1 || '', d.address2 || '', d.city || '',
+          d.state || '', d.zip || '', d.country || '', d.phone || ci.phone || '', d.email || ci.email || '', d.paystart || '', d.payDays || '',
+          d.commission || '', d.altid || '', cids.join(', '), info.count];
+      });
+      const ws = XLSX.utils.aoa_to_sheet([H].concat(rows));
+      ws['!cols'] = H.map(h => ({ wch: Math.max(12, Math.min(34, h.length + 4)) }));
+      const wbOut = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wbOut, ws, 'Employers to create');
+      files.unshift({ label: 'Employers to create', name: 'Employers to create in 3.0.xlsx', data: new Uint8Array(XLSX.write(wbOut, { type: 'array', bookType: 'xlsx' })) });
+    }
+    logEvent('export', 'Prepared ' + kept.length + ' employees in ' + files.length + ' file' + (files.length === 1 ? '' : 's') + '.');
+    return { files, items: a.items, team };
   }
 
   // ─── Reset ───
   function reset() {
+    logEvent('reset', 'Reset clicked — files and choices cleared.');
     empData = null; employerMap = null; fullContractorMap = null;
     migratedAltIds = null; alreadyMigratedCount = 0; tplData = null;
-    formattedRows = null; srcKept = null; employerOverrides = {};
-    columnFills = {};
-    removedRows = new Set();
+    formattedRows = null; srcKept = null; srcIdxKept = null; employerOverrides = {};
+    employerIdsAssumed = false; contractorInfo = {}; employerDetails = {};
+    columnFills = {}; smartFixMap = {}; cellEdits = {};
+    removedRows = new Set(); removedSrc = new Set();
+    existingIdx = null; skippedExisting = []; dupPossible = [];
+    keepNameCode = true; codeAnswered = false; altIdMode = null; pvMode = 'all'; pvColsOnly = false;
     restoredArchived = new Set(); archivedStats = {};
     completedEmployers = new Set();
     selCells = new Set(); selAnchor = null; previewOrder = [];
@@ -1222,13 +2020,11 @@
     $('em-emp-file').value = ''; $('em-employer-file').value = '';
     $('em-fullcontractor-file').value = ''; $('em-migrated-file').value = '';
     $('em-tpl-file').value = '';
-    ['em-section-archived', 'em-section-create', 'em-section-unresolved', 'em-section-bulk', 'em-section-preview'].forEach(id => {
+    ['em-section-archived', 'em-section-create', 'em-section-unresolved', 'em-section-bulk', 'em-section-preview',
+     'em-section-smartfix', 'em-section-possible', 'em-section-existing', 'em-section-names'].forEach(id => {
       const el = $(id); if (el) el.style.display = 'none';
     });
     $('em-summary').style.display = 'none';
-    $('em-empty').style.display = '';
-    $('em-run').disabled = true;
-    $('em-export').disabled = true;
     if (window.IMDebug) IMDebug.refresh('employee-migrate');
   }
 
@@ -1242,10 +2038,17 @@
     const val = td.textContent.trim();
     if (formattedRows[ri][ci] === val) return;
     formattedRows[ri][ci] = val;
-    const req = /\*$/.test(EMP_HEADERS[ci]);
-    td.style.background = (req && !val) ? '#fee2e2' : '';
-    td.style.color = (req && !val) ? '#7f1d1d' : '';
-    if (ci === 4) renderUnresolved(); // Employer edited — refresh unresolved panel
+    cellEdits[srcIdxKept[ri] + '|' + ci] = val;   // kept through rebuilds
+    // Repaint just this cell — redrawing the grid here would throw away the
+    // cell you just tabbed into.
+    const fl = cellFlag(ri, ci), note = changeOf(ri, ci);
+    td.setAttribute('style', FLAG_STYLE[fl] || '');
+    td.classList.toggle('is-chg', !!note);
+    td.title = [FLAG_TIP[fl], note].filter(Boolean).join(' · ');
+    findPossibleDuplicates();
+    renderUnresolved();
+    renderSmartFixes();
+    renderPossible();
     updateSummary();
     updateExportButton();
   }
@@ -1275,19 +2078,29 @@
       if (e.target.files[0]) handleTplFile(e.target.files[0]);
       e.target.value = '';
     });
-    const batch = $('em-batch');
-    if (batch) batch.addEventListener('input', () => { if (formattedRows) updateSummary(); });
-    $('em-run').addEventListener('click', runMigrate);
-    $('em-export').addEventListener('click', () => { doExport(); });
-    $('em-reset').addEventListener('click', reset);
+    { const batch = $('lm-batch'); if (batch) batch.addEventListener('input', () => { if (formattedRows) updateSummary(); }); }
+    // Build, Export all, Reset and Debug Dump belong to the whole page (legacy-page.js).
     if (window.IMDebug) {
       IMDebug.register('employee-migrate', {
         label: 'Employee Migrate (Legacy → 3.0)',
-        ready: () => !!(empData && tplData && formattedRows),
+        // Any file loaded, or anything logged, is enough to dump: the point is
+        // to see what went wrong even when the build never ran.
+        ready: () => !!(empData || employerMap || fullContractorMap || migratedAltIds ||
+          tplData || events.length),
         collect: collectDebug
       });
-      IMDebug.wire('em-debug', 'employee-migrate');
     }
+    registerPage();
+    const sfAll = $('em-smartfix-apply-all');
+    if (sfAll) sfAll.addEventListener('click', applyAllSmartFixes);
+    // The keep-the-code switch is redrawn with its panel; listen on the panel.
+    const names = $('em-section-names');
+    if (names) names.addEventListener('change', e => {
+      if (e.target.id !== 'em-keep-code') return;
+      keepNameCode = e.target.checked;
+      logEvent('setting', 'Legacy code in names: ' + (keepNameCode ? 'kept' : 'taken out'));
+      if (formattedRows) rebuildAndRender();
+    });
     const copyBtn = $('em-create-copy');
     if (copyBtn) copyBtn.addEventListener('click', () => {
       const names = [...getEmployersToCreate().keys()];

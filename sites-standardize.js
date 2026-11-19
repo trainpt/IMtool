@@ -60,7 +60,8 @@
   let nameOverrides = {};         // rowIdx → renamed Name* (collision fix, sticky)
   let cellOverrides = {};         // "row|col" → value (sticky preview edits, all cols except Name*)
   let smartFixMap = {};           // "colIdx||UPPERVALUE" → canonical dropdown value (applied Smart Fixes)
-  let previewIssuesOnly = false;  // preview toggle: show only rows with an errored cell
+  let pvMode = 'all';             // preview rows: 'all' | 'fix' | 'chg' | 'any' (IMWorkbench.filterBar)
+  let pvColsOnly = false;         // preview: only the columns with a flag or a change
   let guessedCityRows = new Set();// rowIdxs whose City* was machine-guessed from a combined address
   let collisionKeys = new Set();
   let existingTakenKeys = new Set();
@@ -87,19 +88,36 @@
   let xrefCodeCounts = new Map(); // STATE CODE → how many rows carry it as a bare Address value
   let xrefRows = new Map();       // formattedRows index → STATE CODE it was filled from
   let provMarks = {};             // "row|col" → provenance code, for the debug dump
+  // Online ZIP lookup (US Census geocoder). Sticky across rebuilds; fills only
+  // an empty Zip*. Never runs on its own — it sends addresses off-site.
+  let zipLookups = {};            // rowIdx → { zip, sent, matched }
+  let zipLookupMisses = {};       // rowIdx → { sent, reason, options? }
+  let zipLookupBusy = null;       // { done, total } while a run is in flight
+  let toCreateN = 0;              // employers + site types to create (renderToCreate), for its button
+  let foldDupes = false;          // keep one row per site when a name repeats with identical values
+  let foldGroups = new Map();     // nameKey → { keep, folded:[rowIdx…] }, found on every rebuild
+  let foldedRowIdxs = new Set();  // rows folded away (only while foldDupes is on)
   let initialized = false;
 
-  function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i); }
+  function excluded(i) { return removedRows.has(i) || existingRowIdxs.has(i) || foldedRowIdxs.has(i); }
   function nameKeyOf(name) { return locNorm(name); }
 
   // ─── Address parsing ───
   // "12000 S. EXAMPLE SPRINGS RD. SPRINGFIELD, CA 90000" →
   //   { address1:'12000 S. EXAMPLE SPRINGS RD.', city:'SPRINGFIELD',
   //     state:'CA', zip:'90000', country:'US', cityGuessed:true }
-  function parseAddress(raw) {
+  // knownCities (optional): city names already read off other rows of the same
+  // file. Streets with no suffix ("100 Example Springfield") give the suffix
+  // guess nothing to cut on, so a trailing known city is tried first.
+  function parseAddress(raw, knownCities) {
     const out = { address1: '', city: '', state: '', zip: '', country: '', cityGuessed: false };
     let s = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ');
     if (!s) return out;
+    // A trailing country ("…, CA 90000, USA") — read it off first, or the
+    // ZIP / state below aren't at the end and the country passes for the city.
+    let named = '';
+    const cm = s.match(/[,\s]\s*(U\.?\s?S\.?(?:\s?A\.?)?|United States(?: of America)?|Canada)\s*$/i);
+    if (cm && cm.index > 0) { named = /^c/i.test(cm[1]) ? 'CA' : 'US'; s = s.slice(0, cm.index).trim().replace(/,\s*$/, ''); }
     // ZIP — US 5(-4) or Canadian A1A 1A1.
     let m = s.match(/[,\s]\s*(\d{5}(?:-\d{4})?)\s*$/);
     if (m) { out.zip = m[1]; s = s.slice(0, m.index).trim(); }
@@ -108,7 +126,8 @@
       if (m) { out.zip = m[1].toUpperCase().replace(/\s+/g, ' '); s = s.slice(0, m.index).trim(); }
     }
     // STATE — trailing 2-letter, accepted when comma-separated OR a known code.
-    m = s.match(/(,?)\s*([A-Za-z]{2})\s*$/);
+    // A trailing period is common ("Springfield, Ca. 90000").
+    m = s.match(/(,?)\s*([A-Za-z]{2})\.?\s*$/);
     if (m) {
       const st = m[2].toUpperCase();
       if (m[1] === ',' || US_STATES.has(st) || CA_PROVINCES.has(st)) {
@@ -117,13 +136,29 @@
       }
     }
     s = s.replace(/,\s*$/, '').trim();
-    out.country = out.state ? (CA_PROVINCES.has(out.state) ? 'CA' : 'US') : '';
+    out.country = out.state ? (CA_PROVINCES.has(out.state) ? 'CA' : 'US') : named;
     // Remaining = street + city. A comma cleanly separates them; otherwise guess
     // the city as everything after the last street-suffix token.
     if (s.indexOf(',') >= 0) {
       const idx = s.lastIndexOf(',');
       out.address1 = s.slice(0, idx).trim();
       out.city = s.slice(idx + 1).trim();
+    } else if (knownCities && knownCities.length && (function () {
+      const low = s.toLowerCase();
+      for (const c of knownCities) {   // longest first
+        const cl = c.toLowerCase();
+        if (low.length > cl.length + 1 && low.endsWith(' ' + cl)) {
+          const street = s.slice(0, s.length - cl.length).trim();
+          if (!/^\d/.test(street)) continue;
+          out.address1 = street;
+          out.city = s.slice(s.length - cl.length);
+          out.cityGuessed = true;
+          return true;
+        }
+      }
+      return false;
+    })()) {
+      // filled by the known-city match above
     } else {
       const toks = s.split(' ');
       let cut = -1;
@@ -136,6 +171,9 @@
       // after "99", or the city comes out as "99 Fairview". Keep at least one
       // token back for the city itself.
       while (cut >= 0 && cut + 1 < toks.length - 1 && /^\d+[A-Za-z]?$/.test(toks[cut + 1])) cut++;
+      // …and so does a direction after it ("Hwy 99 West Springfield").
+      if (cut >= 1 && /^\d+[A-Za-z]?$/.test(toks[cut]) && cut + 1 < toks.length - 1 &&
+          /^(n|s|e|w|north|south|east|west)\.?$/i.test(toks[cut + 1])) cut++;
       if (cut >= 0 && cut < toks.length - 1) {
         out.address1 = toks.slice(0, cut + 1).join(' ');
         out.city = toks.slice(cut + 1).join(' ');
@@ -326,7 +364,17 @@
       const r = new FileReader();
       r.onload = e => {
         try {
-          const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+          const buf = new Uint8Array(e.target.result);
+          const wb = XLSX.read(buf, { type: 'array' });
+          // A second read with cell styles, only if a sheet carries column
+          // instructions (column-directives.js) — to see its red columns.
+          let styled;
+          const styledWb = () => {
+            if (styled === undefined) {
+              try { styled = XLSX.read(buf, { type: 'array', cellStyles: true }); } catch (err) { styled = null; }
+            }
+            return styled;
+          };
           const sheets = wb.SheetNames.map(n => {
             const aoa = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' });
             const indexed = aoa.map((row, i) => ({ row, i }))
@@ -334,11 +382,13 @@
             if (!indexed.length) return null;
             const sliced = sliceSheetAoa(indexed);
             if (!sliced.headers.filter(h => h).length) return null;
-            return { name: n, headers: sliced.headers, rows: sliced.rows, rowNums: sliced.rowNums, headerRow: sliced.headerRow };
+            const sheet = { name: n, headers: sliced.headers, rows: sliced.rows, rowNums: sliced.rowNums, headerRow: sliced.headerRow };
+            return IMDirectives.attach(sheet, { styledWb, sheetName: n, ws: wb.Sheets[n],
+              headerAt: sliced.headerRow, rowAt: sliced.rowNums });
           }).filter(Boolean);
           if (!sheets.length) return reject(new Error('No sheets with usable headers.'));
           const finish = s => resolve({ headers: s.headers, rows: s.rows, rowNums: s.rowNums,
-            headerRow: s.headerRow, fileName: file.name, sheetName: s.name });
+            headerRow: s.headerRow, fileName: file.name, sheetName: s.name, directives: s.directives || null });
           if (sheets.length === 1) return finish(sheets[0]);
           pickSheet(sheets, file.name).then(finish).catch(reject);
         } catch (err) { reject(err); }
@@ -408,6 +458,17 @@
   }
 
   // ─── Auto-mapping ───
+  // Mapping for the loaded source: its column instructions first when it
+  // carries them (column-directives.js), otherwise the plain header auto-map.
+  function mapSource() {
+    if (!IMDirectives.on(srcData)) return autoMap(SITE_HEADERS, srcData.headers);
+    return IMDirectives.buildMapping({
+      src: srcData, bulkHeaders: SITE_HEADERS, srcHeaders: srcData.headers, autoMap,
+      aliases: SITE_ALIASES, extras: {}, prefix: 'site',
+      hasData: c => srcData.rows.some(r => r && r[c] != null && String(r[c]).trim() !== '')
+    }).mapping;
+  }
+
   function autoMap(bulkHeaders, srcHeaders) {
     const srcIdx = {}, srcIdxLoose = {};
     srcHeaders.forEach((h, i) => {
@@ -530,6 +591,21 @@
     guessedCityRows = new Set();
     xrefRows = new Map();
     provMarks = {};
+    // Cities the parser can read off this file's own rows, so rows whose street
+    // has no suffix can still be split ("200 Example Hill Springfield").
+    const knownCities = (function () {
+      const src = a1 >= 0 ? mapping[a1] : null;
+      if (src == null || src < 0) return [];
+      const seen = new Map();
+      srcData.rows.forEach(r => {
+        const p = parseAddress(r[src]);
+        const c = (p.city || '').trim();
+        if (!c || /\d/.test(c) || c.split(' ').length > 3 || bareStateCode(c)) return;
+        const k = c.toLowerCase();
+        if (!seen.has(k)) seen.set(k, c);
+      });
+      return [...seen.values()].sort((a, b) => b.length - a.length);
+    })();
     return srcData.rows.map((srcRow, ri) => {
       const out = new Array(SITE_HEADERS.length).fill('');
       SITE_HEADERS.forEach((bh, bi) => {
@@ -557,7 +633,7 @@
       } else if (a1 >= 0 && out[a1] && !(out[ci] && out[si] && out[zi])) {
         // Parse a combined address (only when City/State/Zip aren't already
         // mapped in full). Fills only the empty target cells.
-        const p = parseAddress(out[a1]);
+        const p = parseAddress(out[a1], knownCities);
         if (p.address1) { out[a1] = p.address1; provMarks[ri + '|' + a1] = 'parse:address'; }
         if (ci >= 0 && !out[ci] && p.city) { out[ci] = p.city; provMarks[ri + '|' + ci] = 'parse:address'; if (p.cityGuessed) guessedCityRows.add(ri); }
         if (si >= 0 && !out[si] && p.state) { out[si] = p.state; provMarks[ri + '|' + si] = 'parse:address'; }
@@ -572,6 +648,11 @@
   function rebuildFormattedRows() {
     formattedRows = buildFormattedRowsRaw();
     if (!formattedRows) return;
+    const zipIdx = SITE_HEADERS.indexOf('Zip*');
+    Object.keys(zipLookups).forEach(k => {
+      const r = formattedRows[+k];
+      if (r && !r[zipIdx] && zipLookups[k].zip) { r[zipIdx] = zipLookups[k].zip; provMarks[k + '|' + zipIdx] = 'lookup:census'; }
+    });
     Object.entries(manualFills).forEach(([idx, val]) => {
       const i = +idx;
       formattedRows.forEach(r => { if (!r[i]) r[i] = val; });
@@ -604,13 +685,14 @@
       if (formattedRows[ri]) formattedRows[ri][ci] = cellOverrides[k];
       if (ci === cityIdx) guessedCityRows.delete(ri);
     });
+    computeFolds();
 
     // Cross-reference an existing PickTrace sites export: drop rows whose Name
     // already exists; and flag names already taken as collisions.
     existingRowIdxs = new Set();
     const withinCounts = new Map();
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri)) return;
+      if (removedRows.has(ri) || foldedRowIdxs.has(ri)) return;
       const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
       if (!n) return;
       const k = nameKeyOf(n);
@@ -618,7 +700,7 @@
     });
     if (existingData && existingData.keys && existingData.keys.size) {
       formattedRows.forEach((r, ri) => {
-        if (removedRows.has(ri)) return;
+        if (removedRows.has(ri) || foldedRowIdxs.has(ri)) return;
         const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
         if (!n) return;
         const k = nameKeyOf(n);
@@ -630,7 +712,7 @@
     existingTakenKeys = new Set();
     const counts = new Map();
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+      if (excluded(ri)) return;
       const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
       if (!n) return;
       const k = nameKeyOf(n);
@@ -645,12 +727,75 @@
     recordCollisions();
   }
 
+  // ─── Repeated sites ───
+  // A block-level source (one row per location) lists each site once per
+  // block. Rows that repeat a Name with every template column identical are
+  // that one site. Found on every rebuild so the panel can offer it; folded
+  // out of the export only while foldDupes is on. A repeat that differs in any
+  // column is left alone and stays a Name Collision.
+  function computeFolds() {
+    foldGroups = new Map();
+    foldedRowIdxs = new Set();
+    const nameIdx = SITE_HEADERS.indexOf('Name*');
+    const sig = r => r.map(v => locNorm(v)).join('\u0001');
+    const byKey = new Map();
+    formattedRows.forEach((r, ri) => {
+      if (removedRows.has(ri)) return;
+      const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
+      if (!n) return;
+      const k = nameKeyOf(n);
+      const arr = byKey.get(k) || [];
+      arr.push(ri);
+      byKey.set(k, arr);
+    });
+    byKey.forEach((rows, k) => {
+      if (rows.length < 2) return;
+      const s0 = sig(formattedRows[rows[0]]);
+      if (!rows.every(ri => sig(formattedRows[ri]) === s0)) return;
+      foldGroups.set(k, { keep: rows[0], folded: rows.slice(1) });
+    });
+    if (foldDupes) foldGroups.forEach(g => g.folded.forEach(ri => foldedRowIdxs.add(ri)));
+  }
+  function foldedRowCount() {
+    let n = 0;
+    foldGroups.forEach(g => { n += g.folded.length; });
+    return n;
+  }
+  function setFoldDupes(on) {
+    foldDupes = !!on;
+    // The collision history may hold groups that are now folded (or vice
+    // versa); rebuild it from what collides after the switch.
+    collisionHistory = new Map(); collisionDismissed = new Set();
+    rebuildFormattedRows(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+  }
+  function renderFolded() {
+    const sec = $('tss-section-folded');
+    if (!sec) return;
+    const cb = $('tss-fold-dupes');
+    if (cb) cb.checked = foldDupes;
+    if (!formattedRows || !foldGroups.size) { sec.style.display = 'none'; $('tss-folded-table').innerHTML = ''; return; }
+    sec.style.display = '';
+    const extra = foldedRowCount();
+    const t = $('tss-folded-title');
+    if (t) t.textContent = 'Repeated Sites (' + foldGroups.size + ' name' + (foldGroups.size === 1 ? '' : 's') + ', ' +
+      extra + ' extra row' + (extra === 1 ? '' : 's') + (foldDupes ? ' kept as one)' : ' — not merged)');
+    const nameIdx = SITE_HEADERS.indexOf('Name*');
+    let html = '<thead><tr><th>Name</th><th>Rows</th></tr></thead><tbody>';
+    [...foldGroups.values()].slice(0, 200).forEach(g => {
+      html += '<tr><td>' + escHtml(formattedRows[g.keep][nameIdx]) + '</td><td>' +
+        (g.folded.length + 1) + (foldDupes ? ' &rarr; 1' : '') + '</td></tr>';
+    });
+    if (foldGroups.size > 200) html += '<tr><td colspan="2" class="text-muted small">… and ' + (foldGroups.size - 200) + ' more</td></tr>';
+    html += '</tbody>';
+    $('tss-folded-table').innerHTML = html;
+  }
+
   function computeCollisions() {
     const out = new Map();
     if (!formattedRows || !collisionKeys.size) return out;
     const nameIdx = SITE_HEADERS.indexOf('Name*');
     formattedRows.forEach((r, ri) => {
-      if (removedRows.has(ri) || existingRowIdxs.has(ri)) return;
+      if (excluded(ri)) return;
       const n = String(r[nameIdx] == null ? '' : r[nameIdx]).trim();
       if (!n) return;
       const k = nameKeyOf(n);
@@ -672,6 +817,7 @@
     if (!srcData || !tplData) return;
     const sec = $('tss-section-mapping');
     sec.style.display = '';
+    IMDirectives.renderBanner(sec, srcData, SITE_HEADERS, runFormat);
     const srcOpts = ['<option value="-1">— (leave empty) —</option>']
       .concat(srcData.headers.map((h, i) => '<option value="' + i + '">' + escHtml(h) + '</option>')).join('');
     let html = '<thead><tr><th>Template column</th><th>Source column</th><th>Sample value</th></tr></thead><tbody>';
@@ -700,7 +846,7 @@
   // ─── Editable preview (mirrors template-standardize's combo grid) ───
   function renderPreview() {
     if (!srcData || !tplData || !formattedRows) return;
-    renderExisting(); renderCollisions(); renderRefAddresses(); renderSmartFixes();
+    renderExisting(); renderFolded(); renderCollisions(); renderRefAddresses(); renderSmartFixes();
     renderGroupsTab();
     const sec = $('tss-section-preview');
     const tbl = $('tss-preview-table');
@@ -708,6 +854,7 @@
     const collisionIdxs = collisionRowSet();
     const nameColIdx = SITE_HEADERS.indexOf('Name*');
     const cityIdx = SITE_HEADERS.indexOf('City*');
+    const zipCol = SITE_HEADERS.indexOf('Zip*');
     // Address cells filled from a reference entry you haven't vetted yet.
     const addrCols = new Set(['Address1*', 'City*', 'State*', 'Zip*', 'Country*']
       .map(h => SITE_HEADERS.indexOf(h)).filter(i => i >= 0));
@@ -719,107 +866,107 @@
       const vals = dropdownValuesFor(h);
       return vals ? { vals, lower: new Set(vals.map(v => v.toLowerCase().trim())) } : null;
     });
-    let html = '<thead><tr><th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
-    SITE_HEADERS.forEach((h, i) => {
-      const req = /\*$/.test(h);
-      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) +
+    // What the preview flags in a cell — red: empty required or a name
+    // collision; amber: a guessed City, an unconfirmed reference address, an
+    // off-list dropdown value.
+    const RED = '#fee2e2', AMBER = '#fef3c7';
+    const flagOf = (ri, i) => {
+      const val = formattedRows[ri][i] == null ? '' : String(formattedRows[ri][i]);
+      const h = SITE_HEADERS[i], d = colDrop[i];
+      if (/\*$/.test(h) && !val) return { bg: RED, title: 'Required — must be filled before export' };
+      if (i === nameColIdx && collisionIdxs.has(ri)) return { bg: RED, title: 'Name collision — another site shares this Name. Rename it here (or in Name Collisions above); PickTrace requires unique site names.' };
+      if (i === cityIdx && guessedCityRows.has(ri) && val) return { bg: AMBER, title: 'City is a best-effort guess from the combined address — verify it.' };
+      if (i === zipCol && val && zipFromLookup(ri)) return { bg: AMBER, title: 'ZIP looked up online (US Census) for "' + zipLookups[ri].sent + '" → matched "' + zipLookups[ri].matched + '". Verify it.' };
+      if (addrCols.has(i) && refPending(ri)) {
+        return { bg: AMBER, title: 'Filled from the reference address for "' + refPending(ri) +
+          '" — that entry still needs your check in the Reference Addresses panel above. Fixing it there updates every row using this code.' };
+      }
+      if (d && val && !d.lower.has(val.toLowerCase().trim())) return { bg: AMBER, title: 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is, or pick a listed value.' };
+      return null;
+    };
+    // Every kept row with its flagged (f) and changed (c) columns, for the
+    // filter's counts and "only columns with something to see".
+    const allVisible = formattedRows.map((_, i) => i).filter(i => !excluded(i));
+    const info = new Map(), counts = { all: allVisible.length, fix: 0, chg: 0, any: 0 };
+    allVisible.forEach(ri => {
+      const f = [], c = [];
+      for (let i = 0; i < SITE_HEADERS.length; i++) { if (flagOf(ri, i)) f.push(i); if (changeOf(ri, i)) c.push(i); }
+      info.set(ri, { f, c });
+      if (f.length) counts.fix++;
+      if (c.length) counts.chg++;
+      if (f.length || c.length) counts.any++;
+    });
+    const shown = allVisible.filter(ri => IMWorkbench.rowMatch(pvMode, info.get(ri).f.length, info.get(ri).c.length));
+    let cols = SITE_HEADERS.map((_, i) => i);
+    if (pvColsOnly) {
+      const keep = new Set([nameColIdx].filter(i => i >= 0));
+      shown.forEach(ri => { const x = info.get(ri); x.f.forEach(i => keep.add(i)); x.c.forEach(i => keep.add(i)); });
+      cols = cols.filter(i => keep.has(i));
+    }
+    let head = '<thead><tr><th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
+    cols.forEach(i => {
+      const h = SITE_HEADERS[i], req = /\*$/.test(h);
+      head += '<th' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) +
         (colDrop[i] ? ' <span class="ts-col-listed">&#9662;</span>' : '') + '</th>';
     });
-    html += '</tr></thead><tbody>';
-    // A row "needs attention" if any cell would be flagged: empty required,
-    // off-list dropdown value, name collision, or a guessed City.
-    const rowHasIssue = ri => {
+    head += '</tr></thead>';
+    const rowHtml = ri => {
       const row = formattedRows[ri];
-      for (let i = 0; i < SITE_HEADERS.length; i++) {
-        const val = row[i] == null ? '' : String(row[i]);
-        if (/\*$/.test(SITE_HEADERS[i]) && !val) return true;
-        if (i === nameColIdx && collisionIdxs.has(ri)) return true;
-        if (i === cityIdx && guessedCityRows.has(ri) && val) return true;
-        if (addrCols.has(i) && refPending(ri)) return true;
-        const d = colDrop[i];
-        if (d && val && !d.lower.has(val.toLowerCase().trim())) return true;
-      }
-      return false;
-    };
-    const allVisible = formattedRows.map((_, i) => i).filter(i => !excluded(i));
-    const issueCount = allVisible.filter(rowHasIssue).length;
-    if (previewIssuesOnly && !issueCount) previewIssuesOnly = false;
-    const visibleRowIdxs = previewIssuesOnly ? allVisible.filter(rowHasIssue) : allVisible;
-    const CAP = previewIssuesOnly ? 2000 : 50;
-    const limit = Math.min(visibleRowIdxs.length, CAP);
-    for (let r = 0; r < limit; r++) {
-      const ri = visibleRowIdxs[r];
-      const row = formattedRows[ri];
-      html += '<tr><td style="text-align:center;padding:0;">' +
+      let html = '<tr><td style="text-align:center;padding:0;">' +
         '<button class="tss-row-remove" data-ri="' + ri + '" title="Remove this row from preview + export" ' +
         'style="all:unset;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:2px 6px;">&times;</button></td>';
-      SITE_HEADERS.forEach((h, i) => {
-        const req = /\*$/.test(h);
+      cols.forEach(i => {
         const val = row[i] == null ? '' : String(row[i]);
-        const empty = !val;
-        const d = colDrop[i];
-        const inList = !!(d && val && d.lower.has(val.toLowerCase().trim()));
-        let bg = '', title = '';
-        if (req && empty) { bg = '#fee2e2'; title = 'Required — must be filled before export'; }
-        else if (i === nameColIdx && collisionIdxs.has(ri)) {
-          bg = '#fee2e2'; title = 'Name collision — another site shares this Name. Rename it here (or in Name Collisions above); PickTrace requires unique site names.';
-        } else if (i === cityIdx && guessedCityRows.has(ri) && val) {
-          bg = '#fef3c7'; title = 'City is a best-effort guess from the combined address — verify it.';
-        } else if (addrCols.has(i) && refPending(ri)) {
-          bg = '#fef3c7';
-          title = 'Filled from the reference address for "' + refPending(ri) +
-            '" — that entry still needs your check in the Reference Addresses panel above. ' +
-            'Fixing it there updates every row using this code.';
-        } else if (d && val && !inList) {
-          bg = '#fef3c7'; title = 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is, or pick a listed value.';
-        }
-        const cellStyle = bg ? ' style="background:' + bg + ';"' : '';
-        const fieldColor = bg ? ('color:' + (bg === '#fee2e2' ? '#7f1d1d' : '#7c2d12') + ';') : '';
-        if (d) {
-          let opts = '<option value=""' + (empty ? ' selected' : '') + '>— blank —</option>';
-          if (val && !inList) opts += '<option value="' + escHtml(val) + '" selected>' + escHtml(val) + '  (current)</option>';
-          d.vals.forEach(v => {
-            const s = (inList && v.toLowerCase().trim() === val.toLowerCase().trim()) ? ' selected' : '';
-            opts += '<option value="' + escHtml(v) + '"' + s + '>' + escHtml(v) + '</option>';
-          });
-          opts += '<option value="__ts_custom__">✎ Type custom…</option>';
-          html += '<td class="ts-cell"' + cellStyle + '><select class="ts-cell-select" data-ri="' + ri + '" data-ci="' + i + '"' +
-            (title ? ' title="' + escHtml(title) + '"' : '') + (fieldColor ? ' style="' + fieldColor + '"' : '') + '>' + opts + '</select></td>';
-        } else {
-          html += '<td class="ts-cell"' + cellStyle + '><input class="ts-cell-input" type="text" data-ri="' + ri + '" data-ci="' + i + '"' +
-            (title ? ' title="' + escHtml(title) + '"' : '') + (fieldColor ? ' style="' + fieldColor + '"' : '') +
-            ' value="' + escHtml(val) + '"></td>';
-        }
+        const flag = flagOf(ri, i);
+        let title = flag ? flag.title : '';
+        const cellStyle = flag ? ' style="background:' + flag.bg + ';"' : '';
+        const fieldColor = flag ? ('color:' + (flag.bg === RED ? '#7f1d1d' : '#7c2d12') + ';') : '';
+        const note = changeOf(ri, i);
+        if (note) title = title ? title + '\n' + note : note;
+        const attrs = ' data-ri="' + ri + '" data-ci="' + i + '"' +
+          (title ? ' title="' + escHtml(title) + '"' : '') + (fieldColor ? ' style="' + fieldColor + '"' : '');
+        // Dropdown cells are a light button until clicked (IMWorkbench.wirePicks);
+        // text cells are text until clicked (IMWorkbench.wireTextCells).
+        html += '<td class="ts-cell' + (note ? ' is-chg' : '') + '"' + cellStyle + '>' +
+          (colDrop[i] ? IMWorkbench.pickButton(val, attrs) : IMWorkbench.textCell(val, attrs)) + '</td>';
       });
-      html += '</tr>';
-    }
-    html += '</tbody>';
-    tbl.innerHTML = html;
+      return html + '</tr>';
+    };
+    IMWorkbench.rows(tbl, { head: head, ids: shown, row: rowHtml, cols: cols.length + 1,
+      keys: [null].concat(cols.map(i => SITE_HEADERS[i])), cell: (ri, p) => formattedRows[ri][cols[p - 1]],
+      widths: [28].concat(cols.map(i => IMWorkbench.fitWidth(SITE_HEADERS[i], shown.map(ri => formattedRows[ri][i])))),
+      empty: pvMode === 'fix' ? 'No row needs a fix ✓' : 'Nothing here has been changed.' });
+    IMWorkbench.wirePicks(tbl, ci => dropdownValuesFor(SITE_HEADERS[ci]), '__ts_custom__');
+    IMWorkbench.wireTextCells(tbl);
     const hint = sec.querySelector('.cmp-sites-hint');
     if (hint) {
-      const toggle = '<label class="ts-issues-toggle" style="display:inline-flex;align-items:center;gap:6px;margin-right:12px;font-weight:600;' +
-        (issueCount ? '' : 'opacity:.5;') + '"><input type="checkbox" id="tss-issues-only"' + (previewIssuesOnly ? ' checked' : '') +
-        (issueCount ? '' : ' disabled') + '>Show only rows needing attention' + (issueCount ? ' (' + issueCount + ')' : ' (0)') + '</label>';
-      let t = toggle;
-      if (previewIssuesOnly) t += 'Showing ' + Math.min(limit, visibleRowIdxs.length) + ' of ' + issueCount + ' flagged row' + (issueCount === 1 ? '' : 's') + (visibleRowIdxs.length > limit ? ' (capped at ' + limit + ')' : '') + '. ';
-      else if (visibleRowIdxs.length > limit) t += 'Showing first ' + limit + ' of ' + visibleRowIdxs.length + ' rows. ';
-      t += 'Every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. Red = empty required; amber = off-list, a guessed City, or an unconfirmed reference address. Click <b>×</b> to drop a row.';
-      if (removedRows.size) t += ' &nbsp; <button class="btn btn-ghost btn-sm" id="tss-restore-rows">Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
+      let t = IMWorkbench.filterBar({ mode: pvMode, counts: counts, colsOnly: pvColsOnly, shownCols: cols.length, totalCols: SITE_HEADERS.length });
+      t += '<span class="wb-filter-note">' + (shown.length === allVisible.length ? 'All ' + allVisible.length : shown.length + ' of ' + allVisible.length) +
+        ' rows · every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. Amber also marks a guessed City or an unconfirmed reference address. Click <b>×</b> to drop a row.</span>';
+      if (removedRows.size) t += ' <button class="btn btn-ghost btn-sm" id="tss-restore-rows">Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
       hint.innerHTML = t;
-      const io = $('tss-issues-only');
-      if (io) io.addEventListener('change', e => { previewIssuesOnly = !!e.target.checked; renderPreview(); });
     }
-    tbl.querySelectorAll('.tss-row-remove').forEach(btn => btn.addEventListener('click', e => {
-      e.stopPropagation();
-      removedRows.add(+e.currentTarget.dataset.ri);
-      renderPreview(); renderRequired(); renderToCreate(); updateSummary();
-    }));
-    const restoreBtn = $('tss-restore-rows');
-    if (restoreBtn) restoreBtn.addEventListener('click', () => {
-      removedRows.clear(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
-    });
+    // The filter bar and Restore are redrawn with every render; their handlers live on the section, once.
+    if (!sec._tssFilterWired) {
+      sec._tssFilterWired = true;
+      sec.addEventListener('change', e => {
+        if (e.target.classList.contains('wb-rowfilter')) { pvMode = e.target.value; IMWorkbench.rowsTop(tbl); renderPreview(); }
+        else if (e.target.classList.contains('wb-colfilter')) { pvColsOnly = e.target.checked; renderPreview(); }
+      });
+      sec.addEventListener('click', e => {
+        if (!e.target.closest('#tss-restore-rows')) return;
+        removedRows.clear(); renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+      });
+    }
     if (!tbl._tssCellWired) {
       tbl._tssCellWired = true;
+      tbl.addEventListener('click', e => {
+        const rm = e.target.closest('.tss-row-remove');
+        if (!rm) return;
+        e.stopPropagation();
+        removedRows.add(+rm.dataset.ri);
+        renderPreview(); renderRequired(); renderToCreate(); updateSummary();
+      });
       tbl.addEventListener('change', e => {
         const sel = e.target.closest('.ts-cell-select');
         if (sel) {
@@ -832,6 +979,24 @@
       });
     }
     updateExportButton();
+  }
+
+  // "Was … → now … · why" when the cell differs from its source cell, for the
+  // preview's change tick (see IMWorkbench.changeNote).
+  function changeOf(ri, ci) {
+    const si = mapping[ci];
+    const was = si != null && si >= 0 && srcData.rows[ri] ? String(srcData.rows[ri][si] == null ? '' : srcData.rows[ri][si]).trim() : '';
+    const now = formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci]);
+    const mark = provMarks[ri + '|' + ci] || '';
+    let why = 'Cleaned up by the tool';
+    if (cellOverrides[ri + '|' + ci] != null) why = 'Your edit';
+    else if (ci === SITE_HEADERS.indexOf('Name*') && nameOverrides[ri]) why = 'Renamed by you';
+    else if (smartFixMap[ci + '||' + was.toUpperCase()] === now) why = 'Smart Fix you applied';
+    else if (!was && manualFills[ci] === now) why = 'Column fill you applied';
+    else if (mark === 'parse:address') why = 'Split from the combined address';
+    else if (mark.indexOf('xref:') === 0) why = 'From the reference address for ' + mark.slice(5);
+    else if (mark === 'lookup:census') why = 'Looked up online (US Census geocoder)';
+    return IMWorkbench.changeNote(was, now, why);
   }
 
   function setCell(ri, ci, val) {
@@ -1070,6 +1235,7 @@
     };
     renderList('tss-section-emp-create', 'tss-emp-create-table', 'tss-emp-create-title', 'Employers to Create / Reconcile in PickTrace', emps);
     renderList('tss-section-type-create', 'tss-type-create-table', 'tss-type-create-title', 'Site Types to Create / Reconcile in PickTrace', types);
+    toCreateN = emps.size + types.size;
     return { p1: emps.size, p2: types.size };
   }
 
@@ -1109,7 +1275,7 @@
         own: false, headers: srcData.headers, rows: srcData.rows,
         fileName: srcData.fileName, sheetName: srcData.sheetName,
         nameAt: ri => String((formattedRows[ri] || [])[nameIdx] == null ? '' : formattedRows[ri][nameIdx]).trim(),
-        skip: ri => removedRows.has(ri) || (existingRowIdxs.has(ri) && !includeExisting),
+        skip: ri => removedRows.has(ri) || foldedRowIdxs.has(ri) || (existingRowIdxs.has(ri) && !includeExisting),
         isExisting: ri => existingRowIdxs.has(ri)
       };
     }
@@ -1456,7 +1622,7 @@
         else if (sample.size < 1 && r[col.idx]) sample.add(r[col.idx]);
       });
       const fillVal = manualFills[col.idx] || (sample.size ? [...sample][0] : '');
-      const entry = { ...col, empty, fillVal };
+      const entry = { ...col, empty, fillVal, zipHint: col.header === 'Zip*' && empty > 0 && zipLookupTargets().length > 0 };
       (empty > 0 ? needsAction : filled).push(entry);
     });
     const renderRow = (col) => {
@@ -1465,7 +1631,8 @@
         ? '<option value="">— pick —</option>' + [...opts].sort().map(o => '<option' + (o === col.fillVal ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('')
         : '<option value="">(no template dropdown — use manual override)</option>';
       const status = col.empty > 0
-        ? '<span style="color:#dc2626;font-weight:600;">⚠ ' + col.empty + ' empty</span>'
+        ? '<span style="color:#dc2626;font-weight:600;">⚠ ' + col.empty + ' empty</span>' +
+          (col.zipHint ? '<div class="small"><a href="#tss-zip-lookup">&darr; look them up online below</a></div>' : '')
         : '<span style="color:#15803d;">✓ filled' + (col.fillVal ? ' (e.g. ' + escHtml(String(col.fillVal).slice(0, 30)) + ')' : '') + '</span>';
       const rowStyle = col.empty > 0 ? '' : ' style="background:var(--bg-sunken);"';
       return '<tr' + rowStyle + '><td><b>' + escHtml(col.header) + '</b></td><td>' + status + '</td>' +
@@ -1479,6 +1646,141 @@
     if (filled.length) html += '<tbody><tr><td colspan="6" style="background:#dcfce7;color:#14532d;font-weight:600;padding:6px 10px;">✓ Already filled — change or clear if needed (' + filled.length + ')</td></tr>' + filled.map(renderRow).join('') + '</tbody>';
     $('tss-required-table').innerHTML = html;
     wireRequiredHandlers();
+    renderZipLookup();
+  }
+
+  // ─── Online ZIP lookup ───
+  // The US Census geocoder is free and keyless but sends no CORS header, so a
+  // fetch() can't read it from a static page. It does answer JSONP, which a
+  // <script> tag can load from any origin — that is what this uses.
+  const CENSUS_GEOCODER = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress';
+  let censusCbSeq = 0;
+  function censusLookup(address, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const cb = '__imCensusZip' + Date.now().toString(36) + '_' + (censusCbSeq++);
+      const s = document.createElement('script');
+      let done = false;
+      const finish = () => {
+        done = true; clearTimeout(timer);
+        window[cb] = function () {};   // a late reply must not throw
+        if (s.parentNode) s.parentNode.removeChild(s);
+      };
+      const timer = setTimeout(() => { if (!done) { finish(); reject(new Error('timed out')); } }, timeoutMs || 15000);
+      window[cb] = data => { if (done) return; finish(); resolve(data); };
+      s.onerror = () => { if (!done) { finish(); reject(new Error('could not reach the Census geocoder')); } };
+      s.src = CENSUS_GEOCODER + '?address=' + encodeURIComponent(address) +
+        '&benchmark=Public_AR_Current&format=jsonp&callback=' + cb;
+      document.head.appendChild(s);
+    });
+  }
+  // → { zip, matched } on one clear answer; { reason, options? } otherwise.
+  function readCensusMatch(data) {
+    const ms = (data && data.result && data.result.addressMatches) || [];
+    if (!ms.length) return { reason: 'no match' };
+    const zips = [...new Set(ms.map(m => (m.addressComponents && m.addressComponents.zip) || '').filter(Boolean))];
+    if (zips.length === 1) return { zip: zips[0], matched: ms[0].matchedAddress || '' };
+    if (!zips.length) return { reason: 'matched, but no ZIP returned' };
+    return { reason: 'several matches with different ZIPs', options: ms.map(m => m.matchedAddress).slice(0, 4) };
+  }
+  function zipFromLookup(ri) {
+    const zi = SITE_HEADERS.indexOf('Zip*');
+    return !!(zipLookups[ri] && provMarks[ri + '|' + zi] === 'lookup:census' && cellOverrides[ri + '|' + zi] == null);
+  }
+  // Rows still missing a ZIP that carry enough address to look up.
+  function zipLookupTargets() {
+    const a1 = SITE_HEADERS.indexOf('Address1*'), ci = SITE_HEADERS.indexOf('City*');
+    const si = SITE_HEADERS.indexOf('State*'), zi = SITE_HEADERS.indexOf('Zip*');
+    const coi = SITE_HEADERS.indexOf('Country*');
+    const out = [];
+    formattedRows.forEach((r, ri) => {
+      if (excluded(ri) || r[zi] || !r[a1] || !(r[ci] || r[si])) return;
+      const country = String(r[coi] || '').trim().toUpperCase();
+      if (country && country !== 'US' && country !== 'USA') return;
+      out.push({ ri, sent: [r[a1], r[ci], r[si]].map(v => String(v || '').trim()).filter(Boolean).join(', ') });
+    });
+    return out;
+  }
+  async function runZipLookup() {
+    if (zipLookupBusy) return;
+    const targets = zipLookupTargets();
+    if (!targets.length) return;
+    // One request per distinct address (the same street often backs several sites).
+    const byAddr = new Map();
+    targets.forEach(t => { const k = t.sent.toUpperCase(); (byAddr.get(k) || byAddr.set(k, []).get(k)).push(t); });
+    zipLookupBusy = { done: 0, total: byAddr.size };
+    renderZipLookup();
+    for (const group of byAddr.values()) {
+      const sent = group[0].sent;
+      let res;
+      try { res = readCensusMatch(await censusLookup(sent)); }
+      catch (err) { res = { reason: err && err.message ? err.message : 'lookup failed' }; }
+      group.forEach(t => {
+        if (res.zip) { zipLookups[t.ri] = { zip: res.zip, sent, matched: res.matched }; delete zipLookupMisses[t.ri]; }
+        else zipLookupMisses[t.ri] = { sent, reason: res.reason, options: res.options };
+      });
+      zipLookupBusy.done++;
+      renderZipLookup();
+    }
+    zipLookupBusy = null;
+    recomputeAfterEdit();
+  }
+  function renderZipLookup() {
+    const tbl = $('tss-required-table');
+    if (!tbl || !formattedRows) return;
+    let box = $('tss-zip-lookup');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'tss-zip-lookup';
+      box.style.marginTop = '12px';
+      (tbl.closest('.table-wrap') || tbl).insertAdjacentElement('afterend', box);
+      box.addEventListener('click', e => {
+        if (e.target.closest('#tss-zip-lookup-run')) runZipLookup();
+        else if (e.target.closest('#tss-zip-lookup-clear')) {
+          zipLookups = {}; zipLookupMisses = {}; recomputeAfterEdit();
+        }
+      });
+    }
+    const targets = zipLookupTargets();
+    const nameIdx = SITE_HEADERS.indexOf('Name*');
+    const filledRows = Object.keys(zipLookups).map(Number).filter(ri => !excluded(ri) && zipFromLookup(ri));
+    const missRows = Object.keys(zipLookupMisses).map(Number).filter(ri => !excluded(ri) && targets.some(t => t.ri === ri));
+    if (!targets.length && !filledRows.length && !missRows.length && !zipLookupBusy) { box.innerHTML = ''; return; }
+    const nameOf = ri => escHtml(String(formattedRows[ri][nameIdx] || ''));
+    let h = '<div style="border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:10px 12px;">' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><b>Missing ZIPs — look them up online</b>';
+    if (zipLookupBusy) {
+      h += '<span class="text-muted small">Looking up ' + zipLookupBusy.done + ' of ' + zipLookupBusy.total + '…</span>';
+    } else if (targets.length) {
+      const distinct = new Set(targets.map(t => t.sent.toUpperCase())).size;
+      const retry = targets.every(t => zipLookupMisses[t.ri]);
+      h += '<button class="btn ' + (retry ? 'btn-ghost' : 'btn-primary') + ' btn-sm" id="tss-zip-lookup-run">' +
+        (retry ? 'Retry ' : 'Look up ') + targets.length +
+        (retry ? ' not found' : ' missing ZIP' + (targets.length === 1 ? '' : 's')) + '</button>' +
+        '<span class="text-muted small">' + distinct + ' address' + (distinct === 1 ? '' : 'es') + ' will be sent to the US Census geocoder.</span>';
+    }
+    if (!zipLookupBusy && (filledRows.length || missRows.length)) {
+      h += '<button class="btn btn-ghost btn-sm" id="tss-zip-lookup-clear" title="Remove every ZIP this lookup filled">Undo lookup</button>';
+    }
+    h += '</div>';
+    if (!filledRows.length && !missRows.length) {
+      h += '<p class="text-muted small" style="margin:6px 0 0;">Sends each row\'s Address1, City and State to the Census Bureau\'s free address lookup ' +
+        'and fills only the empty Zip* cells. Results are marked amber in the preview for you to check.</p>';
+    }
+    if (filledRows.length) {
+      h += '<div class="small" style="margin-top:8px;color:#15803d;font-weight:600;">&#10003; Filled ' + filledRows.length + '</div>' +
+        '<table class="data-table" style="margin-top:4px;"><thead><tr><th>Site</th><th>Sent</th><th>Census matched</th><th>ZIP</th></tr></thead><tbody>' +
+        filledRows.map(ri => '<tr><td>' + nameOf(ri) + '</td><td>' + escHtml(zipLookups[ri].sent) + '</td><td>' +
+          escHtml(zipLookups[ri].matched) + '</td><td><b>' + escHtml(zipLookups[ri].zip) + '</b></td></tr>').join('') + '</tbody></table>';
+    }
+    if (missRows.length) {
+      h += '<div class="small" style="margin-top:8px;color:#b45309;font-weight:600;">&#9888; Not found — type these in the preview (' + missRows.length + ')</div>' +
+        '<table class="data-table" style="margin-top:4px;"><thead><tr><th>Site</th><th>Sent</th><th>Why</th></tr></thead><tbody>' +
+        missRows.map(ri => { const m = zipLookupMisses[ri];
+          return '<tr><td>' + nameOf(ri) + '</td><td>' + escHtml(m.sent) + '</td><td>' + escHtml(m.reason) +
+            (m.options && m.options.length ? '<div class="text-muted small">' + m.options.map(escHtml).join('<br>') + '</div>' : '') + '</td></tr>'; }).join('') +
+        '</tbody></table>';
+    }
+    box.innerHTML = h + '</div>';
   }
   function applyFill(idx, val) {
     if (!val) return;
@@ -1747,6 +2049,7 @@
     sum.style.display = '';
     sum.innerHTML =
       '<div class="cmp-stat"><b>' + visibleCount + '</b> sites' + (removedRows.size ? ' <span class="text-muted small">(' + removedRows.size + ' removed of ' + totalCount + ')</span>' : '') + '</div>' +
+      (foldedRowIdxs.size ? '<div class="cmp-stat"><b>' + foldedRowIdxs.size + '</b> repeated rows kept as one</div>' : '') +
       (refPendRows ? '<div class="cmp-stat cmp-warn"><b>' + refPendRows + '</b> rows on an unconfirmed reference address</div>' : '') +
       (existingRowIdxs.size ? '<div class="cmp-stat cmp-warn"><b>' + existingRowIdxs.size + '</b> already in PickTrace (dropped)</div>' : '') +
       (collisionRows ? '<div class="cmp-stat cmp-warn"><b>' + collisionRows + '</b> name collision rows</div>' : '') +
@@ -1767,6 +2070,39 @@
             ? '<div class="cmp-stat cmp-warn"><b>' + (siteTotal - siteDone) + '</b> of ' + siteTotal + ' sites still to assign</div>'
             : '<div class="cmp-stat"><b>' + siteTotal + '</b> sites assigned to groups</div>');
       })();
+    if (wb) wb.refresh();
+  }
+
+  // ─── Workbench: one button per section (workbench.js) ───
+  let wb = null;
+  function mountWorkbench() {
+    if (!window.IMWorkbench) return;
+    const kept = () => formattedRows ? formattedRows.map((_, i) => i).filter(i => !excluded(i)) : [];
+    wb = IMWorkbench.mount({
+      pane: 'ts-site-wrap', results: 'tss-results', preview: 'tss-section-preview',
+      ready: () => !!(srcData && tplData && formattedRows),
+      sections: [
+        { key: 'required', group: 'fix', unit: 'column', name: 'Required blanks', desc: 'Fill required (*) columns the source left empty',
+          ids: ['tss-section-required'],
+          count: () => SITE_HEADERS.filter((h, i) => /\*$/.test(h) && kept().some(ri => !formattedRows[ri][i])).length },
+        { key: 'dropdown', group: 'fix', unit: 'value', name: 'Not in dropdown', desc: 'Pick a listed value for anything PickTrace would reject',
+          ids: ['tss-section-smartfix'], count: () => computeSmartFixes().length },
+        { key: 'build', group: 'fix', unit: 'value', name: 'Build in PickTrace', desc: 'Employers and site types to create, then re-download the template',
+          ids: ['tss-section-emp-create', 'tss-section-type-create'], count: () => toCreateN },
+        { key: 'refaddr', group: 'fix', unit: 'address', name: 'Reference addresses', desc: 'State-code addresses to confirm before they fill every row',
+          ids: ['tss-section-refaddr'], count: () => refAddrOutstanding().length + refAddrConfirmedUnfixed().length },
+        { key: 'collisions', group: 'fix', unit: 'row', name: 'Name collisions', desc: 'Sites sharing a Name — PickTrace keeps only one',
+          ids: ['tss-section-collisions'], count: () => { let n = 0; computeCollisions().forEach(a => { n += a.length; }); return n; } },
+        { key: 'mapping', group: 'check', unit: 'column', name: 'Column mapping', desc: 'Which source column fills each template column',
+          ids: ['tss-section-mapping'], count: () => SITE_HEADERS.filter((_, i) => mapping[i] != null && mapping[i] >= 0).length },
+        { key: 'existing', group: 'check', unit: 'site', name: 'Already in PickTrace', desc: 'Sites dropped because the existing export has them',
+          ids: ['tss-section-existing'], count: () => existingRowIdxs.size },
+        { key: 'folded', group: 'check', unit: 'site', name: 'Repeated sites', desc: 'A site listed once per block, with identical values — kept as one row',
+          ids: ['tss-section-folded'], count: () => foldGroups.size },
+        { key: 'groups', group: 'check', unit: 'group', name: 'Site groups', desc: 'Groups to create and assign by hand on the Site Groups tab',
+          ids: ['tss-section-grouplink'], count: () => collectSiteGroups().size }
+      ]
+    });
   }
 
   function getExportBlockers() {
@@ -1895,13 +2231,8 @@
       return r.map(v => (v == null ? '' : String(v)));
     });
   }
-  function exportFileName() {
-    const origName = (tplData.fileName || 'sites-template.xlsx').trim();
-    const dotIdx = origName.lastIndexOf('.');
-    const base = dotIdx > 0 ? origName.substring(0, dotIdx) : origName;
-    const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
-    return base + ' — filled' + ext;
-  }
+  // "Acme Farms - Sites - 2026-10-07.xlsx" (see IMOutName in utils.js).
+  function exportFileName() { return IMOutName.fileName('Sites'); }
   function doExport() {
     if (!formattedRows || !tplData) return;
     if (!window.IMXlsxTemplate) {
@@ -1922,10 +2253,14 @@
   // ─── File load handlers ───
   function runFormat() {
     if (!srcData || !tplData) { alert('Upload source data + a personalized Sites template first.'); return; }
-    mapping = autoMap(SITE_HEADERS, srcData.headers);
+    mapping = mapSource();
     manualFills = {}; removedRows = new Set(); cellOverrides = {}; nameOverrides = {};
-    smartFixMap = {}; previewIssuesOnly = false; refAddrMap = {};
+    smartFixMap = {}; pvMode = 'all'; pvColsOnly = false; refAddrMap = {};
     collisionHistory = new Map(); collisionDismissed = new Set();
+    zipLookups = {}; zipLookupMisses = {};
+    // An annotated source is the block-level Implementation sheet, so its
+    // repeated sites start merged; any other file starts as it always has.
+    foldDupes = IMDirectives.on(srcData);
     if (!groupSrcOwn) resetGroupWork();
     scanReferenceAddresses();
     rebuildFormattedRows();
@@ -1935,6 +2270,7 @@
   function handleSrcFile(file) {
     readSrcFile(file).then(data => {
       srcData = data;
+      IMOutName.suggestClient(file.name);
       $('tss-src-name').textContent = file.name + ' [' + data.sheetName + ']';
       $('tss-src-meta').textContent = data.rows.length + ' rows · ' + data.headers.length + ' columns';
       $('tss-run').disabled = !(srcData && tplData);
@@ -2033,9 +2369,12 @@
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
     manualFills = {}; removedRows = new Set(); existingData = null; existingRowIdxs = new Set();
-    nameOverrides = {}; cellOverrides = {}; smartFixMap = {}; previewIssuesOnly = false; guessedCityRows = new Set(); collisionKeys = new Set(); existingTakenKeys = new Set();
+    nameOverrides = {}; cellOverrides = {}; smartFixMap = {}; pvMode = 'all'; pvColsOnly = false; guessedCityRows = new Set(); collisionKeys = new Set(); existingTakenKeys = new Set();
     refAddrMap = {}; refAddrExtras = []; xrefCodeCounts = new Map(); xrefRows = new Map(); provMarks = {};
     collisionHistory = new Map(); collisionDismissed = new Set();
+    zipLookups = {}; zipLookupMisses = {};
+    foldDupes = false; foldGroups = new Map(); foldedRowIdxs = new Set();
+    IMOutName.forget();
     // The Site Groups tab keeps its own Reset. Only clear its progress when it
     // is riding on this tab's data — not when it has a file of its own.
     if (!groupSrcOwn) resetGroupWork();
@@ -2047,7 +2386,7 @@
     ['tss-src-file', 'tss-tpl-file', 'tss-existing-file'].forEach(id => { const el = $(id); if (el) el.value = ''; });
     ['tss-section-mapping', 'tss-section-refaddr', 'tss-section-smartfix', 'tss-section-emp-create',
      'tss-section-type-create', 'tss-section-grouplink', 'tss-section-required', 'tss-section-existing',
-     'tss-section-collisions', 'tss-section-preview',
+     'tss-section-folded', 'tss-section-collisions', 'tss-section-preview',
      'tss-section-sitegroups', 'tss-section-groupwork', 'tss-group-summary']
       .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
     { const ge = $('tss-group-empty'); if (ge) { ge.style.display = ''; ge.innerHTML =
@@ -2056,6 +2395,8 @@
     $('tss-empty').style.display = '';
     { const rx = $('tss-refaddr-extra'); if (rx) { rx.style.display = 'none'; rx.innerHTML = ''; } }
     $('tss-run').disabled = true; $('tss-export').disabled = true;
+    toCreateN = 0;
+    if (wb) wb.reset();
     if (window.IMDebug) IMDebug.refresh('sites-standardize');
   }
 
@@ -2198,7 +2539,7 @@
       note: 'Rows in export order. Dropdown-backed columns are re-cased to the template\'s exact spelling on export. ' +
         'exportedRowIndexes[n] is the formattedRows index behind exported row n — the same key used by provenance.codes, ' +
         'edits, and dropped.',
-      exportFileName: (tplData.fileName || 'sites-template.xlsx').replace(/(\.[^.]+)$/, ' — filled$1')
+      exportFileName: exportFileName()
     });
     out.exportedRowIndexes = keptIdxs;
 
@@ -2242,7 +2583,13 @@
           rowsWithGuessedCity: [...guessedCityRows].filter(ri => !excluded(ri)).length,
           guessedCitySamples: [...guessedCityRows].filter(ri => !excluded(ri)).slice(0, 20)
             .map(ri => ({ rowIndex: ri, name: formattedRows[ri][nameIdx],
-              address1: formattedRows[ri][a1], city: formattedRows[ri][SITE_HEADERS.indexOf('City*')] })) }
+              address1: formattedRows[ri][a1], city: formattedRows[ri][SITE_HEADERS.indexOf('City*')] })) },
+        { kind: 'online ZIP lookup (US Census geocoder)',
+          note: 'Run only when you click the button. Fills only an empty Zip*. provenance code lookup:census.',
+          filled: Object.keys(zipLookups).map(Number).filter(ri => !excluded(ri) && zipFromLookup(ri))
+            .map(ri => ({ rowIndex: ri, name: formattedRows[ri][nameIdx], ...zipLookups[ri] })),
+          notFound: Object.keys(zipLookupMisses).map(Number).filter(ri => !excluded(ri) && !zipFromLookup(ri))
+            .map(ri => ({ rowIndex: ri, name: formattedRows[ri][nameIdx], ...zipLookupMisses[ri] })) }
       ],
       fills: fills,
       edits: {
@@ -2277,6 +2624,7 @@
     if (initialized) return;
     if (!$('tss-src-file')) return; // markup not present yet
     initialized = true;
+    mountWorkbench();
     $('tss-src-file').addEventListener('change', e => { if (e.target.files[0]) handleSrcFile(e.target.files[0]); e.target.value = ''; });
     $('tss-tpl-file').addEventListener('change', e => { if (e.target.files[0]) handleTplFile(e.target.files[0]); e.target.value = ''; });
     { const ef = $('tss-existing-file'); if (ef) ef.addEventListener('change', e => { if (e.target.files[0]) handleExistingFile(e.target.files[0]); e.target.value = ''; }); }
@@ -2290,6 +2638,7 @@
     { const sfa = $('tss-smartfix-apply-all'); if (sfa) sfa.addEventListener('click', applyAllSmartFixes); }
     { const rc = $('tss-refaddr-confirm-all'); if (rc) rc.addEventListener('click', confirmAllRefAddresses); }
     { const ca = $('tss-coll-apply-all'); if (ca) ca.addEventListener('click', applyAllCollisionSuggestions); }
+    { const fd = $('tss-fold-dupes'); if (fd) fd.addEventListener('change', e => setFoldDupes(e.target.checked)); }
     { const gc = $('tss-sitegroups-col'); if (gc) gc.addEventListener('change', e => {
         groupColIdx = +e.target.value;
         groupColPicked = true;
@@ -2375,6 +2724,9 @@
   // showBuild() calls this when you switch to the Site Groups tab — its panels
   // live in a pane the Sites renders can't assume is visible.
   window.tssRenderGroups = function () { renderGroupsTab(); };
+  // The address reader, for Locations' Sites file (template-standardize.js):
+  // "street, city, ST zip" → { address1, city, state, zip, country, cityGuessed }.
+  window.IMAddress = { parse: parseAddress };
   if (document.readyState !== 'loading') init();
   else document.addEventListener('DOMContentLoaded', init);
 })();

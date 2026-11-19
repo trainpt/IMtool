@@ -42,9 +42,18 @@
   let selCells = new Set();
   let selAnchor = null;
   let previewOrder = [];
+  let pvMode = 'all';      // preview rows: 'all' | 'fix' | 'chg' | 'any' (IMWorkbench.filterBar)
+  let pvColsOnly = false;  // preview: only the columns with a flag or a change
   let hasCellEdits = false;// a preview cell was hand-edited since the last build
   let hlScan = null;       // IMHighlight scan of the Data Template sheet's fill colors
   let hlState = { mode: 'off', keys: new Set() }; // highlight filter (off / exclude / only)
+  // Bulk Update: the template comes pre-filled with the org's employees (keyed
+  // by Employee ID). Those rows are the starting point; the Data Template, if
+  // loaded, is matched onto them, and only employees that changed export.
+  let target = 'create';   // 'create' | 'update'
+  let baseRows = null;     // update: the template's employees as PickTrace has them (parallel to formattedRows)
+  let fromSrc = null;      // update: Set "ri|ci" of cells the Data Template supplied
+  let unmatched = [];      // update: Data Template rows with no employee to update [{ name, altId }]
   let initialized = false;
 
   // Pane visibility is owned by showBuild() in index.html's router — the old
@@ -284,6 +293,7 @@
   // Auto-uses the sheet that actually carries employee data; when a workbook has
   // more than one candidate (or none with data), the user picks the sheet.
   function handleSrcFile(file) {
+    IMOutName.suggestClient(file.name);
     readWorkbook(file, true).then(d => {
       if (d.csv) {
         srcWb = null; srcFileName = file.name;
@@ -481,29 +491,43 @@
     }).catch(err => alert('Failed to read existing employees file: ' + (err && err.message ? err.message : err)));
   }
 
-  // 3) Bulk Create template — output format + dropdowns.
+  // 3) Bulk Create or Bulk Update template — output format + dropdowns.
+  // The Update template starts with Employee ID and carries every employee
+  // the org has, so it also sets the target and becomes the rows to edit.
   function handleTplFile(file) {
     const r = new FileReader();
     r.onload = e => {
       try {
         const buf = e.target.result;
-        const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true });
+        // A plain read: cellStyles throws on PickTrace-generated workbooks.
+        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
         const dataName = wb.SheetNames.find(n => /data.?entry/i.test(n)) || wb.SheetNames[0];
         const dataWs = wb.Sheets[dataName];
         if (!dataWs) { alert('Could not find DATA ENTRY sheet in this template.'); return; }
-        const dataAoa = XLSX.utils.sheet_to_json(dataWs, { header: 1, defval: '' });
+        const dataAoa = XLSX.utils.sheet_to_json(dataWs, { header: 1, defval: '', raw: false });
         let headers = dataAoa.length ? dataAoa[0].map(h => String(h == null ? '' : h).trim()) : [];
         while (headers.length && headers[headers.length - 1] === '') headers.pop();
-        if (noStar(headers[0]) !== 'first name' || noStar(headers[4]) !== 'employer') {
-          alert('This does not look like the 3.0 Employee Bulk Create template (expected First Name… and Employer… columns).');
+        const isUpdate = noStar(headers[0]) === 'employee id' && headers.some(h => noStar(h) === 'first name');
+        const isCreate = noStar(headers[0]) === 'first name' && noStar(headers[4]) === 'employer';
+        if (!isUpdate && !isCreate) {
+          alert('This does not look like a 3.0 Employee Bulk Create or Bulk Update template (expected First Name… and Employer…, or Employee ID first).');
           return;
         }
         const dropdowns = readDropdowns(wb);
         const employerList = dropdowns.get('employer') || [];
-        tplData = { headers, dropdowns, employerList, rawBuffer: buf, fileName: file.name };
+        // The Update template's employees: every row with an Employee ID.
+        const rows = isUpdate
+          ? dataAoa.slice(1).filter(row => row && String(row[0] == null ? '' : row[0]).trim())
+              .map(row => headers.map((h, c) => {
+                const v = String(row[c] == null ? '' : row[c]).trim();
+                return v && DATE_COLS.has(noStar(h)) ? normDate(v) : v;
+              }))
+          : [];
+        tplData = { headers, dropdowns, employerList, rawBuffer: buf, fileName: file.name, kind: isUpdate ? 'update' : 'create', rows };
+        setTarget(tplData.kind);
         $('es-tpl-name').textContent = file.name;
-        $('es-tpl-meta').textContent = headers.length + ' columns  ·  ' +
-          employerList.length + ' employer' + (employerList.length === 1 ? '' : 's');
+        $('es-tpl-meta').textContent = (isUpdate ? 'Bulk Update · ' + rows.length + ' employee' + (rows.length === 1 ? '' : 's') + '  ·  ' : 'Bulk Create  ·  ') +
+          headers.length + ' columns  ·  ' + employerList.length + ' employer' + (employerList.length === 1 ? '' : 's');
         maybeRun();
       } catch (err) {
         alert('Failed to read template: ' + (err && err.message ? err.message : err));
@@ -589,8 +613,90 @@
 
   // ─── Build: map → dedupe → snap ───
   function buildFormattedRows() {
-    if (!srcData || !tplData) return; // existing-employees export (dbIndex) is optional
+    if (!tplData || (!srcData && target !== 'update')) return; // existing-employees export (dbIndex) is optional
     outHeaders = tplData.headers.slice();
+    if (target === 'update') buildUpdateRows();
+    else buildCreateRows();
+    snapAndFill();
+  }
+
+  // ─── Bulk Update rows ───
+  // Every employee the Update template lists, as PickTrace has them. A Data
+  // Template, when loaded, is matched onto them — by Employee ID if it has
+  // one, else Alt ID or SSN (with the name agreeing), else name + birth date
+  // — and its non-empty cells overwrite. Rows it can't place are listed:
+  // they're new people, for a Bulk Create.
+  function buildUpdateRows() {
+    baseRows = tplData.rows.map(r => r.slice());
+    formattedRows = tplData.rows.map(r => r.slice());
+    srcKept = null;
+    fromSrc = new Set();
+    unmatched = [];
+    dupConfident = [];
+    dupPossible = [];
+    if (!srcData) { srcColForOut = outHeaders.map(() => -1); return; }
+    buildColMap();
+    const at = k => outHeaders.findIndex(h => noStar(h) === k);
+    const idI = at('employee id'), fnI = at('first name'), lnI = at('last name'), altI = at('alt id'), ssnI = at('ssn'), dobI = at('date of birth');
+    const byId = new Map(), byAlt = new Map(), bySsn = new Map(), byNameDob = new Map();
+    baseRows.forEach((r, i) => {
+      const nk = normName(r[fnI] + ' ' + r[lnI]);
+      if (idI >= 0 && r[idI]) byId.set(normId(r[idI]), i);
+      if (altI >= 0 && r[altI] && !byAlt.has(normId(r[altI]))) byAlt.set(normId(r[altI]), i);
+      const sk = ssnI >= 0 ? ssnKey(r[ssnI]) : '';
+      if (sk && !bySsn.has(sk)) bySsn.set(sk, i);
+      if (nk && dobI >= 0 && r[dobI] && !byNameDob.has(nk + '|' + r[dobI])) byNameDob.set(nk + '|' + r[dobI], i);
+    });
+    const get = (row, si) => si < 0 ? '' : String(row[si] == null ? '' : row[si]).trim();
+    const nameOk = (i, tok) => nameAgree(tok, nameTokens(baseRows[i][fnI] + ' ' + baseRows[i][lnI]));
+    srcData.rows.forEach(srcRow => {
+      const v = outHeaders.map((h, c) => {
+        const x = get(srcRow, srcColForOut[c]);
+        return x && DATE_COLS.has(noStar(h)) ? normDate(x) : x;
+      });
+      const name = ((fnI >= 0 ? v[fnI] : '') + ' ' + (lnI >= 0 ? v[lnI] : '')).trim();
+      const tok = nameTokens(name), nk = normName(name);
+      let bi = idI >= 0 && v[idI] ? byId.get(normId(v[idI])) : undefined;
+      if (bi == null && altI >= 0 && v[altI] && byAlt.has(normId(v[altI])) && nameOk(byAlt.get(normId(v[altI])), tok)) bi = byAlt.get(normId(v[altI]));
+      if (bi == null && ssnI >= 0 && ssnKey(v[ssnI]) && bySsn.has(ssnKey(v[ssnI])) && nameOk(bySsn.get(ssnKey(v[ssnI])), tok)) bi = bySsn.get(ssnKey(v[ssnI]));
+      if (bi == null && nk && dobI >= 0 && v[dobI]) bi = byNameDob.get(nk + '|' + v[dobI]);
+      if (bi == null) { unmatched.push({ name: name || '(no name)', altId: altI >= 0 ? v[altI] : '' }); return; }
+      v.forEach((x, c) => {
+        if (!x || c === idI) return;
+        formattedRows[bi][c] = x;
+        fromSrc.add(bi + '|' + c);
+      });
+    });
+  }
+
+  // The value an Update file carries for a cell: '<CLEAR>' where PickTrace
+  // has a value and you emptied it (a blank cell would leave it unchanged).
+  const CLEAR = '<CLEAR>';
+  function updateCell(ri, ci) {
+    const now = formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci]);
+    return !now && baseRows && baseRows[ri] && baseRows[ri][ci] ? CLEAR : now;
+  }
+  // An Update row worth sending: something differs from what PickTrace has.
+  function rowChanged(ri) {
+    if (!baseRows || !baseRows[ri]) return true;
+    const t = v => String(v == null ? '' : v).trim().toUpperCase(); // a case-only snap isn't a change
+    return formattedRows[ri].some((v, ci) => t(v) !== t(baseRows[ri][ci]));
+  }
+
+  function setTarget(t) {
+    target = t === 'update' ? 'update' : 'create';
+    document.querySelectorAll('input[name="es-target"]').forEach(r => { r.checked = r.value === target; });
+    document.querySelectorAll('.es-create-only').forEach(el => { el.style.display = target === 'update' ? 'none' : ''; });
+    const src = $('es-src-req');
+    if (src) src.textContent = target === 'update' ? '(optional)' : '(required)';
+    const empty = $('es-empty');
+    if (empty) empty.textContent = target === 'update'
+      ? 'Upload the Bulk Update template — its employees are the rows to edit. A Data Template is optional: it fills in changes for the employees it matches.'
+      : 'Upload the Data Template and the Bulk Create template (Existing Employees is optional) to start.';
+  }
+
+  function buildCreateRows() {
+    baseRows = null; fromSrc = null; unmatched = [];
     buildColMap();
     const get = (row, si) => si < 0 ? '' : String(row[si] == null ? '' : row[si]).trim();
     const altOut = outHeaders.findIndex(h => noStar(h) === 'alt id');
@@ -709,7 +815,10 @@
       }
       if (nameK && !seenName.has(nameK)) seenName.set(nameK, { disp, name: dispName, aKey: a, sKey: sk, dob });
     });
+  }
 
+  // Both targets: snap to the dropdowns, then your Smart Fixes and fills.
+  function snapAndFill() {
     // Snap dropdown-backed columns to the template's allowed values.
     for (let ci = 0; ci < outHeaders.length; ci++) {
       const opts = colOptions(outHeaders[ci]);
@@ -745,8 +854,9 @@
   }
 
   function runStandardize() {
-    if (!srcData || !tplData) {
-      alert('Upload the Data Template and the Bulk Create template first. (Existing Employees is optional.)');
+    if (!tplData || (!srcData && target !== 'update')) {
+      alert(target === 'update' ? 'Upload the Bulk Update template first.'
+        : 'Upload the Data Template and the Bulk Create template first. (Existing Employees is optional.)');
       return;
     }
     columnFills = {};
@@ -757,6 +867,7 @@
     buildFormattedRows();
     renderDuplicates();
     renderPossible();
+    renderUnmatched();
     renderEmployersToCreate();
     renderSmartFixes();
     renderBulkEdit();
@@ -765,8 +876,20 @@
     $('es-empty').style.display = 'none';
   }
 
+  // Update: Data Template rows that match no employee in the template.
+  function renderUnmatched() {
+    const sec = $('es-section-unmatched');
+    if (!sec) return;
+    if (target !== 'update' || !unmatched.length) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    $('es-unmatched-title').textContent = 'Not in PickTrace (' + unmatched.length + ')';
+    $('es-unmatched-table').innerHTML = '<thead><tr><th>Employee</th><th>Alt ID</th></tr></thead><tbody>' +
+      unmatched.map(u => '<tr><td>' + escHtml(u.name) + '</td><td>' + escHtml(u.altId || '') + '</td></tr>').join('') + '</tbody>';
+  }
+
   function maybeRun() {
-    const ready = !!(srcData && tplData); // Existing Employees (dbIndex) is optional
+    // Existing Employees (dbIndex) is optional; so is the Data Template for an Update.
+    const ready = !!(tplData && (srcData || target === 'update'));
     $('es-run').disabled = !ready;
     if (ready) runStandardize();
   }
@@ -986,8 +1109,10 @@
             '>' + escHtml(o) + (/\s$/.test(o) ? ' ␣(trailing space)' : '') + '</option>').join('')
         : '<option value="">(no template dropdown — use manual override)</option>';
       const status = cur
-        ? '<span style="color:#15803d;font-weight:600;">✓ ' + escHtml(String(cur.val).slice(0, 40) || '(blank)') +
-          '</span> <span class="text-muted small">(' + (cur.mode === 'blank' ? 'blanks only' : 'all rows') + ')</span>'
+        ? '<span style="color:#15803d;font-weight:600;">✓ ' + escHtml(String(cur.val).slice(0, 40) ||
+            (target === 'update' ? 'cleared — ' + CLEAR : '(cleared)')) +
+          '</span> <span class="text-muted small">(' + (cur.mode === 'blank' ? 'blanks only' : 'all rows') + ')</span>' +
+          ' <button class="btn btn-ghost btn-sm es-bulk-undo" data-idx="' + idx + '" title="Drop this fill and put the column back">Undo</button>'
         : '<span class="text-muted small">—</span>';
       const req = /\*$/.test(h);
       html += '<tr>' +
@@ -1018,8 +1143,11 @@
     updateSummary();
   }
 
+  // Clear sticks like any fill (an empty value for every row), so a rebuild
+  // doesn't bring the column back; in an Update it exports as <CLEAR>.
+  // Undo drops the fill and rebuilds the column from its source.
   function clearColumnFill(idx) {
-    delete columnFills[idx];
+    columnFills[idx] = { val: '', mode: 'all' };
     formattedRows.forEach((r, ri) => { if (!removedRows.has(ri)) r[idx] = ''; });
     renderBulkEdit();
     if (noStar(outHeaders[idx]) === 'employer') renderEmployersToCreate();
@@ -1052,6 +1180,9 @@
     });
     tbl.querySelectorAll('.es-bulk-clear').forEach(btn => {
       btn.addEventListener('click', e => clearColumnFill(+e.target.dataset.idx));
+    });
+    tbl.querySelectorAll('.es-bulk-undo').forEach(btn => {
+      btn.addEventListener('click', e => { delete columnFills[+e.target.dataset.idx]; reRenderAfterFix(); });
     });
     tbl.querySelectorAll('.es-bulk-pick').forEach(sel => {
       sel.addEventListener('change', e => {
@@ -1124,96 +1255,140 @@
   }
 
   // ─── Preview ───
+  // "Was … → now … · why" when the cell differs from its source row, for the
+  // preview's change tick (see IMWorkbench.changeNote). Hand edits and fills
+  // write straight into formattedRows, so they share one reason.
+  function changeOf(ri, ci) {
+    // Update: measured against what PickTrace has for that employee.
+    if (target === 'update' && baseRows) {
+      const was = String(baseRows[ri][ci] == null ? '' : baseRows[ri][ci]);
+      const now = String(formattedRows[ri][ci] == null ? '' : formattedRows[ri][ci]);
+      const fill = columnFills[ci];
+      const why = now === CLEAR || (!now && was) ? 'Cleared — exported as ' + CLEAR
+        : fill && fill.val === now ? 'Column fill you applied'
+        : esSmartFixMap[ci + '||' + was.toUpperCase()] === now ? 'Smart Fix you applied'
+        : fromSrc && fromSrc.has(ri + '|' + ci) ? 'From the Data Template'
+        : 'Your edit';
+      return IMWorkbench.changeNote(was, now === '' && was ? CLEAR : now, why);
+    }
+    const si = srcColForOut ? srcColForOut[ci] : -1, src = srcKept ? srcKept[ri] : null;
+    const was = src && si >= 0 ? String(src[si] == null ? '' : src[si]).trim() : '';
+    const now = formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci]);
+    let why = 'Changed after import (fill, Smart Fix or your edit)';
+    if (esSmartFixMap[ci + '||' + was.toUpperCase()] === now) why = 'Smart Fix you applied';
+    else if (DATE_COLS.has(noStar(outHeaders[ci])) && normDate(was) === now) why = 'Date written as YYYY-MM-DD';
+    return IMWorkbench.changeNote(was, now, why);
+  }
+
   function renderPreview() {
     if (!formattedRows || !outHeaders) return;
     const sec = $('es-section-preview');
     const tbl = $('es-preview-table');
     sec.style.display = '';
     const possibleSet = new Set(dupPossible.map(d => d.ri));
-    let html = '<thead><tr>' +
-      '<th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
-    outHeaders.forEach(h => {
-      const req = /\*$/.test(h);
-      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) + '</th>';
-    });
-    html += '</tr></thead><tbody>';
     const reqIdx = outHeaders.map((h, i) => /\*$/.test(h) ? i : -1).filter(i => i >= 0);
-    const isProblem = ri => reqIdx.some(i => !formattedRows[ri][i]);
     const vis = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
-    // Hard cap on rendered rows — these lists can run to tens of thousands of
-    // employees, and rendering every one as editable cells would freeze the
-    // browser. Problem / possible-duplicate rows are shown first (up to the
-    // cap), then clean rows fill any remainder. EVERY row is still exported.
-    const MAX_PREVIEW = 300;
-    const flagged = vis.filter(ri => isProblem(ri) || possibleSet.has(ri));
-    const clean = vis.filter(ri => !(isProblem(ri) || possibleSet.has(ri)));
-    const show = flagged.slice(0, MAX_PREVIEW);
-    let cleanShown = 0;
-    for (let i = 0; i < clean.length && show.length < MAX_PREVIEW; i++) { show.push(clean[i]); cleanShown++; }
-    const problemCount = vis.reduce((n, ri) => n + (isProblem(ri) ? 1 : 0), 0);
-    const flaggedShown = Math.min(flagged.length, MAX_PREVIEW);
-    const cleanTotal = clean.length;
-    const totalHidden = vis.length - show.length;
-    previewOrder = show.slice();
+    // Every row, drawn as you scroll (IMWorkbench.rows) — these lists can run
+    // to tens of thousands of employees. A row needs a fix when a required (*)
+    // cell is empty or it may duplicate someone; it's changed when any cell
+    // differs from the source.
+    const info = new Map(), counts = { all: vis.length, fix: 0, chg: 0, any: 0 };
+    vis.forEach(ri => {
+      const f = reqIdx.filter(i => !formattedRows[ri][i]), c = [];
+      for (let i = 0; i < outHeaders.length; i++) if (changeOf(ri, i)) c.push(i);
+      const fix = f.length > 0 || possibleSet.has(ri);
+      info.set(ri, { f, c, fix });
+      if (fix) counts.fix++;
+      if (c.length) counts.chg++;
+      if (fix || c.length) counts.any++;
+    });
+    const show = vis.filter(ri => IMWorkbench.rowMatch(pvMode, info.get(ri).fix, info.get(ri).c.length));
+    let cols = outHeaders.map((_, i) => i);
+    if (pvColsOnly) {
+      const keep = new Set(outHeaders.map((h, i) => /^(first|last) name/i.test(h) ? i : -1).filter(i => i >= 0));
+      show.forEach(ri => { const x = info.get(ri); x.f.forEach(i => keep.add(i)); x.c.forEach(i => keep.add(i)); });
+      cols = cols.filter(i => keep.has(i));
+    }
     const visSet = new Set(vis);
     selCells.forEach(k => { if (!visSet.has(+k.slice(0, k.indexOf(':')))) selCells.delete(k); });
-    show.forEach(ri => {
+    const head = '<thead><tr><th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>' + cols.map(i =>
+      '<th' + (/\*$/.test(outHeaders[i]) ? ' style="color:#dc2626;"' : '') + '>' + escHtml(outHeaders[i]) + '</th>').join('') + '</tr></thead>';
+    const rowHtml = ri => {
       const row = formattedRows[ri];
-      const flag = possibleSet.has(ri)
-        ? ' title="Possible duplicate (name match)" style="background:#fffbeb;"'
-        : '';
-      html += '<tr' + flag + '><td style="text-align:center;padding:0;">' +
+      const flag = possibleSet.has(ri) ? ' title="Possible duplicate (name match)" style="background:#fffbeb;"' : '';
+      let html = '<tr' + flag + '><td style="text-align:center;padding:0;">' +
         '<button class="es-row-remove" data-ri="' + ri + '" title="Remove this row from preview + export" ' +
         'style="all:unset;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:2px 6px;">&times;</button></td>';
-      outHeaders.forEach((h, i) => {
-        const empty = !row[i];
-        const cs = (/\*$/.test(h) && empty) ? ' style="background:#fee2e2;color:#7f1d1d;"' : '';
-        html += '<td class="es-cell" contenteditable="true" spellcheck="false" ' +
-          'data-ri="' + ri + '" data-ci="' + i + '"' + cs + '>' + escHtml(row[i]) + '</td>';
+      cols.forEach(i => {
+        const cs = (/\*$/.test(outHeaders[i]) && !row[i]) ? ' style="background:#fee2e2;color:#7f1d1d;"' : '';
+        const note = changeOf(ri, i);
+        html += '<td class="es-cell' + (note ? ' is-chg' : '') + '" contenteditable="true" spellcheck="false" ' +
+          'data-ri="' + ri + '" data-ci="' + i + '"' + cs + (note ? ' title="' + escHtml(note) + '"' : '') + '>' + escHtml(row[i]) + '</td>';
       });
-      html += '</tr>';
-    });
-    html += '</tbody>';
-    tbl.innerHTML = html;
+      return html + '</tr>';
+    };
+    // Shift-click ranges follow the order on screen, sorted or not.
+    IMWorkbench.rows(tbl, { head: head, ids: show, row: rowHtml, cols: cols.length + 1,
+      after: () => { previewOrder = IMWorkbench.rowOrder(tbl); paintSelection(); },
+      keys: [null].concat(cols.map(i => outHeaders[i])), cell: (ri, p) => formattedRows[ri][cols[p - 1]],
+      widths: [28].concat(cols.map(i => IMWorkbench.fitWidth(outHeaders[i], show.map(ri => formattedRows[ri][i])))),
+      empty: pvMode === 'fix' ? 'No row needs a fix ✓' : 'Nothing here has been changed.' });
     const hint = sec.querySelector('.cmp-sites-hint');
-    let ht = 'Editable — click a cell, type, then click away (or press Enter) to save. Empty required (*) cells are red; <span style="background:#fffbeb;">amber rows</span> are possible duplicates. Click <b>×</b> to drop a row from the export.';
-    const counts = 'Showing ' + show.length + ' of ' + vis.length + ' row' + (vis.length === 1 ? '' : 's') +
-      (totalHidden > 0 ? ' (' + totalHidden + ' not shown — capped for performance; <b>all rows are still exported</b>)' : '') + '. ';
-    if (problemCount) {
-      ht = '<b style="color:#dc2626;">' + problemCount + ' row' + (problemCount === 1 ? '' : 's') +
-        ' missing a required (*) cell</b> (' + flaggedShown + ' flagged row' + (flaggedShown === 1 ? '' : 's') +
-        ' shown first). ' + counts + ht;
-    } else {
-      ht = counts + ht;
-    }
-    if (removedRows.size) ht += ' &nbsp; <button class="btn btn-ghost btn-sm" id="es-restore-rows">' +
+    let ht = IMWorkbench.filterBar({ mode: pvMode, counts: counts, colsOnly: pvColsOnly, shownCols: cols.length, totalCols: outHeaders.length }) +
+      '<span class="wb-filter-note">' + (show.length === vis.length ? 'All ' + vis.length : show.length + ' of ' + vis.length) +
+      ' rows · editable — click a cell, type, then click away (or press Enter) to save. Empty required (*) cells are red; <span style="background:#fffbeb;">amber rows</span> are possible duplicates. Click <b>×</b> to drop a row from the export.</span>';
+    if (removedRows.size) ht += ' <button class="btn btn-ghost btn-sm" id="es-restore-rows">' +
       'Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
     if (hint) hint.innerHTML = ht;
-    tbl.querySelectorAll('.es-row-remove').forEach(btn => {
-      btn.addEventListener('click', e => {
+    // Rows come and go as you scroll, and the bar is redrawn every render —
+    // their handlers live on the table / section, once.
+    if (!tbl._esRowsWired) {
+      tbl._esRowsWired = true;
+      tbl.addEventListener('click', e => {
+        const rm = e.target.closest('.es-row-remove');
+        if (!rm) return;
         e.stopPropagation();
-        removedRows.add(+e.currentTarget.dataset.ri);
+        removedRows.add(+rm.dataset.ri);
         renderPreview();
         renderPossible();
         renderEmployersToCreate();
         updateSummary();
       });
-    });
-    const rb = $('es-restore-rows');
-    if (rb) rb.addEventListener('click', () => {
-      removedRows.clear();
-      renderPreview();
-      renderPossible();
-      renderEmployersToCreate();
-      updateSummary();
-    });
+      sec.addEventListener('change', e => {
+        if (e.target.classList.contains('wb-rowfilter')) { pvMode = e.target.value; IMWorkbench.rowsTop(tbl); renderPreview(); }
+        else if (e.target.classList.contains('wb-colfilter')) { pvColsOnly = e.target.checked; renderPreview(); }
+      });
+      sec.addEventListener('click', e => {
+        if (!e.target.closest('#es-restore-rows')) return;
+        removedRows.clear();
+        renderPreview();
+        renderPossible();
+        renderEmployersToCreate();
+        updateSummary();
+      });
+    }
     paintSelection();
     updateExportButton();
   }
 
   // ─── Summary ───
   function updateSummary() {
-    if (!srcData || !tplData || !formattedRows) { $('es-summary').style.display = 'none'; return; }
+    if (!tplData || !formattedRows || (!srcData && target !== 'update')) { $('es-summary').style.display = 'none'; return; }
+    if (target === 'update') {
+      const kept = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
+      const changed = kept.filter(rowChanged).length;
+      let clears = 0;
+      kept.forEach(ri => formattedRows[ri].forEach((_, ci) => { if (updateCell(ri, ci) === CLEAR) clears++; }));
+      const sum = $('es-summary');
+      sum.style.display = '';
+      sum.innerHTML =
+        '<div class="cmp-stat"><b>' + kept.length + '</b> employees in the Update template</div>' +
+        '<div class="cmp-stat"><b>' + changed + '</b> with a change — these export</div>' +
+        (clears ? '<div class="cmp-stat"><b>' + clears + '</b> cell' + (clears === 1 ? '' : 's') + ' cleared (' + escHtml(CLEAR) + ')</div>' : '') +
+        (unmatched.length ? '<div class="cmp-stat cmp-warn"><b>' + unmatched.length + '</b> Data Template row' + (unmatched.length === 1 ? '' : 's') + ' not in PickTrace</div>' : '');
+      if (wb) wb.refresh();
+      return;
+    }
     const total = formattedRows.length;
     const visible = formattedRows.filter((_, i) => !removedRows.has(i)).length;
     const excluded = dupConfident.length;
@@ -1245,18 +1420,47 @@
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
       (toCreate ? '<div class="cmp-stat cmp-warn"><b>' + toCreate + '</b> employer' + (toCreate === 1 ? '' : 's') + ' to create in 3.0</div>' : '') +
       '<div class="cmp-stat"><b>' + files + '</b> output file' + (files === 1 ? '' : 's') + '</div>';
+    if (wb) wb.refresh();
+  }
+
+  // ─── Workbench: one button per section (workbench.js) ───
+  let wb = null;
+  function mountWorkbench() {
+    if (!window.IMWorkbench) return;
+    const vis = () => formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)) : [];
+    wb = IMWorkbench.mount({
+      pane: 'cmp-mode-empstd', results: 'es-results', preview: 'es-section-preview',
+      ready: () => !!(tplData && formattedRows && (srcData || target === 'update')),
+      sections: [
+        { key: 'required', group: 'fix', unit: 'column', name: 'Required blanks', desc: 'Fill required (*) columns — or bulk-edit any column',
+          ids: ['es-section-bulk'],
+          count: () => { const rows = vis(); return outHeaders.filter((h, i) => /\*$/.test(h) && rows.some(r => !r[i])).length; } },
+        { key: 'dropdown', group: 'fix', unit: 'value', name: 'Not in dropdown', desc: 'Pick a listed value for anything PickTrace would reject',
+          ids: ['es-section-smartfix'], count: () => computeSmartFixes().length },
+        { key: 'build', group: 'fix', unit: 'employer', name: 'Build in PickTrace', desc: 'Employers to create in 3.0, then re-download the template',
+          ids: ['es-section-create'], count: () => getEmployersToCreate().size },
+        { key: 'possible', group: 'fix', unit: 'row', name: 'Possible duplicates', desc: 'Kept, but they match someone by name — check each one',
+          ids: ['es-section-possible'], count: () => dupPossible.filter(d => !removedRows.has(d.ri)).length },
+        { key: 'dups', group: 'check', unit: 'employee', name: 'Duplicates excluded', desc: 'Already in PickTrace, or earlier in this file — left out',
+          ids: ['es-section-dups'], count: () => dupConfident.length },
+        { key: 'unmatched', group: 'check', unit: 'row', name: 'Not in PickTrace', desc: 'Update: Data Template rows that match no employee — they need a Bulk Create',
+          ids: ['es-section-unmatched'], count: () => (target === 'update' ? unmatched.length : 0) },
+        { key: 'highlight', group: 'check', unit: 'row', name: 'Highlighted rows', desc: 'Rows the client marked with a fill colour — leave out or keep only',
+          ids: ['es-section-highlight'], count: () => hlScan ? hlScan.rowColors.filter(c => c.length).length : 0 }
+      ]
+    });
   }
 
   function updateExportButton() {
     const btn = $('es-export');
-    const visible = formattedRows ? formattedRows.filter((_, i) => !removedRows.has(i)).length : 0;
-    btn.disabled = !(srcData && tplData && visible); // Existing Employees optional
+    const visible = exportRowList().length;
+    btn.disabled = !(tplData && (srcData || target === 'update') && visible); // Existing Employees optional
     if (window.IMDebug) IMDebug.refresh('employee-standardize');
   }
 
   // ─── Debug dump ───
   function collectDebug() {
-    if (!srcData || !tplData || !formattedRows || !outHeaders) return null;
+    if (!tplData || !formattedRows || !outHeaders || (!srcData && target !== 'update')) return null;
     const H = outHeaders;
     const keptIdxs = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
     const keptRows = keptIdxs.map(i => formattedRows[i]);
@@ -1267,7 +1471,7 @@
       const si = srcColForOut ? srcColForOut[i] : -1;
       return { index: i, header: h, required: /\*$/.test(h), srcIndex: si,
         match: si >= 0 ? 'mapped' : 'unmapped',
-        sample: si >= 0 && srcData.rows[0] ? srcData.rows[0][si] : null };
+        sample: si >= 0 && srcData && srcData.rows[0] ? srcData.rows[0][si] : null };
     });
 
     const emptyReqCols = H.map((h, i) => {
@@ -1295,28 +1499,33 @@
         items: sfPending.map(f => ({ column: f.header, value: f.from, rows: f.count, suggestion: f.suggestion || null })) })
     ];
 
+    const upd = target === 'update';
     const prov = IMDebug.deriveProvenance({
-      headers: H, rows: formattedRows, srcRows: srcKept, colToSrc: colToSrc,
+      headers: H, rows: formattedRows, srcRows: upd ? baseRows : srcKept, colToSrc: upd ? H.reduce((o, _, i) => { o[i] = i; return o; }, {}) : colToSrc,
       fills: columnFills, smartFixes: esSmartFixMap });
-    const out = IMDebug.output(H, keptRows, {
-      note: 'exportedRowIndexes[n] is the formattedRows index behind exported row n. Export is batched — see settings.batchSize.' });
-    out.exportedRowIndexes = keptIdxs;
+    const sent = upd ? keptIdxs.filter(rowChanged) : keptIdxs;
+    const out = IMDebug.output(H, upd ? exportRowList() : keptRows, {
+      note: upd ? 'Bulk Update: only employees with a change export; an emptied value is written as ' + CLEAR + '. exportedRowIndexes[n] is the template row behind exported row n.'
+        : 'exportedRowIndexes[n] is the formattedRows index behind exported row n. Export is batched — see settings.batchSize.' });
+    out.exportedRowIndexes = sent;
 
     let batch = parseInt($('es-batch') ? $('es-batch').value : '', 10);
     if (!Number.isFinite(batch) || batch < 1) batch = 5000;
 
     return {
-      settings: { batchSize: batch, outputFiles: keptRows.length ? Math.ceil(keptRows.length / batch) : 0 },
+      settings: { target: upd ? 'UPDATE' : 'CREATE', batchSize: batch, outputFiles: sent.length ? Math.ceil(sent.length / batch) : 0,
+        update: upd ? { templateEmployees: baseRows ? baseRows.length : 0, changed: sent.length,
+          dataTemplateCellsApplied: fromSrc ? fromSrc.size : 0, notInPickTrace: unmatched } : null },
       inputs: [
         IMDebug.file('source data (Data Template Employees sheet)', srcData, { workbookFileName: srcFileName || null }),
-        IMDebug.file('personalized bulk Employees template', tplData, {
+        IMDebug.file('personalized bulk Employees ' + (upd ? 'Update' : 'Create') + ' template', tplData, {
           dropdowns: tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [],
           employerList: tplData.employerList || null }),
         { role: 'existing employees in PickTrace 3.0', loaded: !!dbIndex,
           fileName: dbFileName || null, rowCount: dbCount || null,
           note: 'Used to exclude confident duplicates and flag possible ones.' }
       ],
-      mapping: IMDebug.mapping(cols, srcData.headers, { srcRows: srcData.rows }),
+      mapping: IMDebug.mapping(cols, srcData ? srcData.headers : [], { srcRows: srcData ? srcData.rows : [] }),
       derived: [
         { kind: 'duplicate classification',
           note: 'Confident duplicates are excluded from the export; possible ones are kept and flagged.',
@@ -1349,10 +1558,19 @@
   }
 
   // ─── Export (batched, pristine template per file) ───
+  // The rows that go out: every kept row for Create; for Update, only the
+  // employees that changed, with <CLEAR> where you emptied a value.
+  function exportRowList() {
+    if (!formattedRows) return [];
+    const idx = formattedRows.map((_, i) => i).filter(i => !removedRows.has(i));
+    if (target !== 'update') return idx.map(i => formattedRows[i].slice());
+    return idx.filter(rowChanged).map(i => formattedRows[i].map((_, ci) => updateCell(i, ci)));
+  }
+
   async function doExport() {
     if (!formattedRows || !tplData) return;
-    const exportRows = formattedRows.filter((_, i) => !removedRows.has(i)).map(r => r.slice());
-    if (!exportRows.length) { alert('No employees to export.'); return; }
+    const exportRows = exportRowList();
+    if (!exportRows.length) { alert(target === 'update' ? 'No employee has a change to send yet.' : 'No employees to export.'); return; }
     const toCreate = getEmployersToCreate();
     if (toCreate.size) {
       const names = [...toCreate.entries()].sort((a, b) => b[1].count - a[1].count)
@@ -1368,49 +1586,28 @@
     if (!Number.isFinite(limit) || limit < 1) limit = 5000;
     const chunks = chunkArr(exportRows, limit);
     const N = chunks.length;
-    const origName = (tplData.fileName || '3.0_Employee_bulk_create.xlsx').trim();
-    const dotIdx = origName.lastIndexOf('.');
-    const base = dotIdx > 0 ? origName.substring(0, dotIdx) : origName;
-    const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
-    const colCountAll = outHeaders.length;
 
     for (let i = 0; i < N; i++) {
-      const rows = chunks[i];
-      const wb = XLSX.read(new Uint8Array(tplData.rawBuffer), {
-        type: 'array', cellStyles: true, cellDates: true, sheetStubs: true
-      });
-      const dataName = wb.SheetNames.find(n => /data.?entry/i.test(n)) || wb.SheetNames[0];
-      const ws = wb.Sheets[dataName];
-      if (!ws) { alert('Template missing DATA ENTRY sheet — cannot export.'); return; }
-
-      const range = ws['!ref']
-        ? XLSX.utils.decode_range(ws['!ref'])
-        : { s: { r: 0, c: 0 }, e: { r: 0, c: colCountAll - 1 } };
-      for (let r = 1; r <= range.e.r; r++) {
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const ref = XLSX.utils.encode_cell({ r, c });
-          if (ws[ref]) delete ws[ref];
-        }
+      // Each file patches the template's own zip (IMXlsxTemplate): only the
+      // DATA ENTRY rows change, so its dropdown validations survive — and an
+      // Update template's pre-filled employees are replaced by these rows.
+      let blob;
+      try {
+        blob = await IMXlsxTemplate.build({ rawBuffer: tplData.rawBuffer, headers: outHeaders, rows: chunks[i] });
+      } catch (err) {
+        alert('Could not write the file: ' + (err && err.message ? err.message : err));
+        return;
       }
-
-      const colCount = Math.max(range.e.c + 1, colCountAll);
-      rows.forEach((row, ri) => {
-        for (let c = 0; c < colCount; c++) {
-          const val = row[c];
-          if (val == null || val === '') continue;
-          ws[XLSX.utils.encode_cell({ r: ri + 1, c })] = { v: String(val), t: 's' };
-        }
-      });
-
-      ws['!ref'] = XLSX.utils.encode_range({
-        s: { r: 0, c: 0 },
-        e: { r: Math.max(0, rows.length), c: colCount - 1 }
-      });
-
-      const name = N === 1
-        ? base + ' — filled' + ext
-        : base + ' — filled (' + (i + 1) + ' of ' + N + ')' + ext;
-      XLSX.writeFile(wb, name, { cellStyles: true, bookSST: true });
+      // "Acme Farms - Employees - 2026-10-07 (1 of 3).xlsx" (see IMOutName in utils.js).
+      const name = IMOutName.fileName(target === 'update' ? 'Employees Update' : 'Employees', N === 1 ? '' : ' (' + (i + 1) + ' of ' + N + ')');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
       if (i < N - 1) await sleep(300);
     }
   }
@@ -1418,13 +1615,16 @@
   // ─── Reset ───
   function reset() {
     srcData = null; srcWb = null; srcFileName = ''; dbIndex = null; dbFileName = ''; dbCount = 0; tplData = null;
+    IMOutName.forget();
     esSmartFixMap = {};
     outHeaders = null; srcColForOut = null;
-    formattedRows = null; srcKept = null;
+    formattedRows = null; srcKept = null; baseRows = null; fromSrc = null; unmatched = [];
     dupConfident = []; dupPossible = [];
+    setTarget('create');
+    { const u = $('es-section-unmatched'); if (u) u.style.display = 'none'; }
     columnFills = {}; removedRows = new Set(); hasCellEdits = false;
     hlScan = null; hlState = { mode: 'off', keys: new Set() };
-    selCells = new Set(); selAnchor = null; previewOrder = [];
+    selCells = new Set(); selAnchor = null; previewOrder = []; pvMode = 'all'; pvColsOnly = false;
     { const b = $('es-sel-bar'); if (b) b.style.display = 'none'; }
     $('es-src-name').textContent = 'No file selected';
     $('es-db-name').textContent = 'No file selected';
@@ -1440,6 +1640,7 @@
     $('es-empty').style.display = '';
     $('es-run').disabled = true;
     $('es-export').disabled = true;
+    if (wb) wb.reset();
     if (window.IMDebug) IMDebug.refresh('employee-standardize');
   }
 
@@ -1464,10 +1665,11 @@
   function init() {
     if (initialized) return;
     initialized = true;
+    mountWorkbench();
     if (window.IMDebug) {
       IMDebug.register('employee-standardize', {
         label: 'Employee Standardize',
-        ready: () => !!(srcData && tplData && formattedRows && outHeaders),
+        ready: () => !!(tplData && formattedRows && outHeaders && (srcData || target === 'update')),
         collect: collectDebug
       });
       IMDebug.wire('es-debug', 'employee-standardize');
@@ -1487,6 +1689,20 @@
     });
     const batch = $('es-batch');
     if (batch) batch.addEventListener('input', () => { if (formattedRows) updateSummary(); });
+    // Create / Update. A template of the other kind can't be written as this
+    // one — its columns differ — so a mismatch asks for the right template.
+    document.querySelectorAll('input[name="es-target"]').forEach(r => r.addEventListener('change', e => {
+      if (tplData && tplData.kind && tplData.kind !== e.target.value) {
+        alert('The template loaded is a Bulk ' + (tplData.kind === 'update' ? 'Update' : 'Create') + ' template. Load the Bulk ' +
+          (e.target.value === 'update' ? 'Update template (Employee ID first, pre-filled with your employees)' : 'Create template') + ' to switch.');
+        setTarget(tplData.kind);
+        return;
+      }
+      setTarget(e.target.value);
+      formattedRows = null;
+      maybeRun();
+    }));
+    setTarget(target);
     $('es-run').addEventListener('click', runStandardize);
     $('es-export').addEventListener('click', () => { doExport(); });
     $('es-reset').addEventListener('click', reset);

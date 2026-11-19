@@ -66,15 +66,29 @@
   let formattedRows = null;    // [[...]] mapped + filled rows (canonical state)
   let manualFills = {};        // bulkColIdx → user-supplied value (re-applied after rebuilds)
   let removedRows = new Set(); // formattedRows indexes excluded from preview + export
-  let siteAddresses = {};      // site value → address string (reference only; survives re-renders)
+  let siteAddresses = {};      // new site → its own address ("street, city, ST zip"); survives re-renders
+  // Sites file — the new sites, built into a Sites upload next to this one (see "Sites file" below).
+  let siteTpl = null;          // the org's Sites template (parseTemplate); none → no Sites file
+  let siteFill = {};           // Sites column key (norm, no *) → value for every new site
+  let siteAddrAll = '';        // address for every new site
+  let siteAddrGroup = {};      // ranch (site name before " - ") → address
+  let siteEdits = {};          // "site|column key" → value typed in the Sites preview
+  let pvView = 'locations';    // which file the preview shows: 'locations' | 'sites'
+  let siteGrid = [];           // site names in the Sites preview's row order, for its edits
   let dateFill = { mm: '', dd: '', range: 'first' }; // year-only → full-date expansion
   let existingData = null;        // { keys: Set<siteName>, fileName, count } — locations already in PickTrace
+  let builtOnce = false;          // Format Sheet pressed — from then on a file swap rebuilds by itself
   let existingRowIdxs = new Set();// formattedRows indexes that already exist in PickTrace (dropped)
   let cropSplit = true;           // split " - Subvariety" out of Crop & Variety → Clone/Subvariety
   let nameOverrides = {};         // formattedRows index → renamed Name* (resolves collisions, sticky)
   let cellOverrides = {};         // "rowIdx|colIdx" → value — sticky per-cell edits from the editable preview (all columns EXCEPT Name*, which uses nameOverrides)
   let smartFixMap = {};           // "colIdx||UPPERVALUE" → canonical dropdown value — sticky bulk fixes the user applied from the Smart Fixes panel
-  let previewIssuesOnly = false;  // preview toggle: show only rows with an errored cell
+  let siteFillOk = new Set();     // "<first row>|<site>" of each Blank Site group you confirmed copying down
+  let siteGaps = [];              // Blank Site groups found on the last rebuild (see rebuildFormattedRows)
+  let smartFixOpts = new Map();   // colIdx → allowed values, for the Smart Fix pickers opened on click
+  let pvMode = 'all';             // preview rows: 'all' | 'fix' | 'chg' | 'any' (IMWorkbench.filterBar)
+  let pvColsOnly = false;         // preview: only the columns with a flag or a change
+  let pvFocus = null;             // { ci } — the preview shows just the rows with this column empty
   let collisionKeys = new Set();  // locKeys flagged as collisions (set in rebuildFormattedRows)
   let existingTakenKeys = new Set(); // locKeys whose name is already used by a DIFFERENT block in PickTrace
   let mergeDupes = true;          // collapse duplicate Site + Name rows into one location
@@ -218,7 +232,7 @@
   // Bulk columns that carry a template dropdown (indices into the active schema).
   function dropdownColIdxs() {
     const bulkHeaders = activeSchemaHeaders();
-    return bulkHeaders.map((h, i) => dropdownValuesFor(h) ? i : -1).filter(i => i >= 0);
+    return bulkHeaders.map((h, i) => dropdownValuesFor(h) && restricted(h) ? i : -1).filter(i => i >= 0);
   }
   // Scan every dropdown-backed column for off-list values. Each becomes one row
   // in the Smart Fixes panel with a dropdown to choose the target value —
@@ -262,7 +276,105 @@
     if (!tplData || !tplData.dropdowns) return null;
     const key = norm(bulkHeader).replace(/\*+$/, '').trim();
     const set = tplData.dropdowns.get(key);
+    // New sites going out in the Sites file count as listed: uploaded first,
+    // they exist by the time the Locations file loads.
+    // Sites the existing export shows are real too, listed or not.
+    if (key === 'site' && (siteFileOn() || existingData)) {
+      const all = [...knownSites()].concat(siteFileOn() ? [...newSitesMap().keys()] : []);
+      return all.length ? all : null;
+    }
     return set && set.size ? [...set] : null;
+  }
+
+  // A column the template's DROP-DOWN INPUTS names but leaves empty: the org
+  // has none set up yet (Rootstock, Clone/Subvariety, …), and PickTrace only
+  // takes listed values there — anything in it must be created first. Site
+  // and Crop & Variety have flows of their own (Sites file, Build in PickTrace).
+  function emptyListFor(bulkHeader) {
+    if (!tplData || !tplData.listed) return false;
+    const key = norm(bulkHeader).replace(/\*+$/, '').trim();
+    if (key === 'site' || key === 'crop & variety') return false;
+    return restricted(bulkHeader) && tplData.listed.has(key) && !(tplData.dropdowns.get(key) || new Set()).size;
+  }
+
+  // ─── Which columns PickTrace restricts ───
+  // The template puts a list validation on the DATA ENTRY columns that only
+  // take listed values (Site, Location Type, Crop & Variety, Production
+  // Status, Training Style, Trellis Type, Row Direction, Organic Status). Its
+  // DROP-DOWN INPUTS sheet also lists free-text columns — Rootstock,
+  // Clone/Subvariety, Location Group, Mulch Type… — with the values the org
+  // already uses; those take any value. Site and Crop & Variety are always
+  // checked; when the file can't say (no validations read), every listed
+  // column counts as restricted.
+  function restricted(bulkHeader) {
+    const key = norm(bulkHeader).replace(/\*+$/, '').trim();
+    if (key === 'site' || key === 'crop & variety') return true;
+    return !(tplData && tplData.restricted) || tplData.restricted.has(key);
+  }
+  // SheetJS doesn't read validations, so they come from the sheet XML: the
+  // worksheet whose list validations point at the DROP-DOWN INPUTS sheet.
+  // → Set of header keys, or null when there's nothing to read.
+  async function readRestricted(buf, headers) {
+    if (!window.IMXlsxTemplate) return null;
+    try {
+      for (const e of IMXlsxTemplate.zipRead(buf)) {
+        if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(e.name)) continue;
+        const xml = await IMXlsxTemplate.entryText(e);
+        if (!/<dataValidation\b/.test(xml) || !/DROP-?DOWN/i.test(xml)) continue;
+        const set = new Set();
+        (xml.match(/<dataValidation\b[^>]*>/g) || []).forEach(tag => {
+          if (!/type="list"/.test(tag)) return;
+          ((tag.match(/sqref="([^"]*)"/) || [])[1] || '').split(/\s+/).forEach(ref => {
+            const col = (ref.match(/^([A-Z]+)/) || [])[1];
+            const h = col ? headers[XLSX.utils.decode_col(col)] : '';
+            if (h) set.add(norm(h).replace(/\*+$/, '').trim());
+          });
+        });
+        return set.size ? set : null;
+      }
+    } catch (err) { /* unreadable — fall back to every listed column */ }
+    return null;
+  }
+  // Column index → Map(value → rows) for those columns, case variants as one.
+  function unlistedValues() {
+    const out = new Map();
+    if (!formattedRows || !tplData) return out;
+    activeSchemaHeaders().forEach((h, ci) => {
+      if (!emptyListFor(h)) return;
+      const m = new Map(), first = new Map();
+      formattedRows.forEach((r, ri) => {
+        if (excluded(ri)) return;
+        const v = String(r[ci] == null ? '' : r[ci]).trim();
+        if (!v) return;
+        const k = first.get(v.toUpperCase()) || v;
+        first.set(v.toUpperCase(), k);
+        m.set(k, (m.get(k) || 0) + 1);
+      });
+      if (m.size) out.set(ci, m);
+    });
+    return out;
+  }
+  function renderListsCreate() {
+    const sec = $('ts-section-lists-create');
+    if (!sec) return 0;
+    const lists = unlistedValues();
+    if (!lists.size) { sec.style.display = 'none'; return 0; }
+    sec.style.display = '';
+    const H = activeSchemaHeaders();
+    let n = 0, html = '<thead><tr><th>Column</th><th>Value</th><th>Row count</th></tr></thead><tbody>';
+    lists.forEach((m, ci) => {
+      const vals = [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      n += vals.length;
+      vals.forEach(([v, c], k) => {
+        html += '<tr>' + (k === 0 ? '<td rowspan="' + vals.length + '" data-copy="' + escHtml(H[ci]) + '"><b>' + escHtml(H[ci]) + '</b>' +
+          '<div class="text-muted small">' + vals.length + ' value' + (vals.length === 1 ? '' : 's') + ' to create</div>' +
+          '<button type="button" class="btn btn-ghost btn-sm ts-list-drop" data-ci="' + ci + '" title="Export this column empty instead (Column Mapping can bring it back)">Leave column out</button></td>' : '') +
+          '<td class="ts-copy-cell" title="Click to copy">' + escHtml(v) + '</td><td>' + c + '</td></tr>';
+      });
+    });
+    $('ts-lists-create-title').textContent = 'Lists your org hasn’t set up (' + n + ' value' + (n === 1 ? '' : 's') + ')';
+    $('ts-lists-create-table').innerHTML = html + '</tbody>';
+    return n;
   }
 
   // Pane visibility is owned by showBuild() in index.html's router — this
@@ -322,13 +434,21 @@
 
   // Slice a sheet's AOA into clean { headers, rows } using the auto-detected
   // header row. Trims metadata above and instruction rows below.
+  // A "(Detailed Version)" tab names Site in the banner row and carries
+  // metadata rows under the header — IMSheetLayout (utils.js) undoes both.
+  // The data ends at the template's "*add/delete rows as necessary" footer;
+  // what follows is PickTrace's contact block, not locations.
+  const FOOTER_RE = /^\*?\s*add\s*\/\s*delete rows/i;
+  // `rowAt[i]` is data row i's index in `aoa` (for reading its cell styles).
   function sliceSheetAoa(aoa) {
     const hIdx = detectHeaderRow(aoa);
-    const headers = (aoa[hIdx] || []).map(h => String(h == null ? '' : h).trim());
-    const rows = aoa.slice(hIdx + 1)
-      .filter(r => !isInstructionRow(r))
-      .map(r => r.map(c => c == null ? '' : String(c).trim()));
-    return { headers, rows, headerRow: hIdx };
+    const lay = IMSheetLayout.resolve(aoa, hIdx);
+    let body = aoa.slice(hIdx + 1).map((r, k) => ({ r, at: hIdx + 1 + k }));
+    const end = body.findIndex(x => (x.r || []).some(c => FOOTER_RE.test(String(c == null ? '' : c).trim())));
+    if (end >= 0) body = body.slice(0, end);
+    const kept = body.filter(x => !isInstructionRow(x.r) && !lay.isMeta(x.r));
+    const rows = kept.map(x => x.r.map(cellText));
+    return { headers: lay.headers, rows, headerRow: hIdx, rowAt: kept.map(x => x.at) };
   }
 
   // ─── Sheet picker for multi-sheet workbooks ───
@@ -386,24 +506,41 @@
       const r = new FileReader();
       r.onload = e => {
         try {
-          const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+          const buf = new Uint8Array(e.target.result);
+          const wb = XLSX.read(buf, { type: 'array' });
+          // A second read with cell styles, only if a sheet carries column
+          // instructions (column-directives.js) — to see its red columns.
+          let styled;
+          const styledWb = () => {
+            if (styled === undefined) {
+              try { styled = XLSX.read(buf, { type: 'array', cellStyles: true }); } catch (err) { styled = null; }
+            }
+            return styled;
+          };
           const sheets = wb.SheetNames.map(n => {
             const aoa = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' });
-            const filtered = aoa.filter(row => row && row.some(c => c != null && String(c).trim() !== ''));
+            const orig = [];
+            const filtered = aoa.filter((row, i) => {
+              const keep = row && row.some(c => c != null && String(c).trim() !== '');
+              if (keep) orig.push(i);
+              return keep;
+            });
             if (!filtered.length) return null;
             const sliced = sliceSheetAoa(filtered);
             if (!sliced.headers.filter(h => h).length) return null;
-            return {
+            const sheet = {
               name: n,
               headers: sliced.headers,
               rows: sliced.rows,
               headerRow: sliced.headerRow
             };
+            return IMDirectives.attach(sheet, { styledWb, sheetName: n, ws: wb.Sheets[n],
+              headerAt: orig[sliced.headerRow], rowAt: sliced.rowAt.map(at => orig[at]) });
           }).filter(Boolean);
           if (!sheets.length) return reject(new Error('No sheets with usable headers.'));
           const finish = s => resolve({
             headers: s.headers, rows: s.rows, fileName: file.name,
-            sheetName: s.name, headerRow: s.headerRow
+            sheetName: s.name, headerRow: s.headerRow, directives: s.directives || null
           });
           if (sheets.length === 1) return finish(sheets[0]);
           pickSheet(sheets, file.name).then(finish).catch(reject);
@@ -423,9 +560,11 @@
     const dataAoa = XLSX.utils.sheet_to_json(dataWs, { header: 1, defval: '' });
     const headers = dataAoa.length ? dataAoa[0].map(h => String(h || '').trim()) : [];
     const dropdowns = new Map();
+    const listed = new Set(); // every list the sheet names, empty or not
     if (dropName) {
       const dropWs = wb.Sheets[dropName];
       const raw = XLSX.utils.sheet_to_json(dropWs, { header: 1, defval: '' });
+      (raw[0] || []).forEach(h => { if (String(h || '').trim()) listed.add(norm(String(h).trim())); });
       if (raw.length >= 2) {
         const dh = raw[0].map(h => String(h || '').trim());
         dh.forEach((h, ci) => {
@@ -440,7 +579,7 @@
         });
       }
     }
-    return { headers, dropdowns, fileName, rawBuffer: buf, sheetNames: wb.SheetNames };
+    return { headers, dropdowns, listed, fileName, rawBuffer: buf, sheetNames: wb.SheetNames };
   }
 
   // ─── Template identification ───
@@ -491,7 +630,15 @@
     // Clone/Subvariety must NOT pick up "Variety". Specific aliases ensure
     // Phase 3 catches "Clone" first; STRICT_HEADERS below blocks Phase 4
     // from ever matching Variety against this column via substring.
-    'clone/subvariety':   ['clone','subvariety','sub variety','sub_variety','sub-variety']
+    'clone/subvariety':   ['clone','subvariety','sub variety','sub_variety','sub-variety'],
+    // Implementation Data Template names (the Detailed Version spells Mulch
+    // "Multch" and calls the custom fields "Loc Data").
+    'mulch type':         ['mulch type','multch type','mulch'],
+    'custom data 1':      ['loc data 1'],
+    'custom data 2':      ['loc data 2'],
+    'custom data 3':      ['loc data 3'],
+    'production status':  ['producing'],
+    'production start':   ['producing start year','production start year']
   };
 
   // Bulk headers where the substring fallback (Phase 4) is unsafe — a source
@@ -503,6 +650,22 @@
   // "Plant Seed Seller", and "plant-seed_seller" all collapse to "plantseedseller".
   const normLoose = h => norm(h).replace(/[^a-z0-9]/g, '');
 
+  // Names a client-annotated source may use for a field that the aliases
+  // above deliberately leave out (see column-directives.js). Consulted only
+  // for a column instruction, never for an ordinary header.
+  const DIRECTIVE_EXTRAS = { 'clone/subvariety': ['crop sub variety', 'crop subvariety'] };
+
+  // Mapping for the loaded source: its column instructions first when it
+  // carries them, otherwise the plain header auto-map.
+  function mapSource(bulkHeaders) {
+    if (!IMDirectives.on(srcData)) return autoMap(bulkHeaders, srcData.headers);
+    return IMDirectives.buildMapping({
+      src: srcData, bulkHeaders, srcHeaders: srcData.headers, autoMap,
+      aliases: ALIASES, extras: DIRECTIVE_EXTRAS, prefix: 'location',
+      hasData: c => srcData.rows.some(r => r && r[c] != null && String(r[c]).trim() !== '')
+    }).mapping;
+  }
+
   function autoMap(bulkHeaders, srcHeaders) {
     const srcIdx = {};         // norm(header) → idx (case+trim+lowercase only)
     const srcIdxLoose = {};    // normLoose(header) → idx (alphanumeric only)
@@ -511,6 +674,15 @@
       const kLoose = normLoose(h);
       if (k && srcIdx[k] == null) srcIdx[k] = i;
       if (kLoose && srcIdxLoose[kLoose] == null) srcIdxLoose[kLoose] = i;
+    });
+    // A header carrying a bracketed note ("Plant Quantity (Tree/Vine Quantity)")
+    // is also indexed by the words outside the brackets — consulted after the
+    // exact and loose matches, alongside the aliases.
+    const srcIdxBare = {};
+    srcHeaders.forEach((h, i) => {
+      if (!/\(/.test(String(h || ''))) return;
+      const kb = normLoose(String(h).replace(/\([^)]*\)/g, ''));
+      if (kb && srcIdxBare[kb] == null) srcIdxBare[kb] = i;
     });
     const out = {};
     bulkHeaders.forEach((bh, bi) => {
@@ -525,7 +697,7 @@
       //    "Crop & Variety*" ↔ "Crop and Variety", "Row Spacing, in." ↔ "Row Spacing in".
       if (srcIdxLoose[bnLoose] != null) { out[bi] = srcIdxLoose[bnLoose]; return; }
       if (srcIdxLoose[bnLoosePlain] != null) { out[bi] = srcIdxLoose[bnLoosePlain]; return; }
-      // 3. Aliases.
+      // 3. Aliases — and both, against bracket-stripped source headers.
       const aliases = ALIASES[bn] || ALIASES[bnPlain];
       if (aliases) {
         for (const a of aliases) {
@@ -533,6 +705,9 @@
           const aLoose = normLoose(a);
           if (srcIdxLoose[aLoose] != null) { out[bi] = srcIdxLoose[aLoose]; return; }
         }
+      }
+      for (const k of [bnLoosePlain].concat((aliases || []).map(normLoose))) {
+        if (srcIdxBare[k] != null) { out[bi] = srcIdxBare[k]; return; }
       }
       // Strict bulk headers don't fall through to substring matching — too
       // many false positives ("variety" matching "clonesubvariety", etc.).
@@ -561,19 +736,31 @@
     const tbl = $('ts-mapping-table');
     sec.style.display = '';
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    IMDirectives.renderBanner(sec, srcData, bulkHeaders, runFormat);
     const srcOpts = ['<option value="-1">— (leave empty) —</option>']
       .concat(srcData.headers.map((h, i) => '<option value="' + i + '">' + escHtml(h) + '</option>'))
       .join('');
+    // Separate Crop Type + Variety columns are joined into Crop & Variety by
+    // buildFormattedRowsRaw, whatever that row's dropdown says — so the row
+    // says so, with a joined sample, instead of showing a dropdown that does nothing.
+    const cropI = findSrcColByNames(['crop', 'crop type', 'crop name', 'plant_name', 'plant name']);
+    const varI = findSrcColByNames(['variety', 'varietal'], ['clone', 'subvariety', 'sub variety', 'sub-variety']);
+    const joined = cropI >= 0 && varI >= 0 && cropI !== varI;
+    const cell = (r, i) => String(r && r[i] != null ? r[i] : '').trim();
     let html = '<thead><tr><th>Template column</th><th>Source column</th><th>Sample value</th><th></th></tr></thead><tbody>';
     bulkHeaders.forEach((bh, bi) => {
       const required = /\*$/.test(bh);
       const sel = mapping[bi] != null ? mapping[bi] : -1;
-      const sample = sel >= 0 && srcData.rows[0] ? String(srcData.rows[0][sel] || '').trim() : '';
+      const isCv = joined && bh === 'Crop & Variety*';
+      const r0 = srcData.rows[0];
+      const sample = isCv ? [cell(r0, cropI), cell(r0, varI)].filter(Boolean).join('-')
+        : sel >= 0 && r0 ? cell(r0, sel) : '';
       html += '<tr>' +
         '<td>' + (required ? '<b>' + escHtml(bh) + '</b>' : escHtml(bh)) + '</td>' +
-        '<td><select class="ts-map-select input-field" data-bi="' + bi + '" style="min-width:240px;">' +
-          srcOpts.replace('value="' + sel + '"', 'value="' + sel + '" selected') +
-        '</select></td>' +
+        (isCv
+          ? '<td><span class="ts-map-joined">' + escHtml(srcData.headers[cropI]) + ' + ' + escHtml(srcData.headers[varI]) + ' (joined)</span></td>'
+          : '<td><select class="ts-map-select input-field" data-bi="' + bi + '" style="min-width:240px;">' +
+            srcOpts.replace('value="' + sel + '"', 'value="' + sel + '" selected') + '</select></td>') +
         '<td><span class="text-muted small">' + escHtml(sample.slice(0, 60)) + '</span></td>' +
         '<td><button class="btn btn-ghost btn-sm ts-map-clear" data-bi="' + bi + '" title="Clear all values in this column (header stays)">Clear</button></td>' +
         '</tr>';
@@ -611,6 +798,7 @@
     srcData.headers.forEach((h, i) => {
       const headerLower = String(h || '').toLowerCase();
       if (skip.some(s => headerLower.includes(s))) return; // never consider excluded headers
+      if (IMDirectives.ignoredCol(srcData, i)) return;     // the client marked it to skip
       const k = norm(h);
       const kLoose = normLoose(h);
       if (k && idx[k] == null) idx[k] = i;
@@ -638,6 +826,12 @@
     const synthesizeCv = cvIdx >= 0 && cropSrcIdx >= 0 && varSrcIdx >= 0 && cropSrcIdx !== varSrcIdx;
     const dateIdxs = dateColIdxs();
     const numIdxs = numericColIdxs();
+    // The Detailed Version's "Producing" values (Full Production / Not Full
+    // Production / No) → the dropdown's Full / Partial / None — the same rule
+    // Bulk Template Standardize applies (dtInternals.autoMatch).
+    const psIdx = bulkHeaders.indexOf('Production Status');
+    const psList = psIdx >= 0 ? dropdownValuesFor('Production Status') : null;
+    const dt = window.dtInternals || null;
 
     return srcData.rows.map(srcRow => {
       const out = new Array(bulkHeaders.length).fill('');
@@ -661,6 +855,10 @@
       // Convert Excel date serials in date columns to YYYY-MM-DD so dates read
       // as dates, not raw numbers (e.g. 46213 → 2026-07-10).
       dateIdxs.forEach(ci => { if (out[ci]) out[ci] = coerceExcelDate(out[ci]); });
+      if (psList && dt && out[psIdx] && !psList.some(o => o.toUpperCase() === out[psIdx].toUpperCase())) {
+        const to = dt.autoMatch('Production Status', out[psIdx], psList);
+        if (to) out[psIdx] = to;
+      }
       if (target === 'update' && isArchivedIdx >= 0 && !out[isArchivedIdx]) {
         out[isArchivedIdx] = 'FALSE';
       }
@@ -675,6 +873,29 @@
   function rebuildFormattedRows() {
     formattedRows = buildFormattedRowsRaw();
     if (!formattedRows) return;
+    // Blank Site under a row that has one: the client wrote each site once for
+    // its group. Offered in Smart Fixes and copied down only for the groups
+    // you confirm — before column fills, so a confirmed site wins over a
+    // blanket fill. Keyed by first row + site, so a remap never re-applies an
+    // old confirmation to a different group.
+    siteGaps = [];
+    const heads = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
+    const siteI = heads.indexOf('Site*'), nameI = heads.indexOf('Name*');
+    if (siteI >= 0) {
+      let last = '', cur = null;
+      formattedRows.forEach((r, ri) => {
+        if (r[siteI]) { last = r[siteI]; cur = null; return; }
+        if (!last) return;
+        if (!cur) { cur = { start: ri, site: last, rows: [], names: [] }; siteGaps.push(cur); }
+        cur.rows.push(ri);
+        if (nameI >= 0 && r[nameI] && cur.names.length < 3) cur.names.push(r[nameI]);
+      });
+      siteGaps.forEach(g => {
+        g.id = g.start + '|' + g.site;
+        g.applied = siteFillOk.has(g.id);
+        if (g.applied) g.rows.forEach(ri => { formattedRows[ri][siteI] = g.site; });
+      });
+    }
     Object.entries(manualFills).forEach(([idx, val]) => {
       const i = +idx;
       formattedRows.forEach(r => { if (!r[i]) r[i] = val; });
@@ -768,7 +989,9 @@
     // If the existing file has no Crop column we fall back to Site + Name, but
     // never auto-drop a within-file collision (we can't tell the blocks apart).
     existingRowIdxs = new Set();
-    if (existingData && existingData.keys && existingData.keys.size && siteIdx >= 0 && nameIdx >= 0) {
+    // A Bulk Update is made of locations PickTrace already has, so nothing is
+    // dropped for being there (nor flagged below for taking its name).
+    if (target !== 'update' && existingData && existingData.keys && existingData.keys.size && siteIdx >= 0 && nameIdx >= 0) {
       const useBlock = !!(existingData.hasCrop && existingData.blockKeys);
       formattedRows.forEach((r, ri) => {
         if (removedRows.has(ri) || mergedRowIdxs.has(ri)) return;
@@ -795,7 +1018,7 @@
         if (!s || !n) return;
         const kk = rowNameKey(ri);
         counts.set(kk, (counts.get(kk) || 0) + 1);
-        if (existingData && existingData.keys && existingData.keys.has(kk)) {
+        if (target !== 'update' && existingData && existingData.keys && existingData.keys.has(kk)) {
           collisionKeys.add(kk);
           existingTakenKeys.add(kk);
         }
@@ -910,6 +1133,8 @@
     const sec = $('ts-section-preview');
     const tbl = $('ts-preview-table');
     sec.style.display = '';
+    if (pvView === 'sites' && !(siteFileOn() && newSitesMap().size)) pvView = 'locations';
+    if (pvView === 'sites') { renderSitesPreview(sec, tbl); updateExportButton(); return; }
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
     const collisionIdxs = collisionRowSet();
     const nameColIdx = bulkHeaders.indexOf('Name*');
@@ -922,160 +1147,239 @@
       if (!vals) return null;
       return { vals, lower: new Set(vals.map(v => String(v).toLowerCase().trim())) };
     });
-    let html = '<thead><tr>';
-    // First column is the row-action column (X to remove the row).
-    html += '<th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
-    bulkHeaders.forEach((h, i) => {
-      const req = /\*$/.test(h);
+    // What the preview flags in a cell — red: empty required or a name
+    // collision; amber: past Start Date, year-only date, off-list dropdown value.
+    const RED = '#fee2e2', AMBER = '#fef3c7';
+    const unlisted = new Set(bulkHeaders.map((h, i) => emptyListFor(h) ? i : -1).filter(i => i >= 0));
+    const flagOf = (ri, i) => {
+      const val = formattedRows[ri][i] == null ? '' : String(formattedRows[ri][i]);
+      const h = bulkHeaders[i], d = colDrop[i];
+      if (val && unlisted.has(i)) return { bg: AMBER, title: 'Your org has no ' + h + ' options set up yet — create "' + val + '" in PickTrace first (see Build in PickTrace), or leave the column out.' };
+      if (/\*$/.test(h) && !val) return { bg: RED, title: 'Required — must be filled before export' };
+      if (i === startDateIdx && val && isDateBeforeToday(val)) return { bg: AMBER, title: 'Start Date must be today (' + todayYMD() + ') or later' };
+      if (dateIdxSet.has(i) && isYearOnlyDate(val)) return { bg: AMBER, title: 'Year only — set a month/day in Year-Only Dates above to make this a full YYYY-MM-DD date' };
+      if (i === nameColIdx && collisionIdxs.has(ri)) return { bg: RED, title: 'Name collision — another block at this Site shares this Name. Rename it here (or in Name Collisions above), or PickTrace will drop one.' };
+      if (d && val && restricted(h) && !d.lower.has(val.toLowerCase().trim())) return { bg: AMBER, title: 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is (a new value to create in PickTrace), or pick a listed value.' };
+      return null;
+    };
+    // Every kept row with the columns it has flagged (f) and changed (c), for
+    // the filter's counts and "only columns with something to see".
+    const allVisible = formattedRows.map((_, i) => i).filter(i => !excluded(i));
+    const info = new Map();
+    const counts = { all: allVisible.length, fix: 0, chg: 0, any: 0 };
+    allVisible.forEach(ri => {
+      const f = [], c = [];
+      for (let i = 0; i < bulkHeaders.length; i++) {
+        if (flagOf(ri, i)) f.push(i);
+        if (changeOf(ri, i)) c.push(i);
+      }
+      info.set(ri, { f, c });
+      if (f.length) counts.fix++;
+      if (c.length) counts.chg++;
+      if (f.length || c.length) counts.any++;
+    });
+    if (pvFocus && pvFocus.ci >= bulkHeaders.length) pvFocus = null;
+    const shown = pvFocus
+      ? allVisible.filter(ri => !formattedRows[ri][pvFocus.ci])
+      : allVisible.filter(ri => IMWorkbench.rowMatch(pvMode, info.get(ri).f.length, info.get(ri).c.length));
+    let cols = bulkHeaders.map((_, i) => i);
+    if (pvColsOnly) {
+      const keep = new Set([bulkHeaders.indexOf('Site*'), nameColIdx].filter(i => i >= 0));
+      if (pvFocus) keep.add(pvFocus.ci);
+      shown.forEach(ri => { const x = info.get(ri); x.f.forEach(i => keep.add(i)); x.c.forEach(i => keep.add(i)); });
+      cols = cols.filter(i => keep.has(i));
+    }
+    // First column is the row-action column (× to remove the row).
+    let head = '<thead><tr><th style="width:28px;text-align:center;color:#9ca3af;">&nbsp;</th>';
+    cols.forEach(i => {
+      const h = bulkHeaders[i], req = /\*$/.test(h);
       const listed = colDrop[i] ? ' title="Dropdown from template — pick a value or type your own"' : '';
-      html += '<th' + (req ? ' style="color:#dc2626;"' : '') + listed + '>' + escHtml(h) +
+      head += '<th' + (req ? ' style="color:#dc2626;"' : '') + listed + '>' + escHtml(h) +
         (colDrop[i] ? ' <span class="ts-col-listed" title="Has a template dropdown">&#9662;</span>' : '') + '</th>';
     });
-    html += '</tr></thead><tbody>';
-    // A row "needs attention" if any cell would be flagged in the preview:
-    // empty required, off-list dropdown value, name collision, past Start Date,
-    // or a year-only date.
-    const rowHasIssue = ri => {
+    head += '</tr></thead>';
+    const rowHtml = ri => {
       const row = formattedRows[ri];
-      for (let i = 0; i < bulkHeaders.length; i++) {
-        const val = row[i] == null ? '' : String(row[i]);
-        if (/\*$/.test(bulkHeaders[i]) && !val) return true;
-        if (i === startDateIdx && val && isDateBeforeToday(val)) return true;
-        if (dateIdxSet.has(i) && isYearOnlyDate(val)) return true;
-        if (i === nameColIdx && collisionIdxs.has(ri)) return true;
-        const d = colDrop[i];
-        if (d && val && !d.lower.has(val.toLowerCase().trim())) return true;
-      }
-      return false;
-    };
-    const allVisible = formattedRows.map((_, i) => i).filter(i => !excluded(i));
-    const issueCount = allVisible.filter(rowHasIssue).length;
-    if (previewIssuesOnly && !issueCount) previewIssuesOnly = false; // nothing to filter to
-    const visibleRowIdxs = previewIssuesOnly ? allVisible.filter(rowHasIssue) : allVisible;
-    // No cap in "needs attention" mode (safety ceiling 2000); 50 in normal mode.
-    const CAP = previewIssuesOnly ? 2000 : 50;
-    const limit = Math.min(visibleRowIdxs.length, CAP);
-    for (let r = 0; r < limit; r++) {
-      const ri = visibleRowIdxs[r];
-      const row = formattedRows[ri];
-      html += '<tr>';
-      html += '<td style="text-align:center;padding:0;">' +
+      let html = '<tr><td style="text-align:center;padding:0;">' +
         '<button class="ts-row-remove" data-ri="' + ri + '" title="Remove this row from preview + export" ' +
         'style="all:unset;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:2px 6px;">&times;</button>' +
         '</td>';
-      bulkHeaders.forEach((h, i) => {
-        const req = /\*$/.test(h);
+      cols.forEach(i => {
         const val = row[i] == null ? '' : String(row[i]);
-        const empty = !val;
-        const d = colDrop[i];
-        const inList = !!(d && val && d.lower.has(val.toLowerCase().trim()));
-        let bg = '', title = '';
-        if (req && empty) { bg = '#fee2e2'; title = 'Required — must be filled before export'; }
-        else if (i === startDateIdx && val && isDateBeforeToday(val)) {
-          bg = '#fef3c7'; title = 'Start Date must be today (' + todayYMD() + ') or later';
-        } else if (dateIdxSet.has(i) && isYearOnlyDate(val)) {
-          bg = '#fef3c7'; title = 'Year only — set a month/day in Year-Only Dates above to make this a full YYYY-MM-DD date';
-        } else if (i === nameColIdx && collisionIdxs.has(ri)) {
-          bg = '#fee2e2'; title = 'Name collision — another block at this Site shares this Name. Rename it here (or in Name Collisions above), or PickTrace will drop one.';
-        } else if (d && val && !inList) {
-          bg = '#fef3c7'; title = 'Off-list — "' + val + '" isn’t in the template dropdown for ' + h + '. Kept as-is (a new value to create in PickTrace), or pick a listed value.';
-        }
-        const cellStyle = bg ? ' style="background:' + bg + ';"' : '';
-        const fieldColor = bg ? ('color:' + (bg === '#fee2e2' ? '#7f1d1d' : '#7c2d12') + ';') : '';
+        const d = colDrop[i], flag = flagOf(ri, i);
+        let title = flag ? flag.title : '';
+        const cellStyle = flag ? ' style="background:' + flag.bg + ';"' : '';
+        const fieldColor = flag ? ('color:' + (flag.bg === RED ? '#7f1d1d' : '#7c2d12') + ';') : '';
+        const note = changeOf(ri, i);
+        if (note) title = title ? title + '\n' + note : note;
+        const tdOpen = '<td class="ts-cell' + (note ? ' is-chg' : '') + '"' + cellStyle + '>';
         if (d) {
-          // Real <select> combo: always shows the full template list; keeps the
-          // current off-list value as a "(current)" option; "Type custom…" swaps
-          // the cell to a free-text input for a brand-new value.
-          let opts = '<option value=""' + (empty ? ' selected' : '') + '>— blank —</option>';
-          if (val && !inList) opts += '<option value="' + escHtml(val) + '" selected>' + escHtml(val) + '  (current)</option>';
-          d.vals.forEach(v => {
-            const s = (inList && v.toLowerCase().trim() === val.toLowerCase().trim()) ? ' selected' : '';
-            opts += '<option value="' + escHtml(v) + '"' + s + '>' + escHtml(v) + '</option>';
-          });
-          opts += '<option value="__ts_custom__">✎ Type custom…</option>';
-          html += '<td class="ts-cell"' + cellStyle + '>' +
-            '<select class="ts-cell-select" data-ri="' + ri + '" data-ci="' + i + '"' +
+          // A dropdown cell is a light button until clicked; then it becomes
+          // the full template-list <select> (current off-list value kept as a
+          // "(current)" option, "Type custom…" for a brand-new value) — see
+          // IMWorkbench.wirePicks. One full <select> per cell froze big files.
+          html += tdOpen + IMWorkbench.pickButton(val, ' data-ri="' + ri + '" data-ci="' + i + '"' +
             (title ? ' title="' + escHtml(title) + '"' : '') +
-            (fieldColor ? ' style="' + fieldColor + '"' : '') + '>' + opts + '</select>' +
-            '</td>';
+            (fieldColor ? ' style="' + fieldColor + '"' : '')) + '</td>';
         } else {
-          html += '<td class="ts-cell"' + cellStyle + '>' +
-            '<input class="ts-cell-input" type="text" data-ri="' + ri + '" data-ci="' + i + '"' +
+          // Text until clicked / tabbed to, then an input (IMWorkbench.wireTextCells).
+          html += tdOpen + IMWorkbench.textCell(val, ' data-ri="' + ri + '" data-ci="' + i + '"' +
             (title ? ' title="' + escHtml(title) + '"' : '') +
-            (fieldColor ? ' style="' + fieldColor + '"' : '') +
-            ' value="' + escHtml(val) + '">' +
-            '</td>';
+            (fieldColor ? ' style="' + fieldColor + '"' : '')) + '</td>';
         }
       });
-      html += '</tr>';
-    }
-    html += '</tbody>';
-    tbl.innerHTML = html;
+      return html + '</tr>';
+    };
+    const widths = [28].concat(cols.map(i => IMWorkbench.fitWidth(bulkHeaders[i], shown.map(ri => formattedRows[ri][i]))));
+    IMWorkbench.rows(tbl, { head: head, ids: shown, row: rowHtml, cols: cols.length + 1, widths: widths,
+      keys: [null].concat(cols.map(i => 'loc:' + bulkHeaders[i])), cell: (ri, p) => formattedRows[ri][cols[p - 1]],
+      empty: pvFocus ? 'No row is missing ' + bulkHeaders[pvFocus.ci] + ' any more ✓' :
+        pvMode === 'fix' ? 'No row needs a fix ✓' : 'Nothing here has been changed.' });
+    wirePreview(sec, tbl);
     const hint = sec.querySelector('.cmp-sites-hint');
-    // "Needs attention" toggle — lets the user see EVERY errored row (no cap),
-    // not just the first 50. Disabled when there are no issues.
-    const toggle = '<label class="ts-issues-toggle" style="display:inline-flex;align-items:center;gap:6px;margin-right:12px;font-weight:600;' +
-      (issueCount ? '' : 'opacity:.5;') + '">' +
-      '<input type="checkbox" id="ts-issues-only"' + (previewIssuesOnly ? ' checked' : '') + (issueCount ? '' : ' disabled') + '>' +
-      'Show only rows needing attention' + (issueCount ? ' (' + issueCount + ')' : ' (0)') + '</label>';
-    let hintText = toggle;
-    if (previewIssuesOnly) {
-      hintText += 'Showing ' + Math.min(limit, visibleRowIdxs.length) + ' of ' + issueCount + ' flagged row' + (issueCount === 1 ? '' : 's') +
-        (visibleRowIdxs.length > limit ? ' (capped at ' + limit + ')' : '') + '. ';
-    } else if (visibleRowIdxs.length > limit) {
-      hintText += 'Showing first ' + limit + ' of ' + visibleRowIdxs.length + ' rows. ';
-    }
-    hintText += 'Every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. ' +
-      'Red = empty required; amber = off-list / needs attention. Click <b>×</b> to drop a row.';
+    let hintText = viewPills() + IMWorkbench.filterBar({ mode: pvMode, counts: counts, colsOnly: pvColsOnly,
+      shownCols: cols.length, totalCols: bulkHeaders.length,
+      focus: pvFocus ? 'Rows with ' + bulkHeaders[pvFocus.ci] + ' empty (' + shown.length + ')' : '' });
+    hintText += '<span class="wb-filter-note">' + (shown.length === allVisible.length ? 'All ' + allVisible.length : shown.length + ' of ' + allVisible.length) +
+      ' rows · every cell is editable — <span class="ts-col-listed">&#9662;</span> columns are template dropdowns. Click <b>×</b> to drop a row.</span>';
     if (removedRows.size) {
-      hintText += ' &nbsp; <button class="btn btn-ghost btn-sm" id="ts-restore-rows">' +
+      hintText += ' <button class="btn btn-ghost btn-sm" id="ts-restore-rows">' +
         'Restore ' + removedRows.size + ' removed row' + (removedRows.size === 1 ? '' : 's') + '</button>';
     }
     hint.innerHTML = hintText;
-    const issuesOnly = $('ts-issues-only');
-    if (issuesOnly) issuesOnly.addEventListener('change', e => { previewIssuesOnly = !!e.target.checked; renderPreview(); });
-    tbl.querySelectorAll('.ts-row-remove').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const ri = +e.currentTarget.dataset.ri;
-        removedRows.add(ri);
-        renderPreview();
-        renderRequired();
-        renderSitesAndCvToCreate();
-        updateSummary();
+    updateExportButton();
+  }
+
+  // The preview's handlers — on the section (its filter bar, view switch and
+  // Restore are redrawn every render) and on the <table> (rows come and go as
+  // you scroll) — attached once. Cell edits go to whichever file is showing.
+  function wirePreview(sec, tbl) {
+    IMWorkbench.wirePicks(tbl, ci => pvView === 'sites' ? siteDropFor(ci) : dropdownValuesFor(activeSchemaHeaders()[ci]), '__ts_custom__');
+    IMWorkbench.wireTextCells(tbl);
+    if (!sec._tsFilterWired) {
+      sec._tsFilterWired = true;
+      sec.addEventListener('change', e => {
+        if (e.target.classList.contains('wb-rowfilter')) { pvMode = e.target.value; IMWorkbench.rowsTop(tbl); renderPreview(); }
+        else if (e.target.classList.contains('wb-colfilter')) { pvColsOnly = e.target.checked; renderPreview(); }
       });
-    });
-    const restoreBtn = $('ts-restore-rows');
-    if (restoreBtn) restoreBtn.addEventListener('click', () => {
-      removedRows.clear();
+      sec.addEventListener('click', e => {
+        const view = e.target.closest('[data-view]');
+        if (view) { pvView = view.dataset.view; pvFocus = null; IMWorkbench.rowsTop(tbl); renderPreview(); return; }
+        if (e.target.closest('.wb-focus-clear')) { pvFocus = null; IMWorkbench.rowsTop(tbl); renderPreview(); return; }
+        if (e.target.closest('#ts-restore-rows')) {
+          removedRows.clear();
+          renderPreview();
+          renderRequired();
+          renderSitesAndCvToCreate();
+          updateSummary();
+        }
+      });
+    }
+    if (tbl._tsCellWired) return;
+    tbl._tsCellWired = true;
+    tbl.addEventListener('click', e => {
+      const rm = e.target.closest('.ts-row-remove');
+      if (!rm) return;
+      e.stopPropagation();
+      removedRows.add(+rm.dataset.ri);
       renderPreview();
       renderRequired();
       renderSitesAndCvToCreate();
       updateSummary();
     });
-    // Editable-cell handlers, delegated on the persistent <table> so we attach
-    // them once (not once per cell) and they survive innerHTML re-renders.
-    if (!tbl._tsCellWired) {
-      tbl._tsCellWired = true;
-      tbl.addEventListener('change', e => {
-        const sel = e.target.closest('.ts-cell-select');
-        if (sel) {
-          const ri = +sel.dataset.ri, ci = +sel.dataset.ci;
-          // "Type custom…" swaps the cell to a free-text input in place; the real
-          // value gets committed by the input's own change event below.
-          if (sel.value === '__ts_custom__') { swapSelectToInput(sel, ri, ci); return; }
-          setCell(ri, ci, sel.value);
-          recomputeAfterEdit();
+    tbl.addEventListener('change', e => {
+      const el = e.target.closest('.ts-cell-select, .ts-cell-input');
+      if (!el) return;
+      const ri = +el.dataset.ri, ci = +el.dataset.ci;
+      if (pvView === 'sites') {
+        const s = siteGrid[ri];
+        if (s == null) return;
+        if (el.value === '__ts_custom__') {
+          const cur = (buildSiteFile().rows[ri] || [])[ci] || '';
+          el.closest('td').innerHTML = '<input class="ts-cell-input" type="text" data-ri="' + ri + '" data-ci="' + ci +
+            '" placeholder="Type a value…" value="' + escHtml(cur) + '">';
+          const inp = tbl.querySelector('input[data-ri="' + ri + '"][data-ci="' + ci + '"]');
+          if (inp) { inp.focus(); inp.select(); }
           return;
         }
-        const inp = e.target.closest('.ts-cell-input');
-        if (inp) {
-          setCell(+inp.dataset.ri, +inp.dataset.ci, inp.value);
-          recomputeAfterEdit();
-        }
-      });
+        siteEdits[s + '|' + siteKey(siteTpl.headers[ci])] = el.value;
+        refreshSites();
+        return;
+      }
+      // "Type custom…" swaps the cell to a free-text input in place; the real
+      // value gets committed by the input's own change event.
+      if (el.classList.contains('ts-cell-select') && el.value === '__ts_custom__') { swapSelectToInput(el, ri, ci); return; }
+      setCell(ri, ci, el.value);
+      recomputeAfterEdit();
+    });
+  }
+
+  // Locations | Sites — which file the preview shows, once there's a Sites file.
+  function viewPills() {
+    if (!siteFileOn()) return '';
+    const f = buildSiteFile();
+    if (!f.rows.length) return '';
+    const bad = f.rows.filter(r => f.headers.some((h, i) => /\*$/.test(h) && !r[i])).length;
+    const nLoc = formattedRows.filter((_, i) => !excluded(i)).length;
+    return '<span class="wb-views" role="group" aria-label="File shown">' +
+      '<button type="button" class="btn btn-sm ts-domain-pill' + (pvView === 'locations' ? ' ts-domain-active' : '') + '" data-view="locations">Locations <b>' + nLoc + '</b></button>' +
+      '<button type="button" class="btn btn-sm ts-domain-pill' + (pvView === 'sites' ? ' ts-domain-active' : '') + '" data-view="sites">Sites <b>' + f.rows.length + '</b>' +
+        (bad ? ' <span class="dt-pill-warn" title="' + bad + ' site' + (bad === 1 ? '' : 's') + ' still missing a required value">⚠ ' + bad + '</span>' : '') + '</button></span>';
+  }
+
+  // The Sites file in the preview: same grid, filter and widths as Locations.
+  // Name comes from the Locations Site column, so it's changed there, not here.
+  function renderSitesPreview(sec, tbl) {
+    const RED = '#fee2e2', AMBER = '#fef3c7';
+    const f = buildSiteFile(), H = f.headers;
+    siteGrid = f.names;
+    const lower = H.map((_, i) => { const l = siteDropFor(i); return l ? new Set(l.map(v => String(v).toLowerCase().trim())) : null; });
+    const flagOf = (si, i) => {
+      const v = f.rows[si][i] == null ? '' : String(f.rows[si][i]);
+      if (/\*$/.test(H[i]) && !v) return { bg: RED, title: 'Required — PickTrace rejects the site without it' };
+      if (lower[i] && v && !lower[i].has(v.toLowerCase().trim())) return { bg: AMBER, title: 'Off-list — "' + v + '" isn’t in the Sites template dropdown for ' + H[i] + '.' };
+      return null;
+    };
+    const filled = (si, i) => f.prov[si][i] && f.prov[si][i] !== 'name';
+    const all = f.rows.map((_, si) => si), info = new Map(), counts = { all: all.length, fix: 0, chg: 0, any: 0 };
+    all.forEach(si => {
+      const fl = [], c = [];
+      H.forEach((h, i) => { if (!h) return; if (flagOf(si, i)) fl.push(i); if (filled(si, i)) c.push(i); });
+      info.set(si, { f: fl, c });
+      if (fl.length) counts.fix++;
+      if (c.length) counts.chg++;
+      if (fl.length || c.length) counts.any++;
+    });
+    const shown = all.filter(si => IMWorkbench.rowMatch(pvMode, info.get(si).f.length, info.get(si).c.length));
+    let cols = H.map((h, i) => h ? i : -1).filter(i => i >= 0);
+    if (pvColsOnly) {
+      const keep = new Set([f.nameI].filter(i => i >= 0));
+      shown.forEach(si => { const x = info.get(si); x.f.forEach(i => keep.add(i)); x.c.forEach(i => keep.add(i)); });
+      cols = cols.filter(i => keep.has(i));
     }
-    updateExportButton();
+    const head = '<thead><tr>' + cols.map(i => '<th' + (/\*$/.test(H[i]) ? ' style="color:#dc2626;"' : '') + '>' + escHtml(H[i]) +
+      (lower[i] ? ' <span class="ts-col-listed">&#9662;</span>' : '') + '</th>').join('') + '</tr></thead>';
+    const rowHtml = si => '<tr>' + cols.map(i => {
+      const v = f.rows[si][i] == null ? '' : String(f.rows[si][i]);
+      if (i === f.nameI) {
+        return '<td class="ts-cell ts-cell-ro" title="From the Site column of the Locations file — change it there">' + escHtml(v) + '</td>';
+      }
+      const flag = flagOf(si, i), note = siteNote(f.prov[si][i], f.ranches.get(f.names[si]));
+      const title = [flag ? flag.title : '', note].filter(Boolean).join('\n');
+      const attrs = ' data-ri="' + si + '" data-ci="' + i + '"' + (title ? ' title="' + escHtml(title) + '"' : '') +
+        (flag ? ' style="color:' + (flag.bg === RED ? '#7f1d1d' : '#7c2d12') + ';"' : '');
+      return '<td class="ts-cell' + (note ? ' is-chg' : '') + '"' + (flag ? ' style="background:' + flag.bg + ';"' : '') + '>' +
+        (lower[i] ? IMWorkbench.pickButton(v, attrs) : IMWorkbench.textCell(v, attrs)) + '</td>';
+    }).join('') + '</tr>';
+    IMWorkbench.rows(tbl, { head: head, ids: shown, row: rowHtml, cols: cols.length,
+      widths: cols.map(i => IMWorkbench.fitWidth(H[i], shown.map(si => f.rows[si][i]))),
+      keys: cols.map(i => 'site:' + H[i]), cell: (si, p) => f.rows[si][cols[p]],
+      empty: pvMode === 'fix' ? 'Every new site is complete ✓' : 'Nothing filled in yet.' });
+    wirePreview(sec, tbl);
+    sec.querySelector('.cmp-sites-hint').innerHTML = viewPills() +
+      IMWorkbench.filterBar({ mode: pvMode, counts: counts, colsOnly: pvColsOnly, shownCols: cols.length, totalCols: H.filter(Boolean).length }) +
+      '<span class="wb-filter-note">' + (shown.length === all.length ? 'All ' + all.length : shown.length + ' of ' + all.length) +
+      ' new sites · Name comes from the Locations Site column; every other cell is editable. Fill whole columns under <b>Sites file</b> and <b>Site addresses</b>.</span>';
   }
 
   // Route a preview cell edit into the correct sticky store + the live grid.
@@ -1083,6 +1387,38 @@
   // every other column flows through cellOverrides. Empty values are stored too
   // (except Name*, which clears its override) so a deliberate clear sticks across
   // rebuilds instead of snapping back to the mapped source value.
+  // "Was … → now … · why" when the cell differs from its source, for the
+  // preview's change tick (see IMWorkbench.changeNote). Crop & Variety is
+  // compared with the source's Crop Type + Variety joined the same way.
+  let cvSrc = { data: null };
+  function changeOf(ri, ci) {
+    const heads = activeSchemaHeaders(), h = heads[ci];
+    const raw = (si) => si != null && si >= 0 && srcData.rows[ri] ? String(srcData.rows[ri][si] == null ? '' : srcData.rows[ri][si]).trim() : '';
+    let was = raw(mapping[ci]);
+    if (h === 'Crop & Variety*') {
+      if (cvSrc.data !== srcData) {
+        cvSrc = { data: srcData, c: findSrcColByNames(['crop', 'crop type', 'crop name', 'plant_name', 'plant name']),
+          v: findSrcColByNames(['variety', 'varietal'], ['clone', 'subvariety', 'sub variety', 'sub-variety']) };
+      }
+      if (cvSrc.c >= 0 && cvSrc.v >= 0 && cvSrc.c !== cvSrc.v) {
+        const c = raw(cvSrc.c), v = raw(cvSrc.v);
+        was = c && v ? c + '-' + v : c || v;
+      }
+    }
+    const now = formattedRows[ri][ci] == null ? '' : String(formattedRows[ri][ci]);
+    let why = 'Cleaned up by the tool';
+    if (cellOverrides[ri + '|' + ci] != null) why = 'Your edit';
+    else if (h === 'Name*' && nameOverrides[ri]) why = 'Renamed by you';
+    else if (h === 'Site*' && siteGaps.some(g => g.applied && g.rows.indexOf(ri) >= 0)) why = 'Copied from the row above (you confirmed)';
+    else if (smartFixMap[ci + '||' + was.toUpperCase()] === now) why = 'Smart Fix you applied';
+    else if (!was && manualFills[ci] === now) why = 'Column fill you applied';
+    else if (h === 'Crop & Variety*' || h === 'Clone/Subvariety') why = 'Subvariety split out of Crop & Variety';
+    else if (dateColIdxs().indexOf(ci) >= 0) why = /^\d{4}$/.test(was) ? 'Year expanded to a full date' : 'Date written as YYYY-MM-DD';
+    else if (NUMERIC_HEADERS.has(h)) why = 'Unit or formatting removed';
+    else if (h === 'Production Status') why = 'Matched to the dropdown';
+    return IMWorkbench.changeNote(was, now, why);
+  }
+
   function setCell(ri, ci, val) {
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
     const nameIdx = bulkHeaders.indexOf('Name*');
@@ -1170,7 +1506,7 @@
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
     const siteIdx = bulkHeaders.indexOf('Site*');
     const cvIdx   = bulkHeaders.indexOf('Crop & Variety*');
-    const tplSites = tplData.dropdowns.get('site') || new Set();
+    const tplSites = knownSites();
     const tplCvs   = tplData.dropdowns.get('crop & variety') || new Set();
     const tplSitesMap = buildCaseMap(tplSites);
     const tplCvsMap   = buildCaseMap(tplCvs);
@@ -1184,73 +1520,373 @@
       if (v && !inDropdown(tplCvsMap, v))   cvs.set(v, (cvs.get(v) || 0) + 1);
     });
 
-    const renderList = (sectionId, tableId, titleId, label, m, withAddress) => {
+    // The new sites' addresses live in the Site addresses panel; this list is
+    // for creating them by hand — so it steps aside once the Sites file does it.
+    const renderList = (sectionId, tableId, titleId, label, m) => {
       const sec = $(sectionId);
       if (!m.size) { sec.style.display = 'none'; return; }
       sec.style.display = '';
       $(titleId).textContent = label + ' (' + m.size + ')';
       const sorted = [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-      let html = '<thead><tr><th>Value</th><th>Row count</th>' +
-        (withAddress ? '<th>Address</th>' : '') + '</tr></thead><tbody>';
-      if (withAddress) {
-        html += '<tr class="ts-addr-allrow">' +
-          '<td colspan="2"><b>Apply one address to every site</b>' +
-            '<div class="text-muted small">Optional — for your reference when creating these Sites in PickTrace.</div></td>' +
-          '<td><div class="ts-addr-all-wrap">' +
-            '<input type="text" id="ts-site-addr-all" class="input-field" placeholder="123 Main St, City, ST">' +
-            '<button class="btn btn-primary btn-sm" id="ts-site-addr-apply-all" type="button">Apply to all</button>' +
-          '</div></td></tr>';
-      }
+      let html = '<thead><tr><th>Value</th><th>Row count</th></tr></thead><tbody>';
       sorted.forEach(([val, cnt]) => {
-        html += '<tr><td class="ts-copy-cell" title="Click to copy">' + escHtml(val) +
-          '</td><td>' + cnt + '</td>';
-        if (withAddress) {
-          html += '<td><input type="text" class="ts-site-addr input-field" data-site="' +
-            escHtml(val) + '" value="' + escHtml(siteAddresses[val] || '') +
-            '" placeholder="Address (optional)"></td>';
-        }
-        html += '</tr>';
+        html += '<tr><td class="ts-copy-cell" title="Click to copy">' + escHtml(val) + '</td><td>' + cnt + '</td></tr>';
       });
-      html += '</tbody>';
-      $(tableId).innerHTML = html;
-      if (withAddress) wireSitesAddressHandlers(tableId);
+      $(tableId).innerHTML = html + '</tbody>';
     };
-    renderList('ts-section-sites-create', 'ts-sites-create-table', 'ts-sites-create-title', 'Sites to Create in PickTrace', sites, true);
-    renderList('ts-section-cv-create',    'ts-cv-create-table',    'ts-cv-create-title',    'Crops & Varieties to Create in PickTrace', cvs, false);
-    return { sitesCount: sites.size, cvsCount: cvs.size };
+    renderList('ts-section-sites-create', 'ts-sites-create-table', 'ts-sites-create-title', 'Sites to Create in PickTrace',
+      siteFileOn() ? new Map() : sites);
+    renderCvList(cvs, tplCvs);
+    return { sitesCount: sites.size, cvsCount: cvs.size, listsCount: renderListsCreate() };
   }
 
-  // Per-row address inputs + "Apply to all". Addresses are reference-only
-  // (keyed by site value in siteAddresses) so they survive the frequent
-  // renderSitesAndCvToCreate() rebuilds triggered by Apply/Clear/remove.
-  function wireSitesAddressHandlers(tableId) {
-    const tbl = $(tableId);
-    if (!tbl) return;
-    tbl.querySelectorAll('.ts-site-addr').forEach(inp => {
-      inp.addEventListener('input', () => {
-        siteAddresses[inp.dataset.site] = inp.value;
+  // Missing Crop & Variety values, split back into the two things PickTrace
+  // creates separately: the crop, then its varieties. Splits at the FIRST
+  // hyphen, as Bulk Template Standardize does — variety names carry hyphens
+  // ("Sample 1234-1"), crop names don't. Case variants merge.
+  function splitCv(v) {
+    const s = String(v == null ? '' : v).trim(), i = s.indexOf('-');
+    return i > 0 ? { crop: s.slice(0, i).trim(), variety: s.slice(i + 1).trim() } : { crop: s, variety: '' };
+  }
+  // value → count  →  [{ crop, isNew, vars: [{ variety, count }] }], crops and
+  // varieties A→Z. isNew: the template lists no variety at all for that crop.
+  function groupCropVarieties(cvs, tplCvs) {
+    const known = new Set([...(tplCvs || [])].map(v => splitCv(v).crop.toUpperCase()));
+    const crops = new Map();
+    cvs.forEach((count, value) => {
+      const p = splitCv(value), ck = p.crop.toUpperCase(), vk = p.variety.toUpperCase();
+      if (!crops.has(ck)) crops.set(ck, { crop: p.crop, isNew: !known.has(ck), vars: new Map() });
+      const g = crops.get(ck);
+      const e = g.vars.get(vk) || { variety: p.variety, count: 0 };
+      e.count += count;
+      g.vars.set(vk, e);
+    });
+    return [...crops.values()].sort((a, b) => a.crop.localeCompare(b.crop)).map(g => ({
+      crop: g.crop, isNew: g.isNew,
+      vars: [...g.vars.values()].sort((a, b) => a.variety.localeCompare(b.variety))
+    }));
+  }
+
+  // Crop | Variety | Row count, each crop written once with its cell spanning
+  // its varieties — the order you create them in PickTrace.
+  let cvGroups = [];   // what the table shows; Copy List writes the same rows
+  function renderCvList(cvs, tplCvs) {
+    const sec = $('ts-section-cv-create');
+    cvGroups = groupCropVarieties(cvs, tplCvs);
+    if (!cvGroups.length) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    let nVar = 0, nNew = 0;
+    cvGroups.forEach(g => { nVar += g.vars.length; if (g.isNew) nNew++; });
+    $('ts-cv-create-title').textContent = 'Crops & Varieties to Create in PickTrace (' +
+      cvGroups.length + ' crop' + (cvGroups.length === 1 ? '' : 's') + (nNew ? ', ' + nNew + ' new' : '') +
+      ' · ' + nVar + ' variet' + (nVar === 1 ? 'y' : 'ies') + ')';
+    let html = '<thead><tr><th>Crop</th><th>Variety</th><th>Row count</th></tr></thead><tbody>';
+    cvGroups.forEach(g => {
+      g.vars.forEach((v, i) => {
+        html += '<tr' + (i === 0 ? ' class="ts-cv-first"' : '') + '>';
+        if (i === 0) {
+          html += '<td class="ts-cv-crop" rowspan="' + g.vars.length + '" data-copy="' + escHtml(g.crop) + '" title="Click to copy">' +
+            escHtml(g.crop) + ' <span class="dt-build-tag' + (g.isNew ? ' dt-build-tag-new">new crop' : '">crop exists') + '</span></td>';
+        }
+        html += '<td class="ts-copy-cell" data-copy="' + escHtml(v.variety) + '" title="Click to copy">' +
+          (v.variety ? escHtml(v.variety) : '<span class="text-muted">(no variety)</span>') + '</td>' +
+          '<td>' + v.count + '</td></tr>';
       });
     });
-    const allInp = tbl.querySelector('#ts-site-addr-all');
-    const allBtn = tbl.querySelector('#ts-site-addr-apply-all');
-    if (allInp && allBtn) {
-      allBtn.addEventListener('click', () => {
-        const v = allInp.value.trim();
-        if (!v) { alert('Type an address first.'); return; }
-        tbl.querySelectorAll('.ts-site-addr').forEach(inp => {
-          inp.value = v;
-          siteAddresses[inp.dataset.site] = v;
-        });
+    $('ts-cv-create-table').innerHTML = html + '</tbody>';
+  }
+
+  // ─── Sites file ───
+  // Sites the client file names that aren't in the Locations template's Site
+  // list must exist in PickTrace before their locations can load. With the
+  // org's Sites template loaded, this tool builds that upload too — one row
+  // per new site:
+  //   Name                 the Locations Site value
+  //   Address1/City/State/Zip(/Country)  split out of the most specific address
+  //                        you gave: the site's own, its ranch's (the name
+  //                        before " - "), or the one for every new site
+  //   any other column     your fill for every new site; a one-option list
+  //                        (Employer, often) fills itself
+  //   any cell             your edit in the Sites preview, over all of the above
+  // Export then downloads both files in one .zip, and those sites count as
+  // listed in the Locations Site column (dropdownValuesFor) — the Sites file
+  // is uploaded first.
+  function siteFileOn() { return !!(siteTpl && tplData); }
+  // Sites PickTrace already has: the Locations template's Site list, plus any
+  // Site in the existing-locations export (a list can lag behind the account).
+  function knownSites() {
+    const set = new Set(tplData && tplData.dropdowns.get('site') || []);
+    if (existingData && existingData.sites) existingData.sites.forEach(x => set.add(x));
+    return set;
+  }
+  const siteKey = h => norm(h).replace(/\*+$/, '').trim();
+  // Each new site's ranch: the name before " - " — or before a bare "-" when
+  // another site spells that ranch with " - " ("Example-Block 2" joins
+  // "Example - Block 1"); otherwise the whole name. → Map name → ranch.
+  function ranchMap(names) {
+    const known = new Map();
+    names.forEach(s => { const i = s.indexOf(' - '); if (i > 0) { const r = s.slice(0, i).trim(); if (!known.has(r.toUpperCase())) known.set(r.toUpperCase(), r); } });
+    const m = new Map();
+    names.forEach(s => {
+      const i = s.indexOf(' - '), j = s.indexOf('-');
+      const head = (i > 0 ? s.slice(0, i) : j > 0 ? s.slice(0, j) : '').trim().toUpperCase();
+      m.set(s, known.get(head) || s.trim());
+    });
+    return m;
+  }
+  // New site → its row count. Judged against the Locations template's own
+  // Site list (never the widened one, or the Sites file would vouch for
+  // itself); case variants count as one site, first spelling kept.
+  function newSitesMap() {
+    const out = new Map();
+    if (!formattedRows || !tplData) return out;
+    const si = activeSchemaHeaders().indexOf('Site*');
+    if (si < 0) return out;
+    const known = buildCaseMap(knownSites());
+    const first = new Map();
+    formattedRows.forEach((r, ri) => {
+      if (excluded(ri)) return;
+      const s = String(r[si] == null ? '' : r[si]).trim();
+      if (!s || inDropdown(known, s)) return;
+      const k = first.get(s.toUpperCase()) || s;
+      first.set(s.toUpperCase(), k);
+      out.set(k, (out.get(k) || 0) + 1);
+    });
+    return out;
+  }
+  function newSiteNames() { return [...newSitesMap().keys()].sort((a, b) => a.localeCompare(b)); }
+  // The address a site gets, and where it came from.
+  function siteAddrFor(s, ranch) {
+    if (siteAddresses[s]) return { text: siteAddresses[s], from: 'site' };
+    const g = siteAddrGroup[ranch];
+    if (g) return { text: g, from: 'ranch' };
+    return siteAddrAll ? { text: siteAddrAll, from: 'all' } : { text: '', from: '' };
+  }
+  function parseAddr(text) {
+    if (!text) return { address1: '', city: '', state: '', zip: '', country: '' };
+    return window.IMAddress ? IMAddress.parse(text) : { address1: text, city: '', state: '', zip: '', country: '' };
+  }
+  const addrComplete = p => !!(p.address1 && p.city && p.state && p.zip);
+  function siteDropFor(ci) {
+    if (!siteTpl) return null;
+    const set = siteTpl.dropdowns.get(siteKey(siteTpl.headers[ci] || ''));
+    return set && set.size ? [...set] : null;
+  }
+  // → { headers, names, rows, prov, nameI } — prov[r][c] says where a cell
+  // came from: name · addr:site|ranch|all · fill · only · edit.
+  function buildSiteFile() {
+    if (!siteFileOn()) return { headers: [], names: [], rows: [], prov: [], nameI: -1 };
+    const H = siteTpl.headers, names = newSiteNames(), ranches = ranchMap(names);
+    const at = k => H.findIndex(h => siteKey(h) === k);
+    const nameI = at('name');
+    const addrI = ['address1', 'city', 'state', 'zip', 'country'].map(k => [k, at(k)]).filter(x => x[1] >= 0);
+    const lists = H.map((_, i) => siteDropFor(i));
+    const rows = [], prov = [];
+    names.forEach(s => {
+      const row = H.map(() => ''), pv = H.map(() => '');
+      if (nameI >= 0) { row[nameI] = s; pv[nameI] = 'name'; }
+      const a = siteAddrFor(s, ranches.get(s)), p = parseAddr(a.text);
+      addrI.forEach(([k, i]) => { if (p[k]) { row[i] = p[k]; pv[i] = 'addr:' + a.from; } });
+      H.forEach((h, i) => {
+        if (row[i] || !h) return;
+        const f = siteFill[siteKey(h)];
+        if (f) { row[i] = f; pv[i] = 'fill'; }
+        else if (lists[i] && lists[i].length === 1) { row[i] = lists[i][0]; pv[i] = 'only'; }
       });
+      H.forEach((h, i) => {
+        const e = siteEdits[s + '|' + siteKey(h)];
+        if (e != null && i !== nameI) { row[i] = e; pv[i] = 'edit'; }
+      });
+      rows.push(row); prov.push(pv);
+    });
+    return { headers: H, names, rows, prov, nameI, ranches };
+  }
+  function siteNote(pv, ranch) {
+    return pv === 'addr:site' ? 'From the address you gave this site'
+      : pv === 'addr:ranch' ? 'From the address for ' + ranch
+      : pv === 'addr:all' ? 'From the address for every new site'
+      : pv === 'fill' ? 'Your fill for every new site'
+      : pv === 'only' ? 'The only option in the Sites template'
+      : pv === 'edit' ? 'Your edit' : '';
+  }
+  // The Sites file's rows as written: dropdown values in the template's
+  // casing, everything as text (a Zip keeps its leading zero).
+  function siteRowsForExport() {
+    const f = buildSiteFile();
+    const maps = f.headers.map((_, i) => buildCaseMap(siteDropFor(i)));
+    return f.rows.map(row => row.map((v, i) => {
+      const s = v == null ? '' : String(v);
+      const k = s.toUpperCase().trim();
+      return maps[i].size && maps[i].has(k) ? maps[i].get(k) : s;
+    }));
+  }
+  // Button counts: sites still missing a non-address required value (all of
+  // them until the Sites template is in), and sites without a full address.
+  const ADDR_KEYS = new Set(['address1', 'address2', 'city', 'state', 'zip']);
+  function siteDetailNeeds() {
+    const n = newSitesMap().size;
+    if (!n || !siteFileOn()) return n;
+    const f = buildSiteFile();
+    return f.rows.filter(r => f.headers.some((h, i) => /\*$/.test(h) && !ADDR_KEYS.has(siteKey(h)) && !r[i])).length;
+  }
+  function siteAddrNeeds() {
+    if (siteFileOn()) {
+      const f = buildSiteFile();
+      return f.rows.filter(r => f.headers.some((h, i) => /\*$/.test(h) && ADDR_KEYS.has(siteKey(h)) && !r[i])).length;
     }
+    const names = newSiteNames(), ranches = ranchMap(names);
+    return names.filter(s => !addrComplete(parseAddr(siteAddrFor(s, ranches.get(s)).text))).length;
+  }
+
+  function renderSiteFile() {
+    const sec = $('ts-section-sitefile');
+    if (!sec) return;
+    const n = formattedRows ? newSitesMap().size : 0;
+    if (!n) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    $('ts-sitefile-title').textContent = 'Sites file — ' + n + ' new site' + (n === 1 ? '' : 's');
+    let html;
+    if (!siteTpl) {
+      html = '<p class="cmp-sites-hint">' + n + ' Site value' + (n === 1 ? ' isn’t' : 's aren’t') + ' in your Locations template, so ' +
+        (n === 1 ? 'it doesn’t' : 'they don’t') + ' exist in PickTrace yet. Add your org’s personalized <b>Sites</b> template and the tool builds the Sites upload for ' +
+        (n === 1 ? 'it' : 'them') + ' too &mdash; Export then downloads both files in one .zip. Upload the Sites file first, then Locations.</p>' +
+        '<div class="ts-sf-actions"><label class="btn btn-primary btn-sm" for="ts-sitetpl-file">&#8679; Upload Sites template</label>' +
+        '<span class="text-muted small">Addresses can go in now, under <b>Site addresses</b> &mdash; they carry over.</span></div>';
+    } else {
+      const f = buildSiteFile();
+      html = '<p class="cmp-sites-hint">Built from <b>' + escHtml(siteTpl.fileName) + '</b>: one row per new site, its Name from the Locations Site column. ' +
+        'Fill a column for every new site here, or change one site in the preview (<b>Sites</b> view). ' +
+        'Export downloads both files in one .zip &mdash; <b>upload the Sites file first</b>, then Locations.</p>';
+      html += '<div class="table-wrap"><table class="data-table"><thead><tr><th>Column</th><th>Status</th><th>Fill every new site</th></tr></thead><tbody>';
+      f.headers.forEach((h, i) => {
+        const k = siteKey(h);
+        if (!h || k === 'name' || ADDR_KEYS.has(k)) return;
+        const req = /\*$/.test(h), list = siteDropFor(i), cur = siteFill[k] || '';
+        const emptyN = f.rows.filter(r => !r[i]).length;
+        const only = !!(list && list.length === 1);
+        const status = emptyN
+          ? '<span style="color:' + (req ? '#dc2626' : 'var(--text-3)') + ';font-weight:600;">' + (req ? '⚠ ' : '') + emptyN + ' empty</span>'
+          : '<span style="color:#15803d;">✓ ' + (only && !cur ? 'only option — filled' : 'filled') + '</span>';
+        const ctl = list
+          ? '<select class="input-field ts-sf-fill" data-k="' + escHtml(k) + '"><option value="">— pick —</option>' +
+              list.slice().sort().map(v => '<option' + (v === cur ? ' selected' : '') + '>' + escHtml(v) + '</option>').join('') + '</select>'
+          : '<input type="text" class="input-field ts-sf-fill" data-k="' + escHtml(k) + '" value="' + escHtml(cur) + '" placeholder="Value for every new site">';
+        html += '<tr><td><b' + (req ? ' style="color:#dc2626;"' : '') + '>' + escHtml(h) + '</b></td><td>' + status + '</td>' +
+          '<td><div class="ts-req-ctl">' + ctl + (cur ? '<button type="button" class="btn btn-ghost btn-sm ts-sf-clear" data-k="' + escHtml(k) + '">Clear</button>' : '') +
+          '</div></td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    $('ts-sitefile-body').innerHTML = html;
+  }
+
+  function renderSiteAddr() {
+    const sec = $('ts-section-siteaddr');
+    if (!sec) return;
+    const names = formattedRows ? newSiteNames() : [];
+    if (!names.length) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const groups = new Map();
+    const ranches = ranchMap(names);
+    names.forEach(s => { const g = ranches.get(s); groups.set(g, (groups.get(g) || 0) + 1); });
+    const checked = text => {
+      if (!text) return '';
+      const p = parseAddr(text);
+      if (addrComplete(p)) return '<span class="ts-addr-ok" title="Address1: ' + escHtml(p.address1) + '">✓ ' + escHtml(p.city + ', ' + p.state + ' ' + p.zip) + '</span>';
+      const miss = ['address1', 'city', 'state', 'zip'].filter(k => !p[k]).map(k => k === 'address1' ? 'street' : k);
+      return '<span class="ts-addr-bad">⚠ no ' + miss.join(', ') + ' found</span>';
+    };
+    const field = (scope, key, val, ph) => '<input type="text" class="input-field ts-addr-in" data-scope="' + scope + '"' +
+      (key != null ? ' data-key="' + escHtml(key) + '"' : '') + ' value="' + escHtml(val) + '" placeholder="' + escHtml(ph) + '">';
+    let html = '<p class="cmp-sites-hint">Type an address as <b>street, city, ST zip</b> &mdash; it’s split into Address1, City, State and Zip. ' +
+      'The most specific one wins: a site’s own address, then its ranch’s, then the one for every site.' +
+      (siteTpl ? '' : ' These carry into the Sites file once you add the Sites template.') + '</p>';
+    html += '<div class="ts-addr-block"><div class="ts-addr-label">Every new site (' + names.length + ')</div>' +
+      '<div class="ts-addr-row">' + field('all', null, siteAddrAll, '123 Main St, City, ST 12345') + checked(siteAddrAll) + '</div></div>';
+    // Per ranch only when the names actually group (several sites to a ranch).
+    if (groups.size < names.length) {
+      html += '<div class="ts-addr-block"><div class="ts-addr-label">Per ranch &mdash; the name before “ - ” (' + groups.size + ')</div>' +
+        '<div class="table-wrap"><table class="data-table ts-addr-table"><thead><tr><th>Ranch</th><th>Sites</th><th>Address</th></tr></thead><tbody>';
+      [...groups.keys()].sort((a, b) => a.localeCompare(b)).forEach(g => {
+        const v = siteAddrGroup[g] || '';
+        html += '<tr><td>' + escHtml(g) + '</td><td>' + groups.get(g) + '</td><td><div class="ts-addr-row">' +
+          field('ranch', g, v, siteAddrAll ? siteAddrAll + ' (every site)' : 'street, city, ST zip') + checked(v) + '</div></td></tr>';
+      });
+      html += '</tbody></table></div></div>';
+    }
+    html += '<div class="ts-addr-block"><div class="ts-addr-label">Each site (' + names.length + ')</div>' +
+      '<div class="table-wrap"><table class="data-table ts-addr-table"><thead><tr><th>Site</th><th>Address</th></tr></thead><tbody>';
+    names.forEach(s => {
+      const own = siteAddresses[s] || '', inh = siteAddrGroup[ranches.get(s)] || siteAddrAll;
+      html += '<tr><td>' + escHtml(s) + '</td><td><div class="ts-addr-row">' +
+        field('site', s, own, inh ? inh + ' (inherited)' : 'street, city, ST zip') + checked(own || inh) + '</div></td></tr>';
+    });
+    $('ts-siteaddr-body').innerHTML = html + '</tbody></table></div></div>';
+  }
+
+  // After a Sites-file change: the lists, the preview and the counts.
+  function refreshSites() {
+    if (!formattedRows) return;
+    renderSitesAndCvToCreate();
+    renderPreview();
+    updateSummary();
+  }
+
+  function handleSiteTplFile(file) {
+    const r = new FileReader();
+    r.onload = e => useSiteTemplate(parseTemplate(e.target.result, file.name), file.name);
+    r.readAsArrayBuffer(file);
+  }
+  function useSiteTemplate(parsed, fileName) {
+    if (!parsed || !parsed.headers.length) { alert('Could not find a DATA ENTRY sheet in this template.'); return; }
+    const kind = identifyTemplate(parsed.headers);
+    if (kind.kind !== 'sites') {
+      alert('That isn’t the Sites bulk template' + (kind.kind === 'unknown' ? '' : ' — it’s the ' + kind.label + ' one') +
+        '.\n\nThe Sites template’s DATA ENTRY sheet has Site Type, Employer and Address1 columns.');
+      return;
+    }
+    siteTpl = parsed;
+    $('ts-sitetpl-name').textContent = fileName;
+    $('ts-sitetpl-meta').textContent = 'Sites template · ' + parsed.headers.filter(Boolean).length + ' columns';
+    if (!formattedRows) { if (wb) wb.refresh(); return; }
+    refreshAll(); // the new sites now count as listed everywhere
+    if (newSitesMap().size && wb) wb.open('sitefile');
   }
 
   // ─── Smart Fixes panel — every off-list value gets a dropdown to choose the
   // target template value (suggested match pre-selected; the rest ask the user). ───
+  // Blank Site groups, at the top of Smart Fixes. Nothing copies until you
+  // click Copy down (or Copy down all); Undo puts the blanks back.
+  function renderSiteGaps() {
+    const el = $('ts-sitegaps');
+    if (!el) return;
+    if (!siteGaps.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+    const pending = siteGaps.filter(g => !g.applied);
+    let n = 0;
+    pending.forEach(g => { n += g.rows.length; });
+    const span = rs => rs.length === 1 ? 'Row ' + (rs[0] + 1) : 'Rows ' + (rs[0] + 1) + '–' + (rs[rs.length - 1] + 1);
+    el.innerHTML = '<div class="ts-sitegaps-head"><b>Blank Site</b> — ' +
+      (pending.length
+        ? n + ' row' + (n === 1 ? ' has' : 's have') + ' no Site, right under a row that does. Copy each group\'s site down? Nothing changes until you confirm.'
+        : 'every group is copied down.') +
+      (pending.length > 1 ? ' <button type="button" class="btn btn-primary btn-sm" data-act="all">Copy down all</button>' : '') + '</div>' +
+      '<div class="table-wrap"><table class="data-table"><thead><tr><th>Data rows</th><th>Locations</th><th>Site to copy down</th><th></th></tr></thead><tbody>' +
+      siteGaps.map(g => '<tr><td>' + span(g.rows) + ' <span class="text-muted small">(' + g.rows.length + ')</span></td>' +
+        '<td>' + escHtml(g.names.join(', ') + (g.rows.length > g.names.length ? ', …' : '')) + '</td>' +
+        '<td><b>' + escHtml(g.site) + '</b></td><td>' +
+        (g.applied
+          ? '<span style="color:#15803d;">✓ Copied</span> <button type="button" class="btn btn-ghost btn-sm" data-act="undo" data-id="' + escHtml(g.id) + '">Undo</button>'
+          : '<button type="button" class="btn btn-primary btn-sm" data-act="apply" data-id="' + escHtml(g.id) + '">Copy down</button>') +
+        '</td></tr>').join('') + '</tbody></table></div>';
+    el.style.display = '';
+  }
+
   function renderSmartFixes() {
     const sec = $('ts-section-smartfix');
     if (!sec) return;
     const fixes = computeSmartFixes();
+    // Blank Site renders on its own — it has its own button (and panel).
+    renderSiteGaps();
     if (!fixes.length) { sec.style.display = 'none'; $('ts-smartfix-table').innerHTML = ''; return; }
     sec.style.display = '';
     let totalRows = 0, needPick = 0;
@@ -1259,13 +1895,15 @@
     if (t) t.textContent = 'Smart Fixes (' + fixes.length + ' value' + (fixes.length === 1 ? '' : 's') + ', ' + totalRows + ' rows' +
       (needPick ? ' — ' + needPick + ' need your choice' : '') + ')';
     let html = '<thead><tr><th>Column</th><th>Value in your data</th><th>Set to</th><th>Rows</th><th></th></tr></thead><tbody>';
+    // Each picker is a button until clicked (IMWorkbench.wirePicks): a full
+    // <select> per row listed every allowed value 171 times over on a big file.
+    const optsByCol = new Map(fixes.map(f => [f.colIdx, f.options]));
     fixes.forEach(f => {
-      const opts = '<option value="">— pick a value —</option>' +
-        f.options.slice().sort().map(o => '<option' + (f.suggestion && o === f.suggestion ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('');
       html += '<tr>' +
         '<td>' + escHtml(f.header) + '</td>' +
         '<td><span style="color:#7c2d12;background:#fef3c7;padding:1px 6px;border-radius:3px;">' + escHtml(f.from) + '</span></td>' +
-        '<td><select class="ts-smartfix-pick input-field" style="min-width:200px;">' + opts + '</select>' +
+        '<td>' + IMWorkbench.pickButton(f.suggestion || '', ' data-ci="' + f.colIdx + '" style="min-width:200px;"',
+          { kind: 'fix', cls: 'ts-smartfix-pick input-field' }) +
           (f.suggestion ? ' <span class="text-muted small" title="Confident match — spacing, punctuation or singular/plural">suggested</span>' : ' <span style="color:#b45309;font-weight:600;" class="small">needs a choice</span>') +
         '</td>' +
         '<td>' + f.count + '</td>' +
@@ -1274,6 +1912,8 @@
     });
     html += '</tbody>';
     $('ts-smartfix-table').innerHTML = html;
+    smartFixOpts = optsByCol;
+    IMWorkbench.wirePicks($('ts-smartfix-table'), ci => smartFixOpts.get(ci), { kind: 'fix' });
     $('ts-smartfix-table').querySelectorAll('.ts-smartfix-apply').forEach(btn => btn.addEventListener('click', e => {
       const tr = e.currentTarget.closest('tr');
       const to = tr.querySelector('.ts-smartfix-pick').value.trim();
@@ -1324,7 +1964,10 @@
         if (!r[col.idx]) empty++;
         else if (sample.size < 1 && r[col.idx]) sample.add(r[col.idx]);
       });
-      const fillVal = manualFills[col.idx] || (sample.size ? [...sample][0] : '');
+      // A column with blanks starts at "— pick —" so choosing its first value
+      // — or its ONLY value, like a one-option Location Type — is a change and
+      // fills them. Showing a sample there made the pick a no-op.
+      const fillVal = manualFills[col.idx] || (empty ? '' : (sample.size ? [...sample][0] : ''));
       const entry = { ...col, empty, fillVal };
       if (empty > 0) needsAction.push(entry); else filled.push(entry);
     });
@@ -1335,12 +1978,14 @@
         || tplData.dropdowns.get(dropKey + '*')
         || tplData.dropdowns.get(norm(col.header))
         || new Set();
-      const optsHtml = opts.size
-        ? '<option value="">— pick —</option>' +
-          [...opts].sort().map(o => '<option' + (o === col.fillVal ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('')
-        : '<option value="">(no template dropdown — use manual override)</option>';
+      // A column the template lists (Location Type, Site, …) gets a picker;
+      // one it doesn't (Name, Start Date) just the text box.
+      const optsHtml = '<option value="">— pick —</option>' +
+        [...opts].sort().map(o => '<option' + (o === col.fillVal ? ' selected' : '') + '>' + escHtml(o) + '</option>').join('');
       const status = col.empty > 0
-        ? '<span style="color:#dc2626;font-weight:600;">⚠ ' + col.empty + ' empty</span>'
+        ? '<span style="color:#dc2626;font-weight:600;">⚠ ' + col.empty + ' empty</span>' +
+          ' <button type="button" class="btn btn-ghost btn-sm ts-req-show" data-idx="' + col.idx + '" title="Show just these rows in the preview">Show ' +
+          (col.empty === 1 ? 'the row' : 'them') + '</button>'
         : '<span style="color:#15803d;">✓ filled' + (col.fillVal ? ' (e.g. ' + escHtml(String(col.fillVal).slice(0, 30)) + ')' : '') + '</span>';
       const rowStyle = col.empty > 0 ? '' : ' style="background:var(--bg-sunken);"';
       // Date-aware quick fill — Start Date* gets a "Today" button that
@@ -1349,25 +1994,31 @@
       const todayBtn = isStartDate
         ? '<button class="btn btn-warning btn-sm ts-req-today" data-idx="' + col.idx + '" title="Fill all rows with today\'s date (' + todayYMD() + ')">Today</button>'
         : '';
-      return '<tr' + rowStyle + '>' +
+      // A column with blanks fills just its blanks; a filled column's value
+      // is replaced in every row ("change if needed").
+      const mode = col.empty > 0 ? 'empty' : 'all';
+      return '<tr' + rowStyle + ' data-mode="' + mode + '">' +
         '<td><b>' + escHtml(col.header) + '</b></td>' +
         '<td>' + status + '</td>' +
-        '<td><select class="ts-req-pick input-field" data-idx="' + col.idx + '" style="min-width:200px;">' + optsHtml + '</select></td>' +
-        '<td><input type="text" class="ts-req-override input-field" data-idx="' + col.idx + '" placeholder="Manual override" style="width:200px;"></td>' +
-        '<td>' + todayBtn + '</td>' +
-        '<td><button class="btn btn-primary btn-sm ts-req-apply" data-idx="' + col.idx + '">Apply</button></td>' +
-        '<td><button class="btn btn-ghost btn-sm ts-req-clear" data-idx="' + col.idx + '" title="Clear all values in this column (header stays)">Clear</button></td>' +
+        '<td><div class="ts-req-ctl">' +
+          (opts.size ? '<select class="ts-req-pick input-field" data-idx="' + col.idx + '" title="' + (mode === 'empty' ? 'Fills the empty cells' : 'Replaces the value in every row') + '">' + optsHtml + '</select>' : '') +
+          '<input type="text" class="ts-req-override input-field" data-idx="' + col.idx + '" placeholder="' +
+            (opts.size ? 'or type a value' : isStartDate ? 'YYYY-MM-DD' : 'Type a value') + '">' +
+          todayBtn +
+          '<button class="btn btn-primary btn-sm ts-req-apply" data-idx="' + col.idx + '">' + (mode === 'empty' ? 'Fill ' + col.empty + ' empty' : 'Apply to all') + '</button>' +
+          '<button class="btn btn-ghost btn-sm ts-req-clear" data-idx="' + col.idx + '" title="Clear all values in this column (header stays)">Clear</button>' +
+        '</div></td>' +
         '</tr>';
     };
 
-    let html = '<thead><tr><th>Column</th><th>Status</th><th>Pick from dropdown</th><th>Manual override</th><th>Quick fill</th><th></th><th></th></tr></thead>';
+    let html = '<thead><tr><th>Column</th><th>Status</th><th>Fill</th></tr></thead>';
     if (needsAction.length) {
-      html += '<tbody><tr><td colspan="7" style="background:#fee2e2;color:#7f1d1d;font-weight:600;padding:6px 10px;">' +
+      html += '<tbody><tr><td colspan="3" style="background:#fee2e2;color:#7f1d1d;font-weight:600;padding:6px 10px;">' +
         '⚠ Action needed (' + needsAction.length + ')</td></tr>' +
         needsAction.map(renderRow).join('') + '</tbody>';
     }
     if (filled.length) {
-      html += '<tbody><tr><td colspan="7" style="background:#dcfce7;color:#14532d;font-weight:600;padding:6px 10px;">' +
+      html += '<tbody><tr><td colspan="3" style="background:#dcfce7;color:#14532d;font-weight:600;padding:6px 10px;">' +
         '✓ Already filled — change or clear if needed (' + filled.length + ')</td></tr>' +
         filled.map(renderRow).join('') + '</tbody>';
     }
@@ -1408,13 +2059,20 @@
       btn.addEventListener('click', e => {
         const idx = +e.target.dataset.idx;
         const tr = e.target.closest('tr');
-        const pick = tr.querySelector('.ts-req-pick').value.trim();
+        const pk = tr.querySelector('.ts-req-pick'), pick = pk ? pk.value.trim() : '';
         const ovr  = tr.querySelector('.ts-req-override').value.trim();
         const val = ovr || pick;
-        if (!val) { alert('Pick a value or type a manual override first.'); return; }
-        // Apply OVERWRITES — that way the user can change their mind and
-        // re-apply a different value to the same column.
-        applyFill(idx, val, true);
+        if (!val) { alert('Pick or type a value first.'); return; }
+        // A column with blanks fills only the blanks (the rest keep their
+        // source values); a filled column is changed in every row.
+        applyFill(idx, val, tr.dataset.mode === 'all');
+      });
+    });
+    tbl.querySelectorAll('.ts-req-show').forEach(btn => {
+      btn.addEventListener('click', e => {
+        pvFocus = { ci: +e.currentTarget.dataset.idx };
+        IMWorkbench.rowsTop($('ts-preview-table'));
+        renderPreview();
       });
     });
     tbl.querySelectorAll('.ts-req-clear').forEach(btn => {
@@ -1436,7 +2094,7 @@
       sel.addEventListener('change', e => {
         const idx = +e.target.dataset.idx;
         const v = e.target.value.trim();
-        if (v) applyFill(idx, v, true);
+        if (v) applyFill(idx, v, e.target.closest('tr').dataset.mode === 'all');
       });
     });
   }
@@ -1473,9 +2131,65 @@
       (collisionRows ? '<div class="cmp-stat cmp-warn"><b>' + collisionRows + '</b> name collision rows</div>' : '') +
       '<div class="cmp-stat"><b>' + bulkHeaders.length + '</b> template columns</div>' +
       (emptyReq ? '<div class="cmp-stat cmp-warn"><b>' + emptyReq + '</b> empty required cells</div>' : '') +
-      (sites.sitesCount ? '<div class="cmp-stat cmp-warn"><b>' + sites.sitesCount + '</b> sites to create</div>' : '') +
+      (sites.sitesCount ? '<div class="cmp-stat cmp-warn"><b>' + sites.sitesCount + '</b> ' +
+        (siteFileOn() ? 'new sites → Sites file' : 'sites to create') + '</div>' : '') +
       (sites.cvsCount ? '<div class="cmp-stat cmp-warn"><b>' + sites.cvsCount + '</b> C&V to create</div>' : '') +
+      (sites.listsCount ? '<div class="cmp-stat cmp-warn"><b>' + sites.listsCount + '</b> list values to set up</div>' : '') +
       (pastDates ? '<div class="cmp-stat cmp-warn"><b>' + pastDates + '</b> Start Dates before today</div>' : '');
+    // With a Sites file the new sites are handled there, not built by hand.
+    lastSum = { pastDates: pastDates, toCreate: (siteFileOn() ? 0 : sites.sitesCount) + sites.cvsCount + (sites.listsCount || 0), collisionRows: collisionRows };
+    renderSiteFile();
+    renderSiteAddr();
+    if (wb) wb.refresh();
+  }
+
+  // ─── Workbench: one button per section (workbench.js) ───
+  let wb = null;
+  let lastSum = { pastDates: 0, toCreate: 0, collisionRows: 0 };  // from updateSummary, for the button counts
+  function mountWorkbench() {
+    if (!window.IMWorkbench) return;
+    const kept = () => formattedRows ? formattedRows.filter((_, i) => !excluded(i)) : [];
+    wb = IMWorkbench.mount({
+      pane: 'ts-loc-wrap', results: 'ts-results', preview: 'ts-section-preview',
+      ready: () => !!(srcData && tplData && formattedRows),
+      // A Sites panel shows the Sites file in the preview; any other, Locations.
+      onOpen: key => {
+        const v = (key === 'sitefile' || key === 'siteaddr') && siteFileOn() && newSitesMap().size ? 'sites' : 'locations';
+        if (v !== pvView) { pvView = v; pvFocus = null; IMWorkbench.rowsTop($('ts-preview-table')); renderPreview(); }
+      },
+      sections: [
+        // A Start Date before today needs fixing too (Today, in the same panel),
+        // so its column counts here alongside the blank required ones.
+        { key: 'required', group: 'fix', unit: 'column', name: 'Required blanks', desc: 'Fill required (*) columns; set any Start Date before today',
+          ids: ['ts-section-required'],
+          count: () => {
+            const rows = kept();
+            return activeSchemaHeaders().filter((h, i) => /\*$/.test(h) &&
+              (rows.some(r => !r[i]) || (h === 'Start Date*' && lastSum.pastDates))).length;
+          } },
+        { key: 'dropdown', group: 'fix', unit: 'value', name: 'Not in dropdown', desc: 'Pick a listed value for anything PickTrace would reject',
+          ids: ['ts-section-smartfix'], count: () => computeSmartFixes().length },
+        { key: 'build', group: 'fix', unit: 'value', name: 'Build in PickTrace', desc: 'Sites, crops, varieties and list values to create, then re-download the template',
+          ids: ['ts-section-sites-create', 'ts-section-cv-create', 'ts-section-lists-create'], count: () => lastSum.toCreate },
+        // New sites go out in a Sites file of their own, built from the Sites template.
+        { key: 'sitefile', group: 'fix', unit: 'site', name: 'Sites file', desc: 'New sites: add the Sites template, then Site Type, Employer, Country — exported with Locations',
+          ids: ['ts-section-sitefile'], count: () => siteDetailNeeds() },
+        { key: 'siteaddr', group: 'fix', unit: 'site', name: 'Site addresses', desc: 'Street, city, state and zip for each new site — for all, per ranch, or one by one',
+          ids: ['ts-section-siteaddr'], count: () => siteAddrNeeds() },
+        { key: 'fillsite', group: 'fix', unit: 'row', name: 'Blank Site', desc: 'Locations with no Site under one that has it — copy it down?',
+          ids: ['ts-sitegaps'], count: () => siteGaps.filter(g => !g.applied).reduce((n, g) => n + g.rows.length, 0) },
+        { key: 'collisions', group: 'fix', unit: 'row', name: 'Name collisions', desc: 'Blocks sharing a Site + Name — PickTrace keeps only one',
+          ids: ['ts-section-collisions'], count: () => lastSum.collisionRows },
+        { key: 'dates', group: 'fix', unit: 'cell', name: 'Year-only dates', desc: 'Dates written as just a year — pick a month and day',
+          ids: ['ts-section-datefill'], count: () => countYearOnlyDates(kept(), dateFillIdxs()) },
+        { key: 'mapping', group: 'check', unit: 'column', name: 'Column mapping', desc: 'Which source column fills each template column',
+          ids: ['ts-section-mapping'], count: () => activeSchemaHeaders().filter((_, i) => mapping[i] != null && mapping[i] >= 0).length },
+        { key: 'merged', group: 'check', unit: 'row', name: 'Merged duplicates', desc: 'Repeated Site + Name rows folded into one location',
+          ids: ['ts-section-merged'], count: () => mergedRowIdxs.size },
+        { key: 'existing', group: 'check', unit: 'row', name: 'Already in PickTrace', desc: 'Rows dropped because the existing export has them',
+          ids: ['ts-section-existing'], count: () => existingRowIdxs.size }
+      ]
+    });
   }
 
   // Build a case-insensitive index of a dropdown Set so values like
@@ -1507,14 +2221,14 @@
       if (excluded(ri)) return;
       reqIdxs.forEach(i => { if (!r[i]) emptyReq++; });
     });
-    const tplSites = tplData.dropdowns.get('site') || new Set();
+    const tplSites = knownSites();
     const tplCvs   = tplData.dropdowns.get('crop & variety') || new Set();
     const tplSitesMap = buildCaseMap(tplSites);
     const tplCvsMap   = buildCaseMap(tplCvs);
     const siteIdx = bulkHeaders.indexOf('Site*');
     const cvIdx = bulkHeaders.indexOf('Crop & Variety*');
     const startDateIdx = bulkHeaders.indexOf('Start Date*');
-    const checkSites = tplSites.size > 0;
+    const checkSites = tplSites.size > 0 && !siteFileOn(); // the Sites file brings the new ones
     const checkCvs   = tplCvs.size > 0;
     const unknownSiteVals = new Set();
     const unknownCvVals = new Set();
@@ -1532,7 +2246,18 @@
       const r0 = formattedRows[arr[0]];
       collisionSamples.push(String(r0[siteIdx] || '') + ' / ' + String(r0[bulkHeaders.indexOf('Name*')] || '') + ' (×' + arr.length + ')');
     });
-    return { emptyReq, unknownSites: [...unknownSiteVals], unknownCvs: [...unknownCvVals], pastStartDates, nameCollisions, collisionSamples };
+    // The Sites file's empty required cells — PickTrace rejects those sites, and
+    // then every location under them.
+    let siteFile = null;
+    if (siteFileOn()) {
+      const sf = buildSiteFile(), cols = new Set();
+      let empty = 0;
+      sf.rows.forEach(r => sf.headers.forEach((h, i) => { if (/\*$/.test(h) && !r[i]) { empty++; cols.add(h); } }));
+      if (sf.rows.length) siteFile = { sites: sf.rows.length, emptyReq: empty, cols: [...cols] };
+    }
+    const unlisted = [];
+    unlistedValues().forEach((m, ci) => { let rows = 0; m.forEach(c => { rows += c; }); unlisted.push({ column: bulkHeaders[ci], values: m.size, rows }); });
+    return { emptyReq, unknownSites: [...unknownSiteVals], unknownCvs: [...unknownCvVals], pastStartDates, nameCollisions, collisionSamples, siteFile, unlisted };
   }
 
   function updateExportButton() {
@@ -1584,16 +2309,23 @@
           '<div class="ts-confirm-issue">' +
           '<div class="ts-confirm-issue-head">⚠ ' + b.unknownSites.length + ' Site value(s) not in your template dropdown</div>' +
           '<ul class="ts-confirm-list">' + sample + more + '</ul>' +
-          '<div class="ts-confirm-issue-body">Create these Sites in PickTrace, re-download your personalized template, and re-upload here.</div>' +
+          '<div class="ts-confirm-issue-body">Create these Sites in PickTrace, re-download your personalized template, and re-upload here &mdash; or add your <b>Sites template</b> and the tool exports a Sites file for them alongside this one.</div>' +
           '</div>'
         );
       }
       if (b.unknownCvs.length) {
-        const sample = b.unknownCvs.slice(0, 8).map(v => '<li>' + escHtml(v) + '</li>').join('');
-        const more = b.unknownCvs.length > 8 ? '<li class="ts-confirm-more">… and ' + (b.unknownCvs.length - 8) + ' more</li>' : '';
+        // One line per crop with its varieties: "Grapes (new crop) — Variety A, Variety B".
+        const groups = groupCropVarieties(new Map(b.unknownCvs.map(v => [v, 1])), tplData.dropdowns.get('crop & variety'));
+        const sample = groups.slice(0, 8).map(g => {
+          const names = g.vars.map(v => v.variety || '(no variety)');
+          return '<li><b>' + escHtml(g.crop) + '</b>' + (g.isNew ? ' (new crop)' : '') + ' — ' +
+            escHtml(names.slice(0, 6).join(', ')) + (names.length > 6 ? ', +' + (names.length - 6) + ' more' : '') + '</li>';
+        }).join('');
+        const more = groups.length > 8 ? '<li class="ts-confirm-more">… and ' + (groups.length - 8) + ' more crops</li>' : '';
         sections.push(
           '<div class="ts-confirm-issue">' +
-          '<div class="ts-confirm-issue-head">⚠ ' + b.unknownCvs.length + ' Crop &amp; Variety value(s) not in your template dropdown</div>' +
+          '<div class="ts-confirm-issue-head">⚠ ' + b.unknownCvs.length + ' Crop &amp; Variety value(s) across ' +
+            groups.length + ' crop' + (groups.length === 1 ? '' : 's') + ' not in your template dropdown</div>' +
           '<ul class="ts-confirm-list">' + sample + more + '</ul>' +
           '<div class="ts-confirm-issue-body">Create these in PickTrace and re-download the template.</div>' +
           '</div>'
@@ -1606,6 +2338,24 @@
           '<div class="ts-confirm-issue">' +
           '<div class="ts-confirm-issue-head">⚠ ' + b.nameCollisions + ' row(s) share a Site + Name (' + (b.collisionSamples || []).length + ' collision' + ((b.collisionSamples || []).length === 1 ? '' : 's') + ')</div>' +
           '<div class="ts-confirm-issue-body">PickTrace requires a unique name within a site — one block in each pair will be <b>silently dropped</b> on upload. Rename one in the <b>Name Collisions</b> panel first.<ul class="ts-confirm-list">' + sample + more + '</ul></div>' +
+          '</div>'
+        );
+      }
+      if (b.unlisted && b.unlisted.length) {
+        sections.push(
+          '<div class="ts-confirm-issue">' +
+          '<div class="ts-confirm-issue-head">⚠ ' + b.unlisted.map(u => escHtml(u.column) + ': ' + u.values + ' value' + (u.values === 1 ? '' : 's') + ' on ' + u.rows + ' row' + (u.rows === 1 ? '' : 's')).join(' · ') +
+            ' — lists your org hasn’t set up</div>' +
+          '<div class="ts-confirm-issue-body">These are dropdowns in PickTrace with no options in your org yet, so it can reject the rows that use them. Create the values first (<b>Build in PickTrace</b> lists them), or leave the column out.</div>' +
+          '</div>'
+        );
+      }
+      if (b.siteFile && b.siteFile.emptyReq > 0) {
+        sections.push(
+          '<div class="ts-confirm-issue">' +
+          '<div class="ts-confirm-issue-head">⚠ ' + b.siteFile.emptyReq + ' empty required cell' + (b.siteFile.emptyReq === 1 ? '' : 's') + ' in the Sites file (' +
+            b.siteFile.cols.map(escHtml).join(', ') + ')</div>' +
+          '<div class="ts-confirm-issue-body">PickTrace rejects a site missing these &mdash; and then every location under it. Fill them under <b>Sites file</b> and <b>Site addresses</b>.</div>' +
           '</div>'
         );
       }
@@ -1640,20 +2390,23 @@
   function runFormat() {
     if (!srcData || !tplData) { alert('Upload source data + a personalized bulk template first.'); return; }
     const bulkHeaders = target === 'update' ? UPDATE_HEADERS : CREATE_HEADERS;
-    mapping = autoMap(bulkHeaders, srcData.headers);
+    mapping = mapSource(bulkHeaders);
     // Reset manual fills + removed rows on a fresh format — they're tied
     // to the prior mapping/target context.
     manualFills = {};
     removedRows = new Set();
     cellOverrides = {};
     smartFixMap = {};
-    previewIssuesOnly = false;
+    siteFillOk = new Set();
+    pvMode = 'all'; pvColsOnly = false; pvFocus = null;
+    builtOnce = true;
     rebuildFormattedRows();
     renderMapping();
     renderPreview();
     renderRequired();
     updateSummary();
     $('ts-empty').style.display = 'none';
+    $('ts-run').classList.remove('is-ready');
   }
 
   function doExport() {
@@ -1709,13 +2462,28 @@
       }
     }
 
-    // Write the formatted rows starting at row 1 (right under the header).
-    const colCount = Math.max(range.e.c + 1, bulkHeaders.length);
+    // Each value goes under the template's own header of that name — the
+    // header row is kept as the template has it, and PickTrace adds columns
+    // between versions (Internal Commission), so placing by position could
+    // shift every column after an inserted one. A column the template's header
+    // row lacks keeps its position only where that cell of the header is blank.
+    const tplHead = [];
+    for (let c = 0; c <= range.e.c; c++) { const h = ws[XLSX.utils.encode_cell({ r: 0, c })]; tplHead[c] = h ? norm(String(h.v)) : ''; }
+    const missing = [];
+    const at = bulkHeaders.map((h, i) => {
+      const j = tplHead.indexOf(norm(h));
+      if (j >= 0) return j;
+      if (!tplHead[i]) return i;
+      missing.push(h);
+      return -1;
+    });
+    if (missing.length && !confirm('The template’s header row has no column for: ' + missing.join(', ') + '.\n\nExport without those columns?')) return;
+    const colCount = Math.max(range.e.c + 1, ...at.map(j => j + 1));
     exportRows.forEach((row, ri) => {
-      for (let c = 0; c < colCount; c++) {
+      for (let c = 0; c < bulkHeaders.length; c++) {
         const val = row[c];
-        if (val == null || val === '') continue;
-        const ref = XLSX.utils.encode_cell({ r: ri + 1, c });
+        if (val == null || val === '' || at[c] < 0) continue;
+        const ref = XLSX.utils.encode_cell({ r: ri + 1, c: at[c] });
         // Preserve numbers as numbers (so PickTrace's numeric validations work),
         // booleans for Is Archived, everything else as text.
         if (typeof val === 'number') ws[ref] = { v: val, t: 'n' };
@@ -1736,13 +2504,9 @@
       e: { r: Math.max(0, exportRows.length), c: colCount - 1 }
     });
 
-    // Filename: original template name + " — filled" before the extension.
-    // Keeps the user from having to overwrite the source template.
-    const origName = (tplData.fileName || 'bulk-template.xlsx').trim();
-    const dotIdx = origName.lastIndexOf('.');
-    const base = dotIdx > 0 ? origName.substring(0, dotIdx) : origName;
-    const ext = dotIdx > 0 ? origName.substring(dotIdx) : '.xlsx';
-    const exportName = base + ' — filled' + ext;
+    // "Acme Farms - Locations - 2026-10-07.xlsx" (see IMOutName in utils.js);
+    // an Update template says so, since it's uploaded somewhere else.
+    const exportName = IMOutName.fileName(target === 'update' ? 'Locations Update' : 'Locations');
 
     // bookSST:true is NOT optional. Without it SheetJS writes string cells as
     // t="str", which OOXML defines as a cached formula result rather than
@@ -1752,20 +2516,42 @@
     // also keeps the <dataValidations> SheetJS drops on a round-trip. This
     // export still writes numeric columns as numbers, so it has not been moved
     // over yet.)
-    XLSX.writeFile(wb, exportName, { cellStyles: true, bookSST: true });
+    const siteRows = siteFileOn() ? siteRowsForExport() : [];
+    if (!siteRows.length) { XLSX.writeFile(wb, exportName, { cellStyles: true, bookSST: true }); return; }
+    // With new sites: both files in one .zip folder (as Bulk's Download All),
+    // the Sites file written by patching its template like the Sites tool does.
+    const folder = IMOutName.folderName();
+    const locBytes = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true, bookSST: true }));
+    IMXlsxTemplate.build({ rawBuffer: siteTpl.rawBuffer, headers: siteTpl.headers, rows: siteRows })
+      .then(blob => blob.arrayBuffer())
+      .then(buf => {
+        const zip = IMXlsxTemplate.bundle([
+          { name: folder + '/' + IMOutName.fileName('Sites'), data: new Uint8Array(buf) },
+          { name: folder + '/' + exportName, data: locBytes }]);
+        const url = URL.createObjectURL(zip);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = folder + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      })
+      .catch(err => alert('Could not write the Sites file: ' + (err && err.message ? err.message : err)));
   }
 
   // ─── Load handlers ───
   function handleSrcFile(file) {
     readSrcFile(file).then(data => {
       srcData = data;
+      IMOutName.suggestClient(file.name);
       $('ts-src-name').textContent = file.name + ' [' + data.sheetName + ']';
       const hrowNote = data.headerRow > 0 ? ' (skipped ' + data.headerRow + ' metadata row' + (data.headerRow === 1 ? '' : 's') + ' above)' : '';
       $('ts-src-meta').textContent = data.rows.length + ' rows · ' + data.headers.length + ' columns · sheet: ' + data.sheetName + hrowNote;
       formattedRows = null;
-      $('ts-run').disabled = !(srcData && tplData);
-      // Auto-run if both already in.
-      if (srcData && tplData) runFormat();
+      // The first build waits for Format Sheet, so the optional files can go in
+      // first; after that a new file rebuilds straight away.
+      if (srcData && tplData && builtOnce) runFormat(); else showReady();
     }).catch(err => {
       if (err && err.message === 'cancelled') return; // user dismissed the picker — quiet
       alert('Failed to read file: ' + (err && err.message ? err.message : err));
@@ -1790,8 +2576,10 @@
       const keys = new Set();
       const blockKeys = new Set();
       const byName = new Map();
+      const sites = new Set(); // every Site the account already has (it has locations)
       data.rows.forEach(r => {
         const s = r[siteI], n = r[nameI];
+        if (String(s == null ? '' : s).trim()) sites.add(String(s).trim());
         if (!(String(s == null ? '' : s).trim() || String(n == null ? '' : n).trim())) return;
         const nk = locKey(s, n);
         const cv = cvI >= 0 ? String(r[cvI] == null ? '' : r[cvI]).trim() : '';
@@ -1802,17 +2590,17 @@
         arr.push({ cv, ac });
         byName.set(nk, arr);
       });
-      existingData = { keys, blockKeys, byName, hasCrop: cvI >= 0, fileName: file.name, count: keys.size };
+      existingData = { keys, blockKeys, byName, sites, hasCrop: cvI >= 0, fileName: file.name, count: keys.size };
       $('ts-existing-name').textContent = file.name + ' [' + data.sheetName + ']';
       $('ts-existing-meta').textContent = keys.size + ' existing location' + (keys.size === 1 ? '' : 's') + ' indexed' +
         (cvI >= 0 ? ' (block-level)' : ' (name-only — no Crop column)');
-      if (srcData && tplData) {
+      if (formattedRows) {
         rebuildFormattedRows();
         renderPreview();
         renderRequired();
         renderSitesAndCvToCreate();
         updateSummary();
-      }
+      } else showReady();
     }).catch(err => {
       if (err && err.message === 'cancelled') return;
       alert('Failed to read existing-locations file: ' + (err && err.message ? err.message : err));
@@ -1984,7 +2772,23 @@
       // customized Locations template that misses the signature can still be
       // used deliberately.
       const kind = identifyTemplate(parsed.headers);
-      if (kind.kind === 'sites' || kind.kind === 'employees') {
+      // The Sites template has a slot of its own here (new sites → Sites file).
+      if (kind.kind === 'sites') { useSiteTemplate(parsed, file.name); return; }
+      // A locations EXPORT has the template's DATA ENTRY sheet but no
+      // DROP-DOWN INPUTS: nothing to check Site, Location Type or Crop & Variety
+      // against, and its header row isn't the template's (it adds Internal
+      // Commission), so rows written under it would land a column off. It
+      // belongs in the Existing locations slot.
+      if (kind.kind === 'locations' && !parsed.sheetNames.some(n => /drop.?down/i.test(n))) {
+        const free = !existingData;
+        alert('That’s a locations export, not the personalized bulk template — it has no DROP-DOWN INPUTS sheet, so there would be no Site, ' +
+          'Location Type or Crop & Variety lists to pick from or check against, and its columns don’t line up with the upload.\n\n' +
+          (free ? 'It’s been added as Existing locations (rows already in PickTrace are dropped). ' : '') +
+          'For slot 2, download the bulk Locations template from PickTrace (the one with the DROP-DOWN INPUTS sheet).');
+        if (free) handleExistingFile(file);
+        return;
+      }
+      if (kind.kind === 'employees') {
         alert('Wrong template — this is the ' + kind.label + ' bulk template.\n\n' +
           'This tool builds the LOCATIONS template. Loading a ' + kind.label +
           ' template writes location data under the wrong headers' +
@@ -2005,6 +2809,10 @@
         if (!ok) return;
       }
       tplData = parsed;
+      readRestricted(e.target.result, parsed.headers).then(set => {
+        parsed.restricted = set;
+        if (tplData === parsed && formattedRows) refreshAll();
+      });
       $('ts-tpl-name').textContent = file.name;
       $('ts-tpl-meta').innerHTML =
         (kind.kind === 'locations' ? 'Locations template · ' : '') +
@@ -2023,17 +2831,34 @@
         target = 'create';
       }
       formattedRows = null;
-      $('ts-run').disabled = !(srcData && tplData);
-      if (srcData && tplData) runFormat();
+      if (srcData && tplData && builtOnce) runFormat(); else showReady();
     };
     r.readAsArrayBuffer(file);
+  }
+
+  // Before the first build: the Format button, and what's still missing.
+  function showReady() {
+    $('ts-run').disabled = !(srcData && tplData);
+    $('ts-run').classList.toggle('is-ready', !!(srcData && tplData && !formattedRows));
+    if (formattedRows) return;
+    const empty = $('ts-empty');
+    empty.style.display = '';
+    empty.innerHTML = srcData && tplData
+      ? '<b>Ready.</b> Add any optional files (existing locations, the Sites template), then press <b>&#9654; Format Sheet</b>.'
+      : 'Upload a source file AND a personalized bulk template' + (srcData || tplData ? ' — ' + (srcData ? 'the template' : 'the source file') + ' is still missing.' : ' to start.');
+    if (wb) wb.refresh();
   }
 
   // ─── Reset ───
   function reset() {
     srcData = null; tplData = null; formattedRows = null; mapping = {};
+    IMOutName.forget();
     manualFills = {}; removedRows = new Set(); siteAddresses = {};
-    smartFixMap = {}; previewIssuesOnly = false;
+    siteTpl = null; siteFill = {}; siteAddrAll = ''; siteAddrGroup = {}; siteEdits = {}; pvView = 'locations'; siteGrid = [];
+    builtOnce = false;
+    { const n = $('ts-sitetpl-name'); if (n) n.textContent = 'No file selected'; }
+    { const m = $('ts-sitetpl-meta'); if (m) m.textContent = ''; }
+    smartFixMap = {}; pvMode = 'all'; pvColsOnly = false; pvFocus = null; siteFillOk = new Set(); siteGaps = [];
     dateFill = { mm: '', dd: '', range: 'first' };
     existingData = null; existingRowIdxs = new Set();
     nameOverrides = {}; cellOverrides = {}; collisionKeys = new Set(); existingTakenKeys = new Set();
@@ -2047,12 +2872,13 @@
     { const em = $('ts-existing-meta'); if (em) em.textContent = ''; }
     { const ef = $('ts-existing-file'); if (ef) ef.value = ''; }
     $('ts-src-file').value = ''; $('ts-tpl-file').value = '';
-    ['ts-section-mapping','ts-section-smartfix','ts-section-sites-create','ts-section-cv-create','ts-section-required','ts-section-existing','ts-section-merged','ts-section-collisions','ts-section-datefill','ts-section-preview']
+    ['ts-section-mapping','ts-section-smartfix','ts-section-sites-create','ts-section-sitefile','ts-section-siteaddr','ts-section-cv-create','ts-section-required','ts-section-existing','ts-section-merged','ts-section-collisions','ts-section-datefill','ts-section-preview']
       .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
     $('ts-summary').style.display = 'none';
-    $('ts-empty').style.display = '';
-    $('ts-run').disabled = true;
     $('ts-export').disabled = true;
+    lastSum = { pastDates: 0, toCreate: 0, collisionRows: 0 };
+    if (wb) wb.reset();
+    showReady();
     if (window.IMDebug) IMDebug.refresh('locations-standardize');
   }
 
@@ -2095,6 +2921,8 @@
     asked.push(IMDebug.ask('past-start-dates', 'data', 'Start Date values before today', {
       count: b.pastStartDates || 0, blocksExport: false,
       detail: 'PickTrace treats a past start date as already-planted.' }));
+    asked.push(IMDebug.ask('unlisted-values', 'dropdown', 'Values in columns whose template list is empty (org has none set up)', {
+      count: (b.unlisted || []).length, blocksExport: true, items: b.unlisted || [] }));
     const sfPending = computeSmartFixes();
     asked.push(IMDebug.ask('smart-fixes', 'smartfix', 'Off-list values awaiting a Smart Fix choice', {
       count: sfPending.length, blocksExport: false,
@@ -2132,7 +2960,9 @@
         IMDebug.file('personalized bulk Locations template', tplData, {
           dropdowns: tplData.dropdowns ? [...tplData.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [] }),
         IMDebug.file('existing locations in PickTrace', existingData, {
-          indexedKeys: existingData ? existingData.count : null })
+          indexedKeys: existingData ? existingData.count : null }),
+        IMDebug.file('personalized bulk Sites template (new sites)', siteTpl, {
+          dropdowns: siteTpl ? [...siteTpl.dropdowns.entries()].map(([k, v]) => ({ column: k, values: [...v] })) : [] })
       ],
       mapping: IMDebug.mapping(cols, srcData.headers, { srcRows: srcData.rows }),
       derived: [
@@ -2140,8 +2970,11 @@
           note: 'When on, " - Subvariety" is split off Crop & Variety into Clone/Subvariety.' },
         { kind: 'year-only date expansion', settings: dateFill,
           note: 'Year-only Start Dates are expanded to a full date using the month/day above.' },
-        { kind: 'site addresses carried for reference', count: Object.keys(siteAddresses).length,
-          sample: Object.keys(siteAddresses).slice(0, 20).map(k => ({ site: k, address: siteAddresses[k] })) }
+        { kind: 'sites file', enabled: siteFileOn(), newSites: newSitesMap().size,
+          note: 'New sites (not in the Locations template Site list) built into a Sites upload: address = own > ranch > every site, then fills, one-option lists, edits.',
+          fills: siteFill, addressForEverySite: siteAddrAll || null,
+          addressByRanch: siteAddrGroup, addressBySite: siteAddresses, edits: siteEdits,
+          output: siteFileOn() ? (() => { const sf = buildSiteFile(); return { headers: sf.headers, rows: sf.rows.slice(0, 500), provenance: sf.prov.slice(0, 500) }; })() : null }
       ],
       fills: Object.keys(manualFills).map(i => ({ column: H[+i], value: manualFills[i], kind: 'column fill' }))
         .concat(Object.keys(smartFixMap).map(k => {
@@ -2176,6 +3009,7 @@
   function init() {
     if (initialized) return;
     initialized = true;
+    mountWorkbench();
     if (window.IMDebug) {
       IMDebug.register('locations-standardize', {
         label: 'Locations Standardize',
@@ -2194,6 +3028,49 @@
       e.target.value = '';
     });
     { const ef = $('ts-existing-file'); if (ef) ef.addEventListener('change', e => { if (e.target.files[0]) handleExistingFile(e.target.files[0]); e.target.value = ''; }); }
+    { const sf = $('ts-sitetpl-file'); if (sf) sf.addEventListener('change', e => { if (e.target.files[0]) handleSiteTplFile(e.target.files[0]); e.target.value = ''; }); }
+    // Lists your org hasn't set up: leave a column out (unmapped — Column
+    // Mapping can bring it back), or copy Column / Value / Rows for PickTrace.
+    { const lt = $('ts-lists-create-table'); if (lt) lt.addEventListener('click', e => {
+        const b = e.target.closest('.ts-list-drop');
+        if (!b) return;
+        mapping[+b.dataset.ci] = -1;
+        renderMapping();
+        refreshAll();
+      }); }
+    { const lc = $('ts-lists-copy'); if (lc) lc.addEventListener('click', () => {
+        const H = activeSchemaHeaders(), lines = [];
+        unlistedValues().forEach((m, ci) => m.forEach((c, v) => lines.push(H[ci] + '\t' + v + '\t' + c)));
+        if (!lines.length) return;
+        navigator.clipboard.writeText('Column\tValue\tRows\n' + lines.join('\n'))
+          .then(() => alert('Copied ' + lines.length + ' values.'), () => alert('Copy failed.'));
+      }); }
+    // Sites file: a column fill for every new site (a pick, or text on change).
+    { const body = $('ts-sitefile-body'); if (body) {
+      body.addEventListener('change', e => {
+        const el = e.target.closest('.ts-sf-fill');
+        if (!el) return;
+        const v = el.value.trim();
+        if (v) siteFill[el.dataset.k] = v; else delete siteFill[el.dataset.k];
+        refreshSites();
+      });
+      body.addEventListener('click', e => {
+        const b = e.target.closest('.ts-sf-clear');
+        if (!b) return;
+        delete siteFill[b.dataset.k];
+        refreshSites();
+      });
+    } }
+    // Site addresses: every site / per ranch / one site — kept on change.
+    { const body = $('ts-siteaddr-body'); if (body) body.addEventListener('change', e => {
+        const el = e.target.closest('.ts-addr-in');
+        if (!el) return;
+        const v = el.value.trim(), k = el.dataset.key;
+        if (el.dataset.scope === 'all') siteAddrAll = v;
+        else if (el.dataset.scope === 'ranch') { if (v) siteAddrGroup[k] = v; else delete siteAddrGroup[k]; }
+        else { if (v) siteAddresses[k] = v; else delete siteAddresses[k]; }
+        refreshSites();
+      }); }
     { const cs = $('ts-crop-split'); if (cs) cs.addEventListener('change', e => {
         cropSplit = !!e.target.checked;
         refreshAll();
@@ -2212,13 +3089,14 @@
     document.querySelectorAll('input[name="ts-target"]').forEach(r => {
       r.addEventListener('change', e => {
         target = e.target.value;
-        if (srcData && tplData) runFormat();
+        if (srcData && tplData && builtOnce) runFormat();
       });
     });
     $('ts-run').addEventListener('click', runFormat);
     $('ts-export').addEventListener('click', async () => {
       const b = getExportBlockers();
-      if (b && (b.emptyReq > 0 || b.unknownSites.length || b.unknownCvs.length || b.nameCollisions > 0 || b.pastStartDates > 0)) {
+      if (b && (b.emptyReq > 0 || b.unknownSites.length || b.unknownCvs.length || b.nameCollisions > 0 || b.pastStartDates > 0 ||
+          (b.siteFile && b.siteFile.emptyReq > 0) || (b.unlisted && b.unlisted.length))) {
         const proceed = await showExportConfirm(b);
         if (!proceed) return;
       }
@@ -2228,41 +3106,50 @@
     { const sfa = $('ts-smartfix-apply-all'); if (sfa) sfa.addEventListener('click', applyAllSmartFixes); }
     $('ts-sites-copy').addEventListener('click', () => {
       const tbl = $('ts-sites-create-table');
+      const ranches = ranchMap(newSiteNames());
       const rows = [...tbl.querySelectorAll('tbody tr')]
-        .filter(tr => !tr.classList.contains('ts-addr-allrow'))
         .map(tr => {
           const val  = tr.children[0] ? tr.children[0].textContent.trim() : '';
           const cnt  = tr.children[1] ? tr.children[1].textContent.trim() : '';
-          const aInp = tr.querySelector('.ts-site-addr');
-          return val + '\t' + cnt + '\t' + (aInp ? aInp.value.trim() : '');
+          return val + '\t' + cnt + '\t' + siteAddrFor(val, ranches.get(val)).text;
         });
       if (!rows.length) return;
       navigator.clipboard.writeText('Site\tRow count\tAddress\n' + rows.join('\n'))
         .then(() => alert('Copied ' + rows.length + ' sites.'), () => alert('Copy failed.'));
     });
     // Click-to-copy any cell (mirrors the Compare page). The Empty Required
-    // Columns section is form-only, and the address control row has no value
-    // worth copying, so both are excluded.
+    // Columns section is form-only, so it's excluded.
     $('ts-results').addEventListener('click', e => {
       const td = e.target.closest('.cmp-section .data-table td');
       if (!td) return;
       if (td.closest('#ts-section-required')) return;
-      if (td.closest('tr.ts-addr-allrow')) return;
       if (e.target.closest('input, button, label, select, textarea, a')) return;
-      const text = (td.textContent || '').trim();
+      // A cell can name what it copies (the crop without its "new crop" tag).
+      const text = (td.dataset.copy != null ? td.dataset.copy : td.textContent || '').trim();
       if (!text) return;
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text)
           .then(() => td.classList.toggle('cmp-copied'), () => {});
       }
     });
+    // Same shape as the table: Crop | Variety | Row count, the crop written
+    // once above its varieties, so it pastes into a sheet the way it reads.
+    // Blank Site (in Smart Fixes): copy a group's site down, undo it, or all.
+    { const sg = $('ts-sitegaps'); if (sg) sg.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      if (btn.dataset.act === 'all') siteGaps.forEach(g => siteFillOk.add(g.id));
+      else if (btn.dataset.act === 'apply') siteFillOk.add(btn.dataset.id);
+      else siteFillOk.delete(btn.dataset.id);
+      rebuildFormattedRows(); renderPreview(); renderRequired(); renderSitesAndCvToCreate(); updateSummary();
+    }); }
     $('ts-cv-copy').addEventListener('click', () => {
-      const tbl = $('ts-cv-create-table');
-      const rows = [...tbl.querySelectorAll('tbody tr')]
-        .map(tr => [...tr.children].map(td => td.textContent).join('\t'));
-      if (!rows.length) return;
-      navigator.clipboard.writeText('Crop & Variety\tRow count\n' + rows.join('\n'))
-        .then(() => alert('Copied ' + rows.length + ' values.'), () => alert('Copy failed.'));
+      if (!cvGroups.length) return;
+      const lines = ['Crop\tVariety\tRow count'];
+      cvGroups.forEach(g => g.vars.forEach((v, i) => lines.push((i === 0 ? g.crop : '') + '\t' + v.variety + '\t' + v.count)));
+      navigator.clipboard.writeText(lines.join('\n'))
+        .then(() => alert('Copied ' + cvGroups.length + ' crop(s) and ' + (lines.length - 1) + ' variet' +
+          (lines.length === 2 ? 'y' : 'ies') + '.'), () => alert('Copy failed.'));
     });
   }
 

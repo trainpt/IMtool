@@ -258,6 +258,17 @@ a { color: var(--accent); text-decoration: none; }
 }
 .ctx-name { font-size: 13px; font-weight: 650; color: var(--text, #18181b); }
 .ctx-situation { font-size: 12px; color: var(--text-muted, #6b7280); }
+/* Client box — names the downloaded files (IMOutName in utils.js). */
+.ctx-client {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+}
+.ctx-client .input-field { width: 210px; padding: 3px 8px; font-size: 12px; }
 
 /* ── Entity bar ──
    Sits directly under the build picker, not off in the corner of the context
@@ -2811,6 +2822,154 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   color: inherit;
 }
 .ts-edit-grid td.ts-cell .ts-cell-select { cursor: pointer; }
+/* A dropdown cell before it's clicked (IMWorkbench.pickButton): looks like
+   the closed <select> it turns into, without carrying its option list. */
+.ts-edit-grid td.ts-cell .ts-cell-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 96px;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ts-edit-grid td.ts-cell .ts-cell-pick::after { content: '▾'; flex: none; font-size: 10px; color: var(--text-3); }
+/* In a fixed-width column (IMWorkbench.rows widths) a value longer than the
+   column is cut off rather than spilling into the next cell. */
+.ts-edit-grid[style*="fixed"] td { overflow: hidden; }
+.ts-edit-grid[style*="fixed"] th,
+#es-preview-table[style*="fixed"] th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#es-preview-table[style*="fixed"] td.es-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#es-preview-table[style*="fixed"] td.es-cell:focus { text-overflow: clip; }
+/* Legacy → 3.0 Employees: the same contenteditable grid. */
+#em-preview-table[style*="fixed"] td.em-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#em-preview-table[style*="fixed"] td.em-cell:focus { text-overflow: clip; }
+.ts-edit-grid td.ts-cell .ts-cell-pick:hover { background: var(--bg-hover); }
+.ts-edit-grid td.ts-cell .ts-cell-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ts-cell-pick-blank { color: var(--text-3); }
+/* A text cell before it's clicked (IMWorkbench.textCell) — the same box as
+   the input it becomes, so the row doesn't shift when you start typing. */
+.ts-edit-grid td.ts-cell .ts-cell-text {
+  display: block;
+  box-sizing: border-box;
+  min-width: 96px;
+  min-height: 29px;
+  padding: 5px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+.ts-edit-grid td.ts-cell .ts-cell-text:hover { background: var(--bg-hover); }
+.ts-edit-grid td.ts-cell .ts-cell-text:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* A Smart Fix picker before it's clicked — dressed as the .input-field
+   <select> it turns into. */
+.wb-fix-pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  max-width: 320px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.wb-fix-pick::after { content: '▾'; flex: none; font-size: 10px; color: var(--text-3); }
+
+/* Preview headers sort on click; the grip on a header's right edge resizes
+   its column (IMWorkbench.rows keys). */
+.data-table th.wb-th { cursor: pointer; user-select: none; }
+.wb-col-grip {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 9px;
+  cursor: col-resize; z-index: 2; touch-action: none;
+}
+.wb-col-grip::after {
+  content: ''; position: absolute; top: 25%; bottom: 25%; right: 2px; width: 1px;
+  background: var(--border-strong, #d4d4d8);
+}
+.wb-col-grip:hover::after, body.wb-resizing .wb-col-grip::after { background: var(--accent); width: 3px; right: 1px; }
+body.wb-resizing, body.wb-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+/* The horizontal scroll rail under a wide preview grid — sticky to the bottom
+   of the page, so sideways scrolling is always within reach. It replaces the
+   grid's own horizontal bar, and is darker than the app's faint default. */
+.wb-hrail {
+  position: sticky; bottom: 0; z-index: 12;
+  overflow-x: auto; overflow-y: hidden;
+  height: 14px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  scrollbar-color: #a1a1aa transparent;
+}
+.wb-hrail > div { height: 1px; }
+.wb-hrail::-webkit-scrollbar { height: 12px; }
+.wb-hrail::-webkit-scrollbar-thumb { background: #a1a1aa; border-radius: 6px; border: 2px solid var(--bg); }
+.wb-hrail::-webkit-scrollbar-thumb:hover { background: #71717a; }
+.wb-hrail-host::-webkit-scrollbar:horizontal { height: 0; }
+.wb-pv.is-collapsed .wb-hrail,
+.dt-pv.is-collapsed .wb-hrail { display: none !important; }
+
+/* Every row, drawn as you scroll (IMWorkbench.rows): the spacer rows that
+   stand in for the rows out of view carry no padding or border of their own. */
+tr.wb-gap > td { padding: 0 !important; border: 0 !important; background: transparent !important; }
+.wb-rows-none { padding: 14px 12px !important; color: var(--text-3); text-align: center; font-style: italic; }
+
+/* Preview filter bar (IMWorkbench.filterBar). */
+.wb-filter { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-right: 12px; font-style: normal; }
+.wb-filter .wb-rowfilter { min-height: 28px; padding: 3px 8px; font-size: 12px; font-weight: 600; width: auto; }
+.wb-colfilter-wrap { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer; }
+.wb-colfilter-n { font-weight: 400; color: var(--text-3); }
+.wb-focus {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--accent-ring); color: var(--text);
+  font-size: 12px; font-weight: 600;
+}
+.wb-focus-clear {
+  all: unset; cursor: pointer; width: 18px; height: 18px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; color: var(--text-2);
+}
+.wb-focus-clear:hover { background: var(--bg-hover); color: var(--text); }
+.wb-focus-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wb-filter-note { color: var(--text-3); }
+
+/* Format Sheet once the required files are in — the next step, until pressed. */
+.btn.is-ready { box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* Locations | Sites switch above the Template Standardize preview. */
+.wb-views { display: inline-flex; gap: 4px; margin-right: 12px; vertical-align: middle; }
+.wb-views .btn { padding: 3px 10px; font-size: 12px; }
+/* A cell the Sites preview shows but doesn't edit (Name — from the Locations Site column). */
+.ts-edit-grid td.ts-cell-ro { padding: 5px 8px !important; color: var(--text-2); white-space: nowrap; cursor: default; }
+
+/* Sites file / Site addresses panels. */
+.ts-sf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ts-addr-block { margin: 12px 0 0; }
+.ts-addr-label { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.ts-addr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.ts-addr-row .ts-addr-in { flex: 1 1 260px; min-width: 200px; max-width: 460px; }
+.ts-addr-table td { vertical-align: middle; }
+.ts-addr-table .table-wrap, .ts-addr-block .table-wrap { max-height: 420px; }
+.ts-addr-ok { font-size: 11.5px; color: #15803d; white-space: nowrap; }
+.ts-addr-bad { font-size: 11.5px; color: #b45309; font-weight: 600; white-space: nowrap; }
+
+/* Required blanks: the pick / override / buttons wrap inside the panel
+   instead of running past its right edge. */
+.ts-req-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ts-req-ctl .ts-req-pick { min-width: 150px; max-width: 260px; flex: 1 1 170px; }
+.ts-req-ctl .ts-req-override { min-width: 120px; flex: 1 1 140px; max-width: 220px; }
 .ts-edit-grid td.ts-cell .ts-cell-input { cursor: text; }
 .ts-edit-grid td.ts-cell .ts-cell-input:focus,
 .ts-edit-grid td.ts-cell .ts-cell-select:focus {
@@ -2840,6 +2999,11 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
 }
 #page-compare .cmp-page {
   min-height: 0;
+  /* The window's width (up to .cmp-page's cap), never its widest table's:
+     centered with auto margins, a flex item shrink-wraps its content, and a
+     wide preview pushed the page past the right edge of a narrow window. */
+  width: 100%;
+  box-sizing: border-box;
 }
 /* Each results section gets its own bounded scroll so sections don't all fight for the same space. */
 .cmp-section .table-wrap {
@@ -3222,6 +3386,156 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
 }
 .dt-build-crop .dt-build-vals li { padding: 3px 8px; font-size: 11px; }
 
+/* Crop & Variety in two steps, matching the order PickTrace needs them:
+   create the missing crops, then the varieties under each crop. */
+.dt-build-step + .dt-build-step { border-top: 1px solid var(--border-light); }
+.dt-build-step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px 0;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-2);
+}
+.dt-build-step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--amber-soft);
+  border: 1px solid #f0dfb8;
+  font-size: 9.5px;
+  color: var(--amber-text);
+}
+.dt-build-step-none { padding: 6px 9px 8px; font-size: 11px; color: var(--text-3); }
+.dt-build-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 7px 9px 9px;
+}
+.dt-build-chips li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 11px;
+}
+.dt-build-tag {
+  margin-left: 4px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.dt-build-tag-new { border-color: #f0dfb8; background: var(--amber-soft); color: var(--amber-text); }
+
+/* Data Template — Spelling fixes. One row per corrected value: crop, the typo
+   (struck) next to the name it now uses, why, rows, Undo. A row you undid
+   flips: the typo stays, the suggestion is struck, the button offers it back. */
+.dt-spell-link {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--green-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.dt-spell {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+}
+.dt-spell-head { margin-bottom: 10px; }
+.dt-spell-title { font-size: 13.5px; font-weight: 650; color: var(--green-text); }
+.dt-spell-sub { margin: 3px 0 0; max-width: 92ch; font-size: 11.5px; line-height: 1.5; color: var(--text-2); }
+.dt-spell-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); }
+.dt-spell-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 140px) minmax(200px, 340px) minmax(0, 1fr) 64px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.dt-spell-row + .dt-spell-row { border-top: 1px solid var(--border-light); }
+.dt-spell-crop { color: var(--text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-spell-dom { margin-left: 4px; color: var(--text-3); }
+.dt-spell-pair { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.dt-spell-from { color: var(--text-3); text-decoration: line-through; text-decoration-color: rgba(185, 28, 28, .5); }
+.dt-spell-arrow { color: var(--text-3); }
+.dt-spell-to { font-weight: 650; color: var(--text); background: var(--green-soft); padding: 0 6px; border-radius: var(--radius-sm); }
+.dt-spell-why { font-size: 11px; color: var(--text-2); }
+.dt-spell-rows { font-size: 11px; color: var(--text-3); text-align: right; white-space: nowrap; }
+.dt-spell-btn {
+  justify-self: end;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dt-spell-btn:hover { background: var(--bg-hover); }
+.dt-spell-btn.is-quiet { border-color: var(--border); color: var(--text-2); }
+.dt-spell-btn:focus-visible, .dt-spell-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dt-spell-row.is-kept { background: var(--amber-soft); }
+.dt-spell-row.is-kept .dt-spell-from { color: var(--text); text-decoration: none; font-weight: 650; }
+.dt-spell-row.is-kept .dt-spell-to { color: var(--text-3); background: none; font-weight: 400; text-decoration: line-through; }
+.dt-spell-row.is-kept .dt-spell-why { color: var(--amber-text); }
+.dt-spell-row.is-check .dt-spell-from { color: var(--text); text-decoration: none; }
+.dt-spell-row.is-check .dt-spell-to { background: none; font-weight: 400; }
+.dt-spell-check { margin-top: 14px; }
+.dt-spell-check-head { font-size: 12px; font-weight: 650; color: var(--amber-text); }
+.dt-spell-check .dt-spell-sub { margin-bottom: 8px; }
+@media (max-width: 720px) {
+  .dt-spell-row { grid-template-columns: 1fr auto; }
+  .dt-spell-crop, .dt-spell-why { grid-column: 1 / -1; }
+}
+
+/* Template Standardize — Crops & Varieties to Create: the crop cell spans its
+   varieties, and a heavier rule starts each crop. */
+#ts-cv-create-table td.ts-cv-crop { vertical-align: top; font-weight: 600; cursor: pointer; }
+#ts-cv-create-table tr.ts-cv-first > td { border-top: 2px solid var(--border); }
+
+/* Template Standardize — Crop & Variety built from two source columns. */
+.ts-map-joined { display: inline-block; padding: 5px 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+
+/* Template Standardize — Blank Site, at the top of Smart Fixes. */
+.ts-sitegaps { margin-bottom: 14px; }
+.ts-sitegaps-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ts-sitegaps-head b { color: var(--text); }
+
 /* ═══ Bulk Template Standardize — Column Fill panel ═══ */
 .dt-ok  { color: var(--green-text); }
 .dt-bad { color: var(--red-text); font-weight: 600; }
@@ -3233,6 +3547,421 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   color: var(--text-2);
 }
 .dt-fill-band-bad { background: var(--red-soft); color: var(--red-text); }
+/* Optional (no *) columns fold under one clickable band row. */
+.dt-fill-opt { padding: 0; }
+.dt-fill-opt-btn {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dt-fill-opt-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.dt-fill-opt-btn:disabled { cursor: default; }
+.dt-fill-opt-caret { width: 10px; color: var(--text-3); }
+.dt-fill-opt-note { font-weight: 500; }
+.dt-fill-opt-hint { margin-left: auto; font-weight: 500; font-size: 10.5px; color: var(--accent); }
+.dt-fill-opt-btn:disabled .dt-fill-opt-hint { color: var(--text-3); }
+
+/* ═══ Bulk Template Standardize — workbench ═══
+   Files fold to one strip, the preview is pinned to the top of the scroll
+   area, and the sections are buttons with counts — one panel open at a time. */
+.dt-files-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  margin-bottom: 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11.5px;
+}
+.dt-file-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg);
+  color: var(--text-2);
+}
+.dt-file-chip b { color: var(--text); font-weight: 600; }
+.dt-file-chip.is-ready::before { content: '✓'; color: var(--green-text); font-weight: 700; }
+.dt-file-chip.is-partial { border-color: #f3d9a4; background: var(--amber-soft); color: var(--amber-text); }
+.dt-file-chip.is-empty { color: var(--text-3); }
+.dt-file-chip.is-empty b { color: var(--text-3); font-weight: 500; }
+.dt-files-note { color: var(--text-2); }
+.dt-files-strip > .btn { margin-left: auto; }
+/* A file type's existing PickTrace export, and its swap / drop buttons. */
+.dt-chip-exist { color: var(--text-3); }
+.dt-chip-btn {
+  all: unset;
+  cursor: pointer;
+  padding: 0 3px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1;
+}
+.dt-chip-btn:hover { color: var(--text); }
+.dt-chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+
+/* Bulk preview: × on the row number leaves the row out. */
+.dt-pv-table td.dt-pv-n { white-space: nowrap; }
+.dt-pv-rm {
+  all: unset;
+  cursor: pointer;
+  margin-left: 6px;
+  padding: 0 3px;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+}
+.dt-pv-table tr:hover .dt-pv-rm,
+.dt-pv-rm:focus-visible { opacity: 1; }
+.dt-pv-rm:hover { color: var(--red); }
+.dt-pv-rm:focus-visible { outline: 2px solid var(--accent); border-radius: 3px; }
+/* Column Fill: "Show rows" narrows the preview to the gaps. */
+.dt-fill-show {
+  all: unset;
+  cursor: pointer;
+  margin-left: 4px;
+  font-size: 11.5px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+.dt-fill-show:focus-visible { outline: 2px solid var(--accent); border-radius: 3px; }
+.dt-nowrap { white-space: nowrap; }
+.dt-coll-group + .dt-coll-group { border-top: 2px solid var(--border); }
+
+/* The pane must be as tall as its content: #page-compare is a flex column,
+   and a pane shrunk to the viewport (min-height: 0, above) would carry the
+   sticky preview out of view once its own box scrolled past. */
+#page-compare #cmp-mode-datatemplate { flex-shrink: 0; }
+
+/* Preview — sticky inside #page-compare's scroll, so it never leaves view. */
+.dt-pv {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  margin-bottom: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.dt-pv-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px 6px;
+}
+.dt-pv-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.dt-pill-warn { font-size: 10.5px; font-weight: 700; color: var(--amber-text); }
+.ts-domain-active .dt-pill-warn { color: #fff; }
+.dt-pv-tools { display: flex; align-items: center; gap: 6px; }
+.dt-pv-tools .input-field { width: 180px; padding: 3px 8px; font-size: 12px; }
+.dt-pv-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 0 10px 7px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.dt-lg { display: inline-flex; align-items: center; gap: 5px; }
+.dt-lg::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+}
+.dt-lg-req::before { background: var(--red-soft); border-color: #fecaca; box-shadow: inset 2px 0 0 var(--red); }
+.dt-lg-off::before { background: var(--amber-soft); border-color: #f3d9a4; }
+.dt-lg-chg::before { background: linear-gradient(225deg, var(--accent) 0 5px, var(--bg) 5px); }
+.dt-pv-note { margin-left: auto; color: var(--text-3); }
+/* As tall as its rows, up to a third of the screen. Dragging the split
+   handle (workbench.js) writes an inline height, which lifts the cap. */
+.dt-pv-wrap {
+  max-height: 34vh;
+  min-height: 90px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.dt-pv-wrap[style*="height"] { max-height: 80vh; }
+.dt-pv.is-collapsed .dt-pv-wrap,
+.dt-pv.is-collapsed .dt-pv-legend { display: none; }
+.dt-pv-table td { max-width: 240px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.dt-pv-table th { cursor: default; }
+.dt-pv-table[style*="fixed"] th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dt-pv-tools .wb-rowfilter { width: auto; }
+.dt-pv-table th.is-req { color: var(--red-text); }
+.dt-pv-table th.is-nosrc { color: var(--amber-text); font-style: italic; }
+.dt-pv-table .dt-pv-n { color: var(--text-3); font-weight: 500; font-variant-numeric: tabular-nums; }
+.dt-pv-table td.dt-pv-none { color: var(--text-3); font-style: italic; }
+.data-table.dt-pv-table td.is-req,
+.data-table.dt-pv-table td.is-coll {
+  background: var(--red-soft);
+  box-shadow: inset 2px 0 0 var(--red);
+  cursor: pointer;
+}
+.data-table.dt-pv-table td.is-off,
+.data-table.dt-pv-table td.is-build,
+.data-table.dt-pv-table td.is-dup,
+.data-table.dt-pv-table td.is-year {
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  cursor: pointer;
+}
+/* The one signature mark: a corner tick on every cell the tool changed.
+   Hover the cell for was → now and why. */
+.data-table.dt-pv-table td.is-chg { position: relative; }
+.data-table.dt-pv-table td.is-chg::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 7px 7px 0;
+  border-color: transparent var(--accent) transparent transparent;
+}
+
+/* Section buttons — the build-card pattern from the builder picker, plus a
+   count so nothing gets skipped. */
+.dt-nav { margin-bottom: 12px; }
+.dt-nav-group + .dt-nav-group { margin-top: 10px; }
+.dt-nav-label {
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.dt-nav-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dt-nav-btn {
+  flex: 1 1 200px;
+  min-width: 180px;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 11px;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.dt-nav-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.dt-nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dt-nav-btn.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.dt-nav-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dt-nav-name { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.dt-nav-btn.is-clear:not(.is-on) .dt-nav-name { color: var(--text-2); font-weight: 600; }
+.dt-nav-desc { font-size: 11px; line-height: 1.35; color: var(--text-2); }
+.dt-nav-where { font-size: 10.5px; color: var(--text-3); }
+.dt-nav-count {
+  flex: none;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dt-nav-btn.is-fix .dt-nav-count { background: var(--red-soft); color: var(--red-text); border: 1px solid #fecaca; }
+.dt-nav-btn.is-check .dt-nav-count { background: var(--bg-muted); color: var(--text-2); border: 1px solid var(--border); }
+.dt-nav-btn .dt-nav-count.is-zero { background: var(--green-soft); color: var(--green-text); border: 1px solid #bbf7d0; font-weight: 600; }
+
+/* The open section. */
+.dt-panels {
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.dt-panels .cmp-section:last-of-type { margin-bottom: 0; }
+.dt-panels .dt-build { margin-bottom: 14px; }
+.dt-panel-empty { padding: 10px 2px; font-size: 13px; color: var(--green-text); }
+.dt-reqsum { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.dt-reqsum:empty { display: none; }
+.dt-reqsum-chip {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--red-text);
+  background: var(--red-soft);
+  border: 1px solid #fecaca;
+  border-radius: 20px;
+  cursor: pointer;
+}
+.dt-reqsum-chip b { font-weight: 650; }
+.dt-reqsum-chip.is-on { box-shadow: 0 0 0 2px var(--accent-ring); border-color: var(--accent); }
+.dt-reqsum-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Template Standardize tools on the same workbench (workbench.js): their own
+   preview section is pinned, and the panes grow with their content so the
+   sticky preview has room to travel (see the bulk pane above). */
+#page-compare #cmp-mode-standardize,
+#page-compare #cmp-mode-employees { flex-shrink: 0; }
+.cmp-section.wb-pv {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  margin-bottom: 12px;
+  padding: 8px 12px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.wb-pv .cmp-section-head { margin-bottom: 4px; }
+.wb-pv .cmp-section-head h3 { font-size: 13px; }
+.wb-pv-tools { margin-left: auto; }
+.wb-pv .cmp-sites-hint { margin: 0 0 6px; font-size: 11.5px; }
+.wb-pv-legend { padding: 0 0 6px; }
+.cmp-section.wb-pv .table-wrap { max-height: 34vh; min-height: 90px; }
+.cmp-section.wb-pv .table-wrap[style*="height"] { max-height: 80vh; }
+.wb-pv.is-collapsed .table-wrap,
+.wb-pv.is-collapsed .wb-pv-legend,
+.wb-pv.is-collapsed .cmp-sites-hint { display: none; }
+.dt-file-chip { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The same corner tick as the bulk preview, on the editable grids. */
+.ts-edit-grid td.is-chg,
+#es-preview-table td.is-chg { position: relative; }
+.ts-edit-grid td.is-chg::after,
+#es-preview-table td.is-chg::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 7px 7px 0;
+  border-color: transparent var(--accent) transparent transparent;
+  pointer-events: none;
+}
+
+/* ═══ Side by side / stacked (workbench.js split) ═══
+   Side by side: preview | handle | buttons + open section, the preview pinned
+   while the right column scrolls. Stacked: the preview over the buttons, the
+   handle under it setting the grid height. */
+.cmp-page.wb-wide { max-width: none; }
+.wb-split-handle { position: relative; touch-action: none; outline: none; }
+.wb-split.is-side {
+  display: grid;
+  grid-template-columns: minmax(0, var(--wb-left, 58%)) 14px minmax(0, 1fr);
+  align-items: start;
+}
+.wb-split.is-side .wb-split-main { position: sticky; top: 0; z-index: 30; min-width: 0; }
+.wb-split.is-side .wb-split-side { min-width: 0; }
+.wb-split.is-side .wb-split-main > .dt-pv,
+.wb-split.is-side .wb-split-main > .cmp-section.wb-pv { position: static; margin-bottom: 0; }
+/* Beside the fixes, the grid may grow to the window's height — as tall as its
+   rows, no taller. */
+.wb-split.is-side .dt-pv-wrap:not([style*="height"]),
+.wb-split.is-side .wb-pv .table-wrap:not([style*="height"]) { height: auto; max-height: var(--wb-fit, calc(100vh - 340px)); }
+.wb-split.is-side .wb-split-handle { align-self: stretch; min-height: 160px; cursor: col-resize; }
+.wb-split.is-side .wb-split-handle::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.wb-split.is-side .wb-split-handle::after {
+  content: '';
+  position: absolute;
+  top: 40vh;
+  left: 4px;
+  width: 6px;
+  height: 36px;
+  border-radius: 4px;
+  background: var(--border-strong);
+}
+.wb-split.is-stack .wb-split-handle { height: 14px; margin: -8px 0 6px; cursor: row-resize; }
+.wb-split.is-stack .wb-split-handle::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: calc(50% - 22px);
+  width: 44px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border-strong);
+}
+.wb-split-handle:hover::before,
+.wb-split-handle:hover::after,
+.wb-split-handle:focus-visible::before,
+.wb-split-handle:focus-visible::after,
+.wb-split-handle.is-dragging::before,
+.wb-split-handle.is-dragging::after { background: var(--accent); }
+.wb-split.is-side .wb-split-side .dt-nav-btn { flex-basis: 220px; }
+/* The layout toggle, in the preview's tool row. */
+.wb-layout {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.wb-layout button {
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 0;
+  cursor: pointer;
+}
+.wb-layout button + button { border-left: 1px solid var(--border); }
+.wb-layout button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.wb-layout button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wb-pv-tools { display: flex; align-items: center; gap: 6px; }
+/* Too narrow for two columns: stack, whatever the toggle says. */
+@media (max-width: 1100px) {
+  .wb-split.is-side { display: block; }
+  .wb-split.is-side .wb-split-handle { display: none; }
+  .wb-split.is-side .wb-split-main { position: static; }
+  .wb-split.is-side .wb-split-main > .dt-pv,
+  .wb-split.is-side .wb-split-main > .cmp-section.wb-pv { position: sticky; margin-bottom: 12px; }
+  .wb-split.is-side .dt-pv-wrap:not([style*="height"]),
+  .wb-split.is-side .wb-pv .table-wrap:not([style*="height"]) { height: auto; max-height: 34vh; }
+}
+
+@media (max-width: 720px) {
+  .dt-pv-wrap { max-height: 42vh; }
+  .dt-nav-btn { max-width: none; }
+  .dt-pv-note { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-nav-btn { transition: none; }
+}
 .dt-fill-sample {
   color: var(--text-3);
   font-family: var(--font-mono);
@@ -3242,3 +3971,27 @@ body.trk-resizing * { cursor: col-resize !important; user-select: none !importan
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* ═══ Legacy → 3.0: Load everything at once + folded optional files ═══ */
+.lg-drop { border-style: dashed; transition: background .15s, border-color .15s; }
+.lg-drop.is-over { background: var(--accent-soft); border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.lg-drop-result:empty { display: none; }
+.lg-drop-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.lg-drop-list li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.lg-drop-list li.is-ok { color: var(--text-2); }
+.lg-drop-list li.is-ok::first-letter { color: #15803d; }
+.lg-drop-ask { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; }
+.lg-drop-ask .lg-drop-pick { width: auto; max-width: 100%; font-size: 12px; }
+.lg-drop-ask .btn { align-self: flex-start; }
+.lg-more { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-alt); }
+.lg-more > summary { cursor: pointer; padding: 10px 14px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.lg-more[open] > summary { border-bottom: 1px solid var(--border); }
+.lg-more-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding: 14px; }
+.lg-more-grid .cmp-slot { background: var(--bg); }
+.lg-more-opts { display: flex; flex-direction: column; gap: 8px; padding: 14px; max-width: 520px; }
+@media (max-width: 900px) { .lg-uploads { grid-template-columns: 1fr; } }
+
+/* ═══ Legacy → 3.0 one page: the preview switch shows one grid at a time ═══ */
+#lm-section-preview.lg-view-em #lm-pv-box { display: none; }
+#lm-section-preview:not(.lg-view-em) #em-section-preview { display: none !important; }
